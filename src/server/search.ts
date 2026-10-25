@@ -194,17 +194,20 @@ async function runConnector(
   | { kind: "timeout" }
   | { kind: "cancelled" }
 > {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const linked = AbortSignal.any([signal, timeout]);
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), timeoutMs);
+  const linked = AbortSignal.any([signal, timeout.signal]);
   try {
     const result = await connector.search(request, linked);
     if (signal.aborted) return { kind: "cancelled" };
     return { kind: "ok", result };
   } catch (error) {
     if (signal.aborted) return { kind: "cancelled" };
-    if (timeout.aborted) return { kind: "timeout" };
+    if (timeout.signal.aborted) return { kind: "timeout" };
     const message = error instanceof Error ? error.message : "Connector failed.";
     return { kind: "ok", result: { ok: false, failure: { code: "unavailable", message } } };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
