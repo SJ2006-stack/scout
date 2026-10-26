@@ -1,6 +1,11 @@
 import type { EventKind } from "../shared/event.ts";
 import type { DatePhrase } from "../shared/when.ts";
 
+export type ChatLine = {
+  role: "user" | "assistant";
+  text: string;
+};
+
 export type ChatMemory = {
   cityId: string | null;
   lat: number | null;
@@ -9,6 +14,7 @@ export type ChatMemory = {
   date: DatePhrase;
   kind: EventKind | null;
   timezone: string;
+  lines: ChatLine[];
 };
 
 export function emptyMemory(): ChatMemory {
@@ -20,6 +26,7 @@ export function emptyMemory(): ChatMemory {
     date: "week",
     kind: null,
     timezone: "Asia/Kolkata",
+    lines: [],
   };
 }
 

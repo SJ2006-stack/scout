@@ -28,6 +28,7 @@ export type ApiDeps = {
   fetchImpl?: typeof fetch;
   mapsApiKey?: string;
   pomeradoApiKey?: string;
+  anthropicApiKey?: string;
 };
 
 export function createApiServer(deps: ApiDeps): Server {
@@ -40,6 +41,7 @@ export function createApiServer(deps: ApiDeps): Server {
     fetchImpl: deps.fetchImpl ?? fetch,
     mapsApiKey: deps.mapsApiKey ?? "",
     pomeradoApiKey: deps.pomeradoApiKey ?? "",
+    anthropicApiKey: deps.anthropicApiKey ?? "",
   };
   return createServer((request, response) => {
     void handleApi(request, response, resolved);
@@ -96,6 +98,7 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
           fetchImpl: deps.fetchImpl ?? fetch,
           mapsApiKey: deps.mapsApiKey ?? "",
           pomeradoApiKey: deps.pomeradoApiKey ?? "",
+          anthropicApiKey: deps.anthropicApiKey ?? "",
         },
         emit,
       ),

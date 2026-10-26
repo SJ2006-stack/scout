@@ -6,6 +6,7 @@ import { dateRange, isTimeZone, type DatePhrase } from "../shared/when.ts";
 import type { ChatMemory } from "./chatMemory.ts";
 import { ChatMemoryStore } from "./chatMemory.ts";
 import type { ListingCache } from "./listingCache.ts";
+import { converseWithHaiku } from "./haikuChat.ts";
 import { eventTools } from "./tools/index.ts";
 import { driveMinutes } from "./travel.ts";
 
@@ -27,9 +28,18 @@ export type ChatTurn = {
   fetchImpl: typeof fetch;
   mapsApiKey: string;
   pomeradoApiKey: string;
+  anthropicApiKey: string;
 };
 
 export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {
+  if (turn.anthropicApiKey.trim().length > 0) {
+    const spoke = await converseWithHaiku(turn, emit);
+    if (spoke) return;
+    if (turn.signal.aborted) {
+      emit({ type: "done", count: 0 });
+      return;
+    }
+  }
   const previous = turn.memory.get(turn.sessionId);
   const intent = parseChatIntent(turn.text);
   const pincodeCity = cityFromPincode(turn.pincode);
@@ -51,6 +61,7 @@ export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void):
     date: intent.date ?? previous.date,
     kind: intent.kind.kind === "set" ? intent.kind.value : intent.kind.kind === "clear" ? null : previous.kind,
     timezone: isTimeZone(turn.timezone) ? turn.timezone : previous.timezone,
+    lines: previous.lines,
   };
   turn.memory.save(turn.sessionId, next);
   if (!city) {

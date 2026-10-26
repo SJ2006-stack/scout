@@ -34,6 +34,7 @@ export function createDeps(): ApiDeps {
     listingCache: new ListingCache(Number(process.env.CACHE_TTL_MS ?? 60_000), Date.now),
     mapsApiKey: process.env.GOOGLE_MAPS_API_KEY?.trim() ?? "",
     pomeradoApiKey: process.env.POMERADO_API_KEY?.trim() ?? "",
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() ?? "",
   };
 }
 

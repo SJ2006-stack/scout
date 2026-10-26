@@ -5,6 +5,7 @@ import { districtEvents, districtMovies } from "../src/server/events/district.ts
 import { lumaEvents } from "../src/server/events/luma.ts";
 import { ChatMemoryStore } from "../src/server/chatMemory.ts";
 import { runChat } from "../src/server/chatRun.ts";
+import { HAIKU_MODEL } from "../src/server/haikuChat.ts";
 import { ListingCache } from "../src/server/listingCache.ts";
 import { driveMinutes } from "../src/server/travel.ts";
 import { cityById, type City } from "../src/shared/cities.ts";
@@ -117,6 +118,7 @@ async function turn(
   memory = new ChatMemoryStore(),
   mapsApiKey = "",
   pomeradoApiKey = "",
+  anthropicApiKey = "",
 ): Promise<ChatEvent[]> {
   const events: ChatEvent[] = [];
   await runChat(
@@ -135,6 +137,7 @@ async function turn(
       fetchImpl,
       mapsApiKey,
       pomeradoApiKey,
+      anthropicApiKey,
     },
     (event) => events.push(event),
   );
@@ -269,6 +272,62 @@ describe("event listings", () => {
     assert.equal(found, 35);
     const parsed = lumaEvents(JSON.parse(lumaBody) as unknown, "2026-10-25T00:00:00.000Z");
     assert.equal(parsed.some((listing) => listing.url.includes("evil.example")), false);
+  });
+
+  it("lets Haiku talk and call Luma, District, and BookMyShow", async () => {
+    const bodies: Array<{ model?: string; temperature?: unknown; thinking?: { type?: string }; tools?: Array<{ name?: string }>; messages?: unknown[] }> = [];
+    const headers: Headers[] = [];
+    let haikuCalls = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://api.anthropic.com/v1/messages") {
+        haikuCalls += 1;
+        const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+        bodies.push(body);
+        headers.push(new Headers(init?.headers));
+        if (haikuCalls === 1) {
+          return new Response(JSON.stringify({
+            stop_reason: "tool_use",
+            content: [
+              { type: "text", text: "I'll check Bengaluru for tonight." },
+              { type: "tool_use", id: "toolu_luma", name: "search_luma", input: { city: "bengaluru", when: "today", kind: "any", budgetRupees: 0 } },
+              { type: "tool_use", id: "toolu_district", name: "search_district", input: { city: "bengaluru", when: "today", kind: "any", budgetRupees: 0 } },
+              { type: "tool_use", id: "toolu_bms", name: "search_bookmyshow", input: { city: "bengaluru", when: "today", kind: "any", budgetRupees: 0 } },
+            ],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "Tonight in Bengaluru I found Roast Tank on Luma." }],
+        }), { status: 200 });
+      }
+      return sources()(input, init);
+    }) as typeof fetch;
+    const events = await turn("films tonight in the garden city", fetchImpl, new ChatMemoryStore(), "", "", "test-anthropic-key");
+    const replies = events.flatMap((event) => (event.type === "question" ? [event.message] : []));
+    assert.match(replies.join("\n"), /Roast Tank/);
+    assert.equal(events.some((event) => event.type === "card" && event.listing.title === "Roast Tank"), true);
+    assert.equal(events.some((event) => event.type === "source" && event.source === "BookMyShow"), true);
+    const names = bodies[0]?.tools?.map((tool) => tool.name);
+    assert.deepEqual(names, ["search_luma", "search_district", "search_bookmyshow"]);
+    assert.equal(bodies[0]?.model, HAIKU_MODEL);
+    assert.equal(bodies[0]?.temperature, undefined);
+    assert.equal(bodies[0]?.thinking?.type, "disabled");
+    assert.equal(headers[0]?.get("x-api-key"), "test-anthropic-key");
+    const followUp = JSON.stringify(bodies[1]?.messages);
+    assert.match(followUp, /toolu_luma/);
+    assert.match(followUp, /toolu_district/);
+    assert.match(followUp, /toolu_bms/);
+  });
+
+  it("keeps the keyword parser when Haiku does not answer", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "https://api.anthropic.com/v1/messages") return new Response("no", { status: 500 });
+      return sources()(input, init);
+    }) as typeof fetch;
+    const events = await turn("comedy in Bengaluru under 500", fetchImpl, new ChatMemoryStore(), "", "", "test-anthropic-key");
+    const titles = events.flatMap((event) => (event.type === "card" ? [event.listing.title] : []));
+    assert.equal(titles.includes("Free Comedy"), true);
   });
 
   it("asks through the chat route when the city is missing", async () => {
