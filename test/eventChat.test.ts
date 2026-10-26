@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { dateRange } from "../src/shared/when.ts";
+import { parseChatIntent } from "../src/shared/chatIntent.ts";
+import { calendarDate, dateRange, dayRange } from "../src/shared/when.ts";
 import { districtEvents, districtMovies } from "../src/server/events/district.ts";
 import { lumaEvents } from "../src/server/events/luma.ts";
 import { ChatMemoryStore } from "../src/server/chatMemory.ts";
@@ -240,6 +241,21 @@ describe("event listings", () => {
     assert.equal(new Date(weekend.endMs).toISOString(), "2026-10-25T18:30:00.000Z");
   });
 
+  it("treats tomorrow as the next calendar day in Asia/Kolkata", () => {
+    const now = Date.parse("2026-10-26T18:35:00.000Z");
+    const range = dateRange("tomorrow", now, "Asia/Kolkata");
+    assert.equal(calendarDate(now, "Asia/Kolkata"), "2026-10-27");
+    assert.equal(new Date(range.startMs).toISOString(), "2026-10-27T18:30:00.000Z");
+    assert.equal(new Date(range.endMs).toISOString(), "2026-10-28T18:30:00.000Z");
+    assert.equal(calendarDate(range.startMs, "Asia/Kolkata"), "2026-10-28");
+    const explicit = dayRange("2026-10-28", "Asia/Kolkata");
+    assert.equal(explicit?.startMs, range.startMs);
+    assert.equal(explicit?.endMs, range.endMs);
+    assert.equal(dayRange("2026-02-31", "Asia/Kolkata"), null);
+    assert.equal(parseChatIntent("okay, what's happening tomorrow in delhi").date, "tomorrow");
+    assert.equal(parseChatIntent("this week in delhi").date, "week");
+  });
+
   it("remembers the city for a later budget", async () => {
     const memory = new ChatMemoryStore();
     await turn("what's happening in Bengaluru this week", sources(), memory);
@@ -330,6 +346,82 @@ describe("event listings", () => {
     assert.equal(titles.includes("Free Comedy"), true);
   });
 
+  it("clamps tomorrow to that day even when Haiku asks for a week", async () => {
+    const now = Date.parse("2026-10-26T18:35:00.000Z");
+    const cache = new ListingCache(60_000, () => now);
+    const bodies: Array<{ system?: string; tools?: Array<{ description?: string; input_schema?: { properties?: { when?: { enum?: string[] } } } }>; messages?: Array<{ content?: unknown }> }> = [];
+    let haikuCalls = 0;
+    let lumaCalls = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://api.anthropic.com/v1/messages") {
+        haikuCalls += 1;
+        const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+        bodies.push(body);
+        if (haikuCalls % 2 === 1) {
+          return new Response(JSON.stringify({
+            stop_reason: "tool_use",
+            content: [
+              { type: "tool_use", id: "toolu_luma", name: "search_luma", input: { city: "delhi", when: "week", kind: "any", budgetRupees: 0 } },
+            ],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "Tomorrow in Delhi I only have Tomorrow Show." }],
+        }), { status: 200 });
+      }
+      if (url.includes("api.luma.com")) {
+        lumaCalls += 1;
+        return new Response(JSON.stringify({
+          entries: [
+            lumaShow("Today Show", "today-show", "2026-10-27T09:30:00.000Z"),
+            lumaShow("Tomorrow Show", "tomorrow-show", "2026-10-28T09:30:00.000Z"),
+            lumaShow("Later Show", "later-show", "2026-10-31T09:30:00.000Z"),
+            lumaShow("Undated Show", "undated-show", null),
+          ],
+        }), { status: 200 });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+    const first = await haikuTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
+    const second = await haikuTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
+    for (const events of [first, second]) {
+      const status = events.find((event) => event.type === "status");
+      assert.match(status?.type === "status" ? status.message : "", /Looking in Delhi for tomorrow/);
+      assert.doesNotMatch(status?.type === "status" ? status.message : "", /seven days/);
+      const cards = events.flatMap((event) => (event.type === "card" ? [event.listing] : []));
+      assert.deepEqual(cards.map((card) => card.title), ["Tomorrow Show"]);
+      assert.equal(calendarDate(Date.parse(cards[0]?.start ?? ""), "Asia/Kolkata"), "2026-10-28");
+    }
+    assert.equal(lumaCalls, 1);
+    const followUps = bodies.filter((body) => JSON.stringify(body.messages).includes("tool_result"));
+    assert.equal(followUps.length, 2);
+    const parsed = followUps.map((body) => toolResultJson(body));
+    assert.equal(parsed[0]?.cached, false);
+    assert.equal(parsed[1]?.cached, true);
+    for (const result of parsed) {
+      assert.equal(result?.source, "Luma");
+      assert.equal(result?.ok, true);
+      assert.equal(result?.window, "tomorrow");
+      assert.equal(result?.date, "2026-10-28");
+      assert.equal(result?.start, "2026-10-28");
+      assert.equal(result?.end, "2026-10-28");
+      assert.equal(result?.timezone, "Asia/Kolkata");
+      assert.equal(result?.listings.length, 1);
+      assert.equal(result?.listings[0]?.title, "Tomorrow Show");
+      assert.equal(result?.listings[0]?.kind, "other");
+      assert.equal(result?.listings[0]?.start, "2026-10-28T09:30:00.000Z");
+      assert.equal(typeof result?.listings[0]?.price, "string");
+      assert.equal(result?.listings[0]?.url, "https://luma.com/tomorrow-show");
+    }
+    assert.match(bodies[0]?.system ?? "", /2026-10-27/);
+    assert.match(bodies[0]?.system ?? "", /Asia\/Kolkata/);
+    assert.match(bodies[0]?.system ?? "", /Do not use week for tomorrow/);
+    assert.match(bodies[0]?.tools?.[0]?.description ?? "", /Do not use week for tomorrow/);
+    assert.deepEqual(bodies[0]?.tools?.[0]?.input_schema?.properties?.when?.enum, ["today", "tomorrow", "weekend", "week"]);
+  });
+
   it("asks through the chat route when the city is missing", async () => {
     await withApi({ fetchImpl: sources(), mapsApiKey: "" }, async (base) => {
       const response = await fetch(`${base}/api/chat`, {
@@ -375,3 +467,65 @@ describe("event listings", () => {
     });
   });
 });
+
+function lumaShow(name: string, slug: string, start: string | null) {
+  return {
+    ticket_info: { price: null, is_free: true, max_price: null },
+    event: {
+      api_id: slug,
+      name,
+      url: slug,
+      start_at: start,
+      timezone: "Asia/Kolkata",
+      geo_address_info: { city: "Delhi", address: "Connaught Place" },
+    },
+  };
+}
+
+async function haikuTurn(text: string, fetchImpl: typeof fetch, cache: ListingCache, nowMs: number): Promise<ChatEvent[]> {
+  const events: ChatEvent[] = [];
+  await runChat(
+    {
+      sessionId: "session",
+      text,
+      timezone: "Asia/Kolkata",
+      pincode: "",
+      lat: null,
+      lon: null,
+      timeoutMs: 1000,
+      signal: new AbortController().signal,
+      now: () => nowMs,
+      memory: new ChatMemoryStore(),
+      cache,
+      fetchImpl,
+      mapsApiKey: "",
+      pomeradoApiKey: "",
+      anthropicApiKey: "test-anthropic-key",
+    },
+    (event) => events.push(event),
+  );
+  return events;
+}
+
+function toolResultJson(body: { messages?: Array<{ content?: unknown }> }): {
+  source?: string;
+  ok?: boolean;
+  cached?: boolean;
+  window?: string;
+  date?: string | null;
+  start?: string | null;
+  end?: string | null;
+  timezone?: string;
+  listings: Array<{ title?: string; kind?: string; start?: string | null; price?: string; url?: string }>;
+} | null {
+  for (const message of body.messages ?? []) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!block || typeof block !== "object") continue;
+      const record = block as { type?: string; content?: unknown };
+      if (record.type !== "tool_result" || typeof record.content !== "string") continue;
+      return JSON.parse(record.content) as ReturnType<typeof toolResultJson>;
+    }
+  }
+  return null;
+}

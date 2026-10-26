@@ -36,11 +36,17 @@ function readBudget(value: string): BudgetUpdate {
   return { kind: "set", amount };
 }
 
-function readDate(value: string): DatePhrase | null {
-  if (value.includes("this weekend") || value.includes("the weekend")) return "weekend";
-  if (value.includes("today") || value.includes("tonight")) return "today";
-  if (value.includes("this week") || value.includes("next seven days") || value.includes("7 days")) return "week";
+export function datePhraseInMessage(text: string): DatePhrase | null {
+  const value = text.toLowerCase();
+  if (/\btomorrow\b/.test(value)) return "tomorrow";
+  if (/\b(today|tonight)\b/.test(value)) return "today";
+  if (/\bweekend\b/.test(value)) return "weekend";
+  if (/\b(this week|next seven days|7 days)\b/.test(value)) return "week";
   return null;
+}
+
+function readDate(value: string): DatePhrase | null {
+  return datePhraseInMessage(value);
 }
 
 function readKind(value: string): KindUpdate {

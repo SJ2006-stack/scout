@@ -1,3 +1,5 @@
+import type { DateRange } from "./when.ts";
+
 export type Platform = "Luma" | "District" | "BookMyShow";
 
 export type EventKind = "movie" | "concert" | "comedy" | "theatre" | "workshop" | "other";
@@ -139,6 +141,16 @@ export function withinDates(listing: Listing, range: { startMs: number; endMs: n
   const time = Date.parse(listing.start);
   if (!Number.isFinite(time)) return false;
   return time >= range.startMs && time < range.endMs;
+}
+
+export function listingInWindow(listing: Listing, range: DateRange): boolean {
+  const singleDay = range.phrase === "today" || range.phrase === "tomorrow";
+  if (listing.start == null) {
+    if (listing.platform === "BookMyShow") return true;
+    if (singleDay) return false;
+    return withinDates(listing, range);
+  }
+  return withinDates(listing, range);
 }
 
 export function dedupeListings(listings: Listing[]): Listing[] {

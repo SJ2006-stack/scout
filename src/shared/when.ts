@@ -1,4 +1,4 @@
-export type DatePhrase = "today" | "weekend" | "week";
+export type DatePhrase = "today" | "tomorrow" | "weekend" | "week";
 
 export type DateRange = {
   startMs: number;
@@ -29,6 +29,11 @@ export function isTimeZone(value: string): boolean {
   }
 }
 
+export function calendarDate(instantMs: number, timeZone: string): string {
+  const zone = isTimeZone(timeZone) ? timeZone : "Asia/Kolkata";
+  return isoDate(instantMs, zone);
+}
+
 export function calendarDates(startMs: number, endMs: number, timeZone: string): string[] {
   const zone = isTimeZone(timeZone) ? timeZone : "Asia/Kolkata";
   const dates: string[] = [];
@@ -41,6 +46,37 @@ export function calendarDates(startMs: number, endMs: number, timeZone: string):
   }
   if (dates.length === 0) dates.push(isoDate(startMs, zone));
   return dates;
+}
+
+export function windowLabel(phrase: DatePhrase): string {
+  switch (phrase) {
+    case "today":
+      return "today";
+    case "tomorrow":
+      return "tomorrow";
+    case "weekend":
+      return "this weekend";
+    case "week":
+      return "the next seven days";
+    default: {
+      const neverPhrase: never = phrase;
+      return neverPhrase;
+    }
+  }
+}
+
+export function dayRange(day: string, timeZone: string): { startMs: number; endMs: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const date = Number(match[3]);
+  if (month < 1 || month > 12 || date < 1 || date > 31) return null;
+  const zone = isTimeZone(timeZone) ? timeZone : "Asia/Kolkata";
+  const startMs = zonedTime(year, month, date, 0, 0, 0, zone);
+  const wall = wallClock(new Date(startMs), zone);
+  if (wall.year !== year || wall.month !== month || wall.day !== date) return null;
+  return { startMs, endMs: startMs + 86_400_000 };
 }
 
 function isoDate(instantMs: number, timeZone: string): string {
@@ -58,15 +94,35 @@ function isoDate(instantMs: number, timeZone: string): string {
 
 export function dateRange(phrase: DatePhrase, nowMs: number, timeZone: string): DateRange {
   const zone = isTimeZone(timeZone) ? timeZone : "Asia/Kolkata";
-  const today = wallClock(new Date(nowMs), zone);
-  if (phrase === "today") {
-    const startMs = zonedTime(today.year, today.month, today.day, 0, 0, 0, zone);
-    return { startMs, endMs: startMs + 86_400_000, phrase };
+  switch (phrase) {
+    case "today":
+    case "tomorrow": {
+      const today = wallClock(new Date(nowMs), zone);
+      const day = phrase === "today" ? today : addDays(today, 1);
+      const range = dayRange(formatDay(day), zone);
+      if (range) return { ...range, phrase };
+      const startMs = zonedTime(day.year, day.month, day.day, 0, 0, 0, zone);
+      return { startMs, endMs: startMs + 86_400_000, phrase };
+    }
+    case "week":
+      return { startMs: nowMs, endMs: nowMs + 7 * 86_400_000, phrase };
+    case "weekend": {
+      const today = wallClock(new Date(nowMs), zone);
+      const saturday = addDays(today, daysUntilSaturday(today.weekday));
+      const startMs = zonedTime(saturday.year, saturday.month, saturday.day, 0, 0, 0, zone);
+      return { startMs, endMs: startMs + 2 * 86_400_000, phrase };
+    }
+    default: {
+      const neverPhrase: never = phrase;
+      throw new Error(neverPhrase);
+    }
   }
-  if (phrase === "week") return { startMs: nowMs, endMs: nowMs + 7 * 86_400_000, phrase };
-  const saturday = addDays(today, daysUntilSaturday(today.weekday));
-  const startMs = zonedTime(saturday.year, saturday.month, saturday.day, 0, 0, 0, zone);
-  return { startMs, endMs: startMs + 2 * 86_400_000, phrase };
+}
+
+function formatDay(day: Wall): string {
+  const month = String(day.month).padStart(2, "0");
+  const date = String(day.day).padStart(2, "0");
+  return `${day.year}-${month}-${date}`;
 }
 
 function daysUntilSaturday(weekday: Weekday): number {

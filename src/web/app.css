@@ -91,6 +91,32 @@ h1, h2, p { margin: 0; }
   white-space: nowrap;
 }
 
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.recent-row .nav.recent {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.recent-delete {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  color: var(--muted);
+  border-radius: 8px;
+}
+
+a.nav, a.specialist {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+
 .nav-label, .nav-empty, .muted, .card-line, .card-source {
   color: var(--muted);
 }

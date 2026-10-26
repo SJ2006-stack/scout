@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { handleApi } from "./api.ts";
 import { appRoot, createDeps, loadLocalEnv } from "./deps.ts";
+import { healthPayload } from "./health.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -26,7 +27,7 @@ const server = createServer((request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (url.pathname === "/api/health") {
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ok: true }));
+    response.end(JSON.stringify(healthPayload()));
     return;
   }
   if (url.pathname.startsWith("/api/")) {

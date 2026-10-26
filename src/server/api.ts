@@ -12,6 +12,7 @@ import { GeocodeError, type Geocoder } from "./geocode.ts";
 import { RateLimit } from "./rateLimit.ts";
 import { runSearch } from "./search.ts";
 import { applyCors } from "./cors.ts";
+import { healthPayload } from "./health.ts";
 import { sessionId } from "./session.ts";
 
 export type ApiDeps = {
@@ -64,6 +65,10 @@ export async function handleApi(request: IncomingMessage, response: ServerRespon
 async function routeApi(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
   if (applyCors(request, response)) return;
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "GET" && url.pathname === "/api/health") {
+    sendJson(response, 200, healthPayload());
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/demo") {
     await drain(request);
     await writeEvents(response, (emit, signal) => streamDemo(emit, deps.demoStepMs, signal));

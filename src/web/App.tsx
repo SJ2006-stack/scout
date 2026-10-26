@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { Compass, Home, ListTodo, MapPin, Menu, MessageSquarePlus, PanelRight, Settings, X } from "lucide-react";
+import { Compass, Home, ListTodo, MapPin, Menu, MessageSquarePlus, PanelRight, Settings, Trash2, X } from "lucide-react";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import { matchesCardFilter, type CardFilter } from "../shared/event.ts";
-import { AGENTS, agentById, type AgentId } from "./agents.ts";
+import { hostFor, type AgentId } from "../shared/hosts.ts";
+import { AGENTS, agentById } from "./agents.ts";
 import { apiUrl, backendHeaders } from "./backend.ts";
 import { Composer } from "./Composer.tsx";
+import { deleteConversation } from "./conversationList.ts";
 import { emptyConversation, loadConversations, saveConversations, type Conversation, type Turn } from "./conversations.ts";
+import { siteAgentFromHealth, siteAgentFromHostname } from "./site.ts";
 import { EventCard } from "./EventCard.tsx";
 import {
   LOCATION_SESSION_KEY,
@@ -31,12 +34,13 @@ type LocationView =
   | { kind: "done"; address: string }
   | { kind: "error"; message: string };
 
-const PROMPTS: { label: string; agent: AgentId }[] = [
-  { label: "Find comedy shows in Delhi this weekend.", agent: "event" },
-  { label: "Compare cabs to the airport.", agent: "travel" },
-  { label: "Find good restaurants near me.", agent: "food" },
-  { label: "Plan a weekend trip.", agent: "travel" },
-];
+const PROMPTS: Record<Exclude<AgentId, "main">, string[]> = {
+  event: ["Find comedy shows in Delhi this weekend.", "What's happening tomorrow in Delhi?"],
+  travel: ["Compare cabs to the airport.", "Plan a weekend trip."],
+  food: ["Find good restaurants near me."],
+  shop: ["Find a store for everyday shopping."],
+  home: ["Help with something around the house."],
+};
 
 const FILTERS: { id: CardFilter; label: string }[] = [
   { id: "all", label: "All" },
@@ -48,6 +52,7 @@ const FILTERS: { id: CardFilter; label: string }[] = [
 ];
 
 export function App() {
+  const [siteAgent, setSiteAgent] = useState<AgentId>(() => siteAgentFromHostname(window.location.hostname) ?? "event");
   const [screen, setScreen] = useState<Screen>({ kind: "home" });
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -66,6 +71,23 @@ export function App() {
   }, [conversations]);
 
   useEffect(() => {
+    const fromHost = siteAgentFromHostname(window.location.hostname);
+    if (fromHost) {
+      setSiteAgent(fromHost);
+      return;
+    }
+    void siteAgentFromHealth().then((agent) => {
+      if (agent) setSiteAgent(agent);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (screen.kind !== "chat") return;
+    const open = conversations.find((item) => item.id === screen.conversationId);
+    if (open && open.agent !== siteAgent) setScreen({ kind: "home" });
+  }, [siteAgent, screen, conversations]);
+
+  useEffect(() => {
     if (toast == null) return;
     const timer = setTimeout(() => setToast(null), 2400);
     return () => clearTimeout(timer);
@@ -79,24 +101,21 @@ export function App() {
     setFilter("all");
   }
 
-  function startChat(agent: AgentId): Conversation {
-    const existing = conversations.find((item) => item.agent === agent && item.title === "New chat" && item.turns.length <= 1);
-    if (existing) {
-      openChat(existing);
-      return existing;
-    }
-    const created = emptyConversation(agent, agentById(agent).intro);
-    setConversations((current) => [created, ...current]);
-    openChat(created);
-    return created;
-  }
-
   function newChat(): void {
-    const agent = active?.agent ?? "main";
-    const created = emptyConversation(agent, agentById(agent).intro);
+    if (siteAgent === "main") return;
+    const created = emptyConversation(siteAgent, agentById(siteAgent).intro);
     setConversations((current) => [created, ...current]);
     openChat(created);
     setDraft("");
+  }
+
+  function deleteChat(id: string): void {
+    setConversations((current) => deleteConversation(current, id));
+    if (screen.kind === "chat" && screen.conversationId === id) {
+      setScreen({ kind: "home" });
+      setDraft("");
+    }
+    if (busyId === id) abortRef.current?.abort();
   }
 
   function patch(id: string, update: (conversation: Conversation) => Conversation): void {
@@ -186,7 +205,8 @@ export function App() {
 
   function sendDraft(): void {
     if (screen.kind === "home") {
-      const created = emptyConversation("main", agentById("main").intro);
+      if (siteAgent === "main") return;
+      const created = emptyConversation(siteAgent, agentById(siteAgent).intro);
       setConversations((current) => [created, ...current]);
       openChat(created);
       void submit(created, draft);
@@ -196,8 +216,9 @@ export function App() {
     void submit(active, draft);
   }
 
-  function usePrompt(agent: AgentId, text: string): void {
-    const created = emptyConversation(agent, agentById(agent).intro);
+  function usePrompt(text: string): void {
+    if (siteAgent === "main") return;
+    const created = emptyConversation(siteAgent, agentById(siteAgent).intro);
     setConversations((current) => [created, ...current]);
     openChat(created);
     void submit(created, text);
@@ -237,7 +258,10 @@ export function App() {
     setLocation({ kind: "done", address: lookedUp.address });
   }
 
-  const recent = [...conversations].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 8);
+  const recent = conversations
+    .filter((item) => item.agent === siteAgent)
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, 8);
   const busy = busyId != null;
 
   return (
@@ -247,10 +271,12 @@ export function App() {
           <span className="logo">S</span>
           <strong>Scout</strong>
         </div>
-        <button className="nav" type="button" onClick={newChat}>
-          <MessageSquarePlus size={18} />
-          New Chat
-        </button>
+        {siteAgent === "main" ? null : (
+          <button className="nav" type="button" onClick={newChat}>
+            <MessageSquarePlus size={18} />
+            New Chat
+          </button>
+        )}
         <button className="nav" type="button" onClick={() => { setScreen({ kind: "home" }); setSidebarOpen(false); }}>
           <Home size={18} />
           Home
@@ -260,22 +286,39 @@ export function App() {
           Explore
         </button>
         <p className="nav-label">Specialists</p>
-        {AGENTS.map((agent) => {
+        {AGENTS.filter((agent) => agent.id !== "main").map((agent) => {
           const Icon = agent.icon;
-          const selected = active?.agent === agent.id;
+          if (agent.id === siteAgent) {
+            return (
+              <button className="nav selected" type="button" key={agent.id} onClick={() => { setScreen({ kind: "home" }); setSidebarOpen(false); }}>
+                <Icon size={18} />
+                {agent.name}
+              </button>
+            );
+          }
           return (
-            <button className={selected ? "nav selected" : "nav"} type="button" key={agent.id} onClick={() => startChat(agent.id)}>
+            <a className="nav" key={agent.id} href={hostFor(agent.id)}>
               <Icon size={18} />
               {agent.name}
-            </button>
+            </a>
           );
         })}
         <p className="nav-label">Recent</p>
         {recent.length === 0 ? <p className="nav-empty">No conversations yet.</p> : null}
         {recent.map((conversation) => (
-          <button className="nav recent" type="button" key={conversation.id} onClick={() => openChat(conversation)}>
-            {conversation.title}
-          </button>
+          <div className="recent-row" key={conversation.id}>
+            <button className="nav recent" type="button" onClick={() => openChat(conversation)}>
+              {conversation.title}
+            </button>
+            <button
+              className="icon-button recent-delete"
+              type="button"
+              aria-label={`Delete ${conversation.title}`}
+              onClick={() => deleteChat(conversation.id)}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
         ))}
         <div className="sidebar-foot">
           <button className="nav" type="button" onClick={() => { setScreen({ kind: "tasks" }); setSidebarOpen(false); }}>
@@ -294,7 +337,7 @@ export function App() {
           <button className="icon-button menu" type="button" aria-label="Open menu" onClick={() => setSidebarOpen(true)}>
             <Menu size={18} />
           </button>
-          <StageTitle screen={screen} conversation={active} />
+          <StageTitle screen={screen} conversation={active} siteAgent={siteAgent} />
           {active?.agent === "event" ? (
             <button className="text-button" type="button" onClick={() => void detect()} disabled={location.kind === "reading"}>
               <MapPin size={16} />
@@ -310,38 +353,16 @@ export function App() {
         {location.kind !== "idle" && active?.agent === "event" ? <p className="location-line"><LocationLine view={location} /></p> : null}
         <section className="transcript" aria-live="polite">
           {screen.kind === "home" ? (
-            <div className="welcome">
-              <h2>What can I help you with?</h2>
-              <p>Discover events, compare travel options and handle everyday tasks with Scout.</p>
-              <Composer
-                value={draft}
-                busy={busy}
-                placeholder="Message Scout…"
-                onChange={setDraft}
-                onSend={sendDraft}
-                onStop={stop}
-                onToast={setToast}
-              />
-              <div className="prompt-row">
-                {PROMPTS.map((prompt) => (
-                  <button className="chip" type="button" key={prompt.label} onClick={() => usePrompt(prompt.agent, prompt.label)}>
-                    {prompt.label}
-                  </button>
-                ))}
-              </div>
-              <div className="specialist-grid">
-                {AGENTS.filter((agent) => agent.id === "event" || agent.id === "travel" || agent.id === "food" || agent.id === "shop").map((agent) => {
-                  const Icon = agent.icon;
-                  return (
-                    <button className="specialist" type="button" key={agent.id} onClick={() => startChat(agent.id)}>
-                      <Icon size={18} />
-                      <strong>{agent.name}</strong>
-                      <span>{agent.description}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <HomeScreen
+              siteAgent={siteAgent}
+              draft={draft}
+              busy={busy}
+              onChange={setDraft}
+              onSend={sendDraft}
+              onStop={stop}
+              onToast={setToast}
+              onPrompt={usePrompt}
+            />
           ) : (
             <StageBody
               screen={screen}
@@ -385,10 +406,102 @@ export function App() {
   );
 }
 
-function StageTitle({ screen, conversation }: { screen: Screen; conversation: Conversation | null }) {
+function HomeScreen({
+  siteAgent,
+  draft,
+  busy,
+  onChange,
+  onSend,
+  onStop,
+  onToast,
+  onPrompt,
+}: {
+  siteAgent: AgentId;
+  draft: string;
+  busy: boolean;
+  onChange: (value: string) => void;
+  onSend: () => void;
+  onStop: () => void;
+  onToast: (message: string) => void;
+  onPrompt: (text: string) => void;
+}) {
+  if (siteAgent === "main") {
+    return (
+      <div className="welcome">
+        <h2>Pick a specialist</h2>
+        <p>Each Scout has its own site. This page only links to them.</p>
+        <div className="specialist-grid">
+          {AGENTS.filter((agent) => agent.id !== "main").map((agent) => {
+            const Icon = agent.icon;
+            return (
+              <a className="specialist" key={agent.id} href={hostFor(agent.id)}>
+                <Icon size={18} />
+                <strong>{agent.name}</strong>
+                <span>{agent.description}</span>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+  const agent = agentById(siteAgent);
+  return (
+    <div className="welcome">
+      <h2>{agent.name}</h2>
+      <p>{agent.intro}</p>
+      <Composer
+        value={draft}
+        busy={busy}
+        placeholder={`Message ${agent.name}…`}
+        onChange={onChange}
+        onSend={onSend}
+        onStop={onStop}
+        onToast={onToast}
+      />
+      <div className="prompt-row">
+        {promptsFor(siteAgent).map((label) => (
+          <button className="chip" type="button" key={label} onClick={() => onPrompt(label)}>
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function promptsFor(agent: AgentId): string[] {
+  switch (agent) {
+    case "main":
+      return [];
+    case "event":
+    case "travel":
+    case "food":
+    case "shop":
+    case "home":
+      return PROMPTS[agent];
+    default: {
+      const neverAgent: never = agent;
+      return neverAgent;
+    }
+  }
+}
+
+function AgentHeading({ agent }: { agent: ReturnType<typeof agentById> }) {
+  const Icon = agent.icon;
+  return (
+    <h1 className="agent-title">
+      <Icon size={18} />
+      {agent.name}
+    </h1>
+  );
+}
+
+function StageTitle({ screen, conversation, siteAgent }: { screen: Screen; conversation: Conversation | null; siteAgent: AgentId }) {
   switch (screen.kind) {
     case "home":
-      return <h1>Scout</h1>;
+      if (siteAgent === "main") return <h1>Scout</h1>;
+      return <AgentHeading agent={agentById(siteAgent)} />;
     case "explore":
       return <h1>Explore</h1>;
     case "tasks":

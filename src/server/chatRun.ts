@@ -1,8 +1,8 @@
 import { cityById, cityFromPincode } from "../shared/cities.ts";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import { parseChatIntent } from "../shared/chatIntent.ts";
-import { dedupeListings, sortListings, withinBudget, withinDates, type Listing } from "../shared/event.ts";
-import { dateRange, isTimeZone, type DatePhrase } from "../shared/when.ts";
+import { dedupeListings, listingInWindow, sortListings, withinBudget, type Listing } from "../shared/event.ts";
+import { dateRange, isTimeZone, windowLabel, type DatePhrase } from "../shared/when.ts";
 import type { ChatMemory } from "./chatMemory.ts";
 import { ChatMemoryStore } from "./chatMemory.ts";
 import type { ListingCache } from "./listingCache.ts";
@@ -96,7 +96,7 @@ export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void):
     if (!result.ok) continue;
     for (const listing of result.listings) {
       if (next.kind && listing.kind !== next.kind) continue;
-      if (!listedInWindow(listing, range)) continue;
+      if (!listingInWindow(listing, range)) continue;
       if (!withinBudget(listing, next.budget)) continue;
       collected.push(listing);
     }
@@ -112,15 +112,9 @@ export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void):
   emit({ type: "done", count: shown.length });
 }
 
-function listedInWindow(listing: Listing, range: { startMs: number; endMs: number }): boolean {
-  if (listing.platform === "BookMyShow" && listing.start == null) return true;
-  return withinDates(listing, range);
-}
-
 function statusLine(city: string, date: DatePhrase, budget: number | null): string {
-  const window = date === "today" ? "today" : date === "weekend" ? "this weekend" : "the next seven days";
   const price = budget == null ? "" : ` under ₹${budget}`;
-  return `Looking in ${city} for ${window}${price}.`;
+  return `Looking in ${city} for ${windowLabel(date)}${price}.`;
 }
 
 async function attachTravel(listings: Listing[], memory: ChatMemory, turn: ChatTurn): Promise<void> {

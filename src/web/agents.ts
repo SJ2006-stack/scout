@@ -1,7 +1,8 @@
 import type { LucideIcon } from "lucide-react";
 import { CalendarDays, House, Plane, ShoppingBag, Sparkles, UtensilsCrossed } from "lucide-react";
+import type { AgentId } from "../shared/hosts.ts";
 
-export type AgentId = "main" | "event" | "travel" | "food" | "shop" | "home";
+export type { AgentId } from "../shared/hosts.ts";
 
 export type Agent = {
   id: AgentId;

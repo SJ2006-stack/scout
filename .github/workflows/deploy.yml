@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,17 +15,47 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm test
       - run: npm run build
         env:
           VITE_API_BASE: ""
-      - run: npm test
       - name: Pack the server and the built page
         run: |
           mkdir -p publish
           cp package.json package-lock.json publish/
           cp -R src dist publish/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: publish
+          path: publish
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: sj-event-scout
+            secret: AZURE_WEBAPP_PUBLISH_PROFILE
+          - app: sj-scout
+            secret: AZURE_WEBAPP_PUBLISH_PROFILE_MAIN
+          - app: sj-travel-scout
+            secret: AZURE_WEBAPP_PUBLISH_PROFILE_TRAVEL
+          - app: sj-food-scout
+            secret: AZURE_WEBAPP_PUBLISH_PROFILE_FOOD
+          - app: sj-shop-scout
+            secret: AZURE_WEBAPP_PUBLISH_PROFILE_SHOP
+          - app: sj-home-scout
+            secret: AZURE_WEBAPP_PUBLISH_PROFILE_HOME
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: publish
+          path: publish
       - uses: azure/webapps-deploy@v3
         with:
-          app-name: sj-event-scout
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          app-name: ${{ matrix.app }}
+          publish-profile: ${{ secrets[matrix.secret] }}
           package: publish
