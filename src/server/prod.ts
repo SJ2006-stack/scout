@@ -4,6 +4,7 @@ import { extname, join, normalize, sep } from "node:path";
 import { handleApi } from "./api.ts";
 import { appRoot, createDeps, loadLocalEnv } from "./deps.ts";
 import { healthPayload } from "./health.ts";
+import { mainLandingFile } from "./landingPage.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -34,7 +35,7 @@ const server = createServer((request, response) => {
     void handleApi(request, response, deps);
     return;
   }
-  serveFile(url.pathname, response);
+  serveFile(url.pathname, request.headers.host, response);
 });
 
 const stopBrowser = deps.browser?.startCleanup(30_000);
@@ -47,7 +48,12 @@ server.listen(port, "0.0.0.0", () => {
   console.log(`Scout listening on ${port}`);
 });
 
-function serveFile(pathname: string, response: ServerResponse): void {
+function serveFile(pathname: string, host: string | undefined, response: ServerResponse): void {
+  const landing = mainLandingFile(root, host, pathname);
+  if (landing && existsSync(landing)) {
+    send(response, landing);
+    return;
+  }
   const requested = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const file = safeFile(requested);
   if (file && existsSync(file) && statSync(file).isFile()) {

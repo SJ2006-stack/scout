@@ -23,7 +23,7 @@ jobs:
         run: |
           mkdir -p publish
           cp package.json package-lock.json publish/
-          cp -R src dist publish/
+          cp -R src dist scout-landing publish/
       - uses: actions/upload-artifact@v4
         with:
           name: publish
