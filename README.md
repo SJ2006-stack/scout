@@ -33,6 +33,11 @@ Optional environment variables are listed in `.env.example`:
 | `CACHE_TTL_MS` | `60000` | How long a successful price stays cached |
 | `CONNECTOR_TIMEOUT_MS` | `8000` | Per-connector limit for a live search |
 | `DEMO_STEP_MS` | `400` | Pause between demo events |
+| `BROWSER_WORKER_ENABLED` | `0` | `1` turns on the Playwright browser worker |
+| `BROWSER_ALLOW_HOSTS` | empty | Hostnames the worker may open |
+| `BROWSER_OP_TIMEOUT_MS` | `15000` | Limit for one browser operation |
+| `BROWSER_SESSION_TTL_MS` | `900000` | How long a browser session stays open |
+| `BROWSER_MAX_SESSIONS` | `4` | Open browser sessions on this process |
 
 Copy `.env.example` to `.env` only if you want to change those values. The app has no secrets.
 
@@ -87,6 +92,10 @@ After `npm test` and `npm run dev`:
 1. Choose Replay demo. Confirm the transcript shows "Demonstration data", two sample prices, the Demo Corner failure, and example.com links. Replay again and confirm the same sequence replaces the transcript.
 2. Choose Enter an address manually, add a 6-digit postal code, and choose Use this address. The note should name the pincode and say the area is approximate. Or choose Use my current location, check the suggested fields, and only then use the address.
 3. Choose Search. The page should show the unavailable live-source message and no sample prices. A dead connector should leave that message visible rather than clearing the page.
+
+## Browser worker
+
+The Tasks screen can start an isolated browser session and show its status. The worker stays off until `BROWSER_WORKER_ENABLED=1`, and it only opens https hosts listed in `BROWSER_ALLOW_HOSTS`. Cookies stay in the browser process and are not written to the task log. Local Chromium setup, timeouts, and the Azure deploy notes are in `docs/browser-worker.md`.
 
 ## Limits
 

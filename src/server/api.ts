@@ -13,7 +13,12 @@ import { RateLimit } from "./rateLimit.ts";
 import { runSearch } from "./search.ts";
 import { applyCors } from "./cors.ts";
 import { healthPayload } from "./health.ts";
+import { routeBrowser } from "./browser/routes.ts";
+import type { BrowserWorker } from "./browser/worker.ts";
+import { CommerceHub, createCommerceHub, type CommerceRequest } from "./commerce/hub.ts";
+import { PairTickets } from "./pairTickets.ts";
 import { sessionId } from "./session.ts";
+import { writeEvents } from "./sseWriter.ts";
 
 export type ApiDeps = {
   liveConnectors: Connector[];
@@ -30,6 +35,9 @@ export type ApiDeps = {
   mapsApiKey?: string;
   pomeradoApiKey?: string;
   anthropicApiKey?: string;
+  commerce?: CommerceHub;
+  pairTickets?: PairTickets;
+  browser?: BrowserWorker;
 };
 
 export function createApiServer(deps: ApiDeps): Server {
@@ -43,6 +51,7 @@ export function createApiServer(deps: ApiDeps): Server {
     mapsApiKey: deps.mapsApiKey ?? "",
     pomeradoApiKey: deps.pomeradoApiKey ?? "",
     anthropicApiKey: deps.anthropicApiKey ?? "",
+    commerce: deps.commerce ?? createCommerceHub(deps.now),
   };
   return createServer((request, response) => {
     void handleApi(request, response, resolved);
@@ -50,6 +59,7 @@ export function createApiServer(deps: ApiDeps): Server {
 }
 
 export async function handleApi(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
+  if (!deps.commerce) deps.commerce = createCommerceHub(deps.now);
   try {
     await routeApi(request, response, deps);
   } catch (error) {
@@ -67,6 +77,12 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method === "GET" && url.pathname === "/api/health") {
     sendJson(response, 200, healthPayload());
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/pair") {
+    const ticket = currentPairTicket(deps);
+    const secondsLeft = Math.max(0, Math.ceil((ticket.expiresAt - deps.now()) / 1000));
+    sendJson(response, 200, { ...ticket, secondsLeft });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/demo") {
@@ -110,6 +126,10 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     );
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/commerce") {
+    await commerceTurn(request, response, deps);
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/search") {
     const body = await readJson(request);
     if (!body.ok) {
@@ -141,12 +161,21 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     await reverseGeocode(request, response, deps);
     return;
   }
+  if (url.pathname === "/api/browser" || url.pathname.startsWith("/api/browser/")) {
+    await routeBrowser(request, response, url, deps);
+    return;
+  }
   const addressId = url.pathname.match(/^\/api\/addresses\/([a-f0-9]{16})$/);
   if (url.pathname === "/api/addresses" || addressId) {
     await savedAddresses(request, response, deps, addressId?.[1] ?? null);
     return;
   }
   sendJson(response, 404, { error: "Not found" });
+}
+
+function currentPairTicket(deps: ApiDeps) {
+  if (!deps.pairTickets) deps.pairTickets = new PairTickets(deps.now);
+  return deps.pairTickets.current();
 }
 
 function parseChatRequest(value: unknown): {
@@ -233,11 +262,66 @@ function readCoordinate(value: unknown, min: number, max: number): number | null
   return value;
 }
 
+async function commerceTurn(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
+  const body = await readJson(request, "Send a shop, food, or appointment request.");
+  if (!body.ok) {
+    sendJson(response, 400, { error: body.error });
+    return;
+  }
+  const parsed = parseCommerceRequest(body.value);
+  if (!parsed.ok) {
+    sendJson(response, 400, { error: parsed.error });
+    return;
+  }
+  const owner = sessionId(request, response);
+  const hub = deps.commerce ?? createCommerceHub(deps.now);
+  deps.commerce = hub;
+  const commerceRequest: CommerceRequest = parsed.action === "confirm"
+    ? { sessionId: owner, agent: parsed.agent, action: "confirm", quoteId: parsed.quoteId }
+    : { sessionId: owner, agent: parsed.agent, action: "message", text: parsed.text };
+  await writeEvents(response, async (emit) => {
+    for (const event of hub.handle(commerceRequest)) emit(event);
+  });
+}
+
+function parseCommerceRequest(value: unknown): {
+  ok: true;
+  agent: "shop" | "food" | "appointments";
+  action: "message";
+  text: string;
+} | {
+  ok: true;
+  agent: "shop" | "food" | "appointments";
+  action: "confirm";
+  quoteId: string;
+} | { ok: false; error: string } {
+  if (!value || typeof value !== "object") return { ok: false, error: "Send a shop, food, or appointment request." };
+  const body = value as Record<string, unknown>;
+  if (body.agent === "event") return { ok: false, error: "Event Scout uses chat." };
+  if (body.agent !== "shop" && body.agent !== "food" && body.agent !== "appointments") {
+    return { ok: false, error: "That specialist is not connected." };
+  }
+  const agent = body.agent;
+  if (body.action === "confirm") {
+    if (typeof body.quoteId !== "string" || body.quoteId.trim().length === 0) {
+      return { ok: false, error: "Confirm the review that is on screen." };
+    }
+    return { ok: true, agent, action: "confirm", quoteId: body.quoteId.trim() };
+  }
+  if (typeof body.text !== "string" || body.text.trim().length === 0) {
+    return { ok: false, error: "Tell Scout what you need." };
+  }
+  return { ok: true, agent, action: "message", text: body.text.trim() };
+}
+
 async function drain(request: IncomingMessage): Promise<void> {
   for await (const chunk of request) void chunk;
 }
 
-async function readJson(request: IncomingMessage): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+async function readJson(
+  request: IncomingMessage,
+  emptyError = "Send a grocery request and a confirmed area.",
+): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -247,35 +331,11 @@ async function readJson(request: IncomingMessage): Promise<{ ok: true; value: un
     chunks.push(buffer);
   }
   const text = Buffer.concat(chunks).toString("utf8");
-  if (text.trim().length === 0) return { ok: false, error: "Send a grocery request and a confirmed area." };
+  if (text.trim().length === 0) return { ok: false, error: emptyError };
   try {
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
     return { ok: false, error: "Request was not valid JSON." };
-  }
-}
-
-async function writeEvents<T extends { type: string }>(
-  response: ServerResponse,
-  run: (emit: (event: T) => void, signal: AbortSignal) => Promise<void>,
-): Promise<void> {
-  const controller = new AbortController();
-  response.writeHead(200, {
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive",
-  });
-  response.socket?.setNoDelay(true);
-  const abort = (): void => controller.abort();
-  response.on("close", abort);
-  try {
-    await run((event: T) => {
-      if (response.writableEnded || controller.signal.aborted) return;
-      response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    }, controller.signal);
-  } finally {
-    response.off("close", abort);
-    if (!response.writableEnded) response.end();
   }
 }
 

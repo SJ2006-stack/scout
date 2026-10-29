@@ -1,15 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Compass, Home, ListTodo, MapPin, Menu, MessageSquarePlus, PanelRight, Settings, Trash2, X } from "lucide-react";
 import type { ChatEvent } from "../shared/chatEvents.ts";
+import type { CommerceEvent } from "../shared/commerce.ts";
 import { matchesCardFilter, type CardFilter } from "../shared/event.ts";
 import { hostFor, type AgentId } from "../shared/hosts.ts";
+import { agentRoute } from "./agentRoute.ts";
 import { AGENTS, agentById } from "./agents.ts";
 import { apiUrl, backendHeaders } from "./backend.ts";
+import { CartCard, QuoteCard, ReceiptCard } from "./CommerceCard.tsx";
 import { Composer } from "./Composer.tsx";
 import { deleteConversation } from "./conversationList.ts";
 import { emptyConversation, loadConversations, saveConversations, type Conversation, type Turn } from "./conversations.ts";
 import { siteAgentFromHealth, siteAgentFromHostname } from "./site.ts";
+import { BrowserTasks } from "./BrowserTasks.tsx";
 import { EventCard } from "./EventCard.tsx";
+import { PairPanel } from "./PairPanel.tsx";
 import {
   LOCATION_SESSION_KEY,
   requestBrowserLocation,
@@ -37,9 +42,10 @@ type LocationView =
 const PROMPTS: Record<Exclude<AgentId, "main">, string[]> = {
   event: ["Find comedy shows in Delhi this weekend.", "What's happening tomorrow in Delhi?"],
   travel: ["Compare cabs to the airport.", "Plan a weekend trip."],
-  food: ["Find good restaurants near me."],
-  shop: ["Find a store for everyday shopping."],
+  food: ["Find dosa.", "Add 1 dosa."],
+  shop: ["Find milk.", "Add 1 milk."],
   home: ["Help with something around the house."],
+  appointments: ["Find a haircut.", "Book a haircut tomorrow at 4pm for Ada with Noor."],
 };
 
 const FILTERS: { id: CardFilter; label: string }[] = [
@@ -136,14 +142,41 @@ export function App() {
       turns: [...current.turns, { kind: "user", text: trimmed }],
       updatedAt: Date.now(),
     }));
-    if (conversation.agent !== "event") {
-      patch(conversation.id, (current) => ({
-        ...current,
-        turns: [...current.turns, { kind: "text", text: agentById(conversation.agent).unavailable }],
-        updatedAt: Date.now(),
-      }));
-      return;
+    const route = agentRoute(conversation.agent);
+    switch (route.kind) {
+      case "unavailable":
+        patch(conversation.id, (current) => ({
+          ...current,
+          turns: [...current.turns, { kind: "text", text: agentById(conversation.agent).unavailable }],
+          updatedAt: Date.now(),
+        }));
+        return;
+      case "event":
+        await sendEventChat(conversation, trimmed);
+        return;
+      case "commerce":
+        await sendCommerce(conversation, { agent: route.agent, action: "message", text: trimmed });
+        return;
+      default: {
+        const neverRoute: never = route;
+        return neverRoute;
+      }
     }
+  }
+
+  function confirmReview(conversation: Conversation, quoteId: string): void {
+    if (busyId != null) return;
+    const route = agentRoute(conversation.agent);
+    if (route.kind !== "commerce") return;
+    patch(conversation.id, (current) => ({
+      ...current,
+      activity: [...current.activity, "Confirmation sent."],
+      updatedAt: Date.now(),
+    }));
+    void sendCommerce(conversation, { agent: route.agent, action: "confirm", quoteId });
+  }
+
+  async function sendEventChat(conversation: Conversation, trimmed: string): Promise<void> {
     const controller = new AbortController();
     abortRef.current = controller;
     setBusyId(conversation.id);
@@ -192,6 +225,63 @@ export function App() {
         return;
       }
       setDraft(trimmed);
+      patch(conversation.id, (current) => ({
+        ...current,
+        turns: [...current.turns, { kind: "text", text: "The chat could not be reached." }],
+        updatedAt: Date.now(),
+      }));
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      setBusyId((current) => (current === conversation.id ? null : current));
+    }
+  }
+
+  async function sendCommerce(
+    conversation: Conversation,
+    body: { agent: "shop" | "food" | "appointments"; action: "message"; text: string } | { agent: "shop" | "food" | "appointments"; action: "confirm"; quoteId: string },
+  ): Promise<void> {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBusyId(conversation.id);
+    try {
+      const response = await fetch(apiUrl("/api/commerce"), {
+        method: "POST",
+        headers: backendHeaders({ "content-type": "application/json" }, conversation.sessionId),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: unknown };
+        const message = typeof payload.error === "string" ? payload.error : "Scout could not answer.";
+        if (body.action === "message") setDraft(body.text);
+        patch(conversation.id, (current) => ({
+          ...current,
+          turns: [...current.turns, { kind: "text", text: message }],
+          updatedAt: Date.now(),
+        }));
+        return;
+      }
+      await readSse<CommerceEvent>(response, (event) => {
+        const nextTurns = turnsFromCommerce(event);
+        const activityLine = activityFromCommerce(event);
+        patch(conversation.id, (current) => ({
+          ...current,
+          turns: nextTurns.length > 0 ? [...current.turns, ...nextTurns] : current.turns,
+          activity: activityLine ? [...current.activity, activityLine] : current.activity,
+          updatedAt: Date.now(),
+        }));
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        patch(conversation.id, (current) => ({
+          ...current,
+          activity: [...current.activity, "Stopped."],
+          turns: [...current.turns, { kind: "note", text: "Stopped." }],
+          updatedAt: Date.now(),
+        }));
+        return;
+      }
+      if (body.action === "message") setDraft(body.text);
       patch(conversation.id, (current) => ({
         ...current,
         turns: [...current.turns, { kind: "text", text: "The chat could not be reached." }],
@@ -370,6 +460,9 @@ export function App() {
               filter={filter}
               busy={busyId != null && busyId === active?.id}
               onFilter={setFilter}
+              onConfirm={(quoteId) => {
+                if (active) confirmReview(active, quoteId);
+              }}
             />
           )}
         </section>
@@ -479,6 +572,7 @@ function promptsFor(agent: AgentId): string[] {
     case "food":
     case "shop":
     case "home":
+    case "appointments":
       return PROMPTS[agent];
     default: {
       const neverAgent: never = agent;
@@ -532,23 +626,25 @@ function StageBody({
   filter,
   busy,
   onFilter,
+  onConfirm,
 }: {
   screen: Exclude<Screen, { kind: "home" }>;
   conversation: Conversation | null;
   filter: CardFilter;
   busy: boolean;
   onFilter: (filter: CardFilter) => void;
+  onConfirm: (quoteId: string) => void;
 }) {
   switch (screen.kind) {
     case "explore":
       return <p className="plain">Explore is not connected yet.</p>;
     case "tasks":
-      return <p className="plain">Tasks are not connected yet.</p>;
+      return <BrowserTasks />;
     case "settings":
-      return <p className="plain">Settings are not connected yet.</p>;
+      return <PairPanel />;
     case "chat":
       if (conversation == null) return <p className="plain">That conversation is no longer on this device.</p>;
-      return <Transcript conversation={conversation} filter={filter} busy={busy} onFilter={onFilter} />;
+      return <Transcript conversation={conversation} filter={filter} busy={busy} onFilter={onFilter} onConfirm={onConfirm} />;
     default: {
       const neverScreen: never = screen;
       return neverScreen;
@@ -561,11 +657,13 @@ function Transcript({
   filter,
   busy,
   onFilter,
+  onConfirm,
 }: {
   conversation: Conversation;
   filter: CardFilter;
   busy: boolean;
   onFilter: (filter: CardFilter) => void;
+  onConfirm: (quoteId: string) => void;
 }) {
   const cards = conversation.turns.filter((turn): turn is Extract<Turn, { kind: "card" }> => turn.kind === "card");
   const visibleCards = cards.filter((turn) => matchesCardFilter(turn.listing.kind, filter));
@@ -581,7 +679,7 @@ function Transcript({
         </div>
       ) : null}
       {conversation.turns.map((turn, index) => (
-        <TurnView key={`${turn.kind}-${index}`} turn={turn} filter={filter} />
+        <TurnView key={`${turn.kind}-${index}`} turn={turn} filter={filter} busy={busy} onConfirm={onConfirm} />
       ))}
       {conversation.agent === "event" && cards.length > 0 && visibleCards.length === 0 ? (
         <p className="plain">None of the cards on screen are in that category.</p>
@@ -597,7 +695,17 @@ function Transcript({
   );
 }
 
-function TurnView({ turn, filter }: { turn: Turn; filter: CardFilter }) {
+function TurnView({
+  turn,
+  filter,
+  busy,
+  onConfirm,
+}: {
+  turn: Turn;
+  filter: CardFilter;
+  busy: boolean;
+  onConfirm: (quoteId: string) => void;
+}) {
   switch (turn.kind) {
     case "user":
       return <p className="user">{turn.text}</p>;
@@ -608,6 +716,12 @@ function TurnView({ turn, filter }: { turn: Turn; filter: CardFilter }) {
     case "card":
       if (!matchesCardFilter(turn.listing.kind, filter)) return null;
       return <EventCard listing={turn.listing} />;
+    case "cart":
+      return <CartCard cart={turn.cart} />;
+    case "quote":
+      return <QuoteCard quote={turn.quote} busy={busy} onConfirm={onConfirm} />;
+    case "receipt":
+      return <ReceiptCard receipt={turn.receipt} />;
     default: {
       const neverTurn: never = turn;
       return neverTurn;
@@ -643,6 +757,46 @@ function turnsFrom(event: ChatEvent): Turn[] {
       return [{ kind: "card", listing: event.listing }];
     case "done":
       return [];
+    default: {
+      const neverEvent: never = event;
+      return neverEvent;
+    }
+  }
+}
+
+function turnsFromCommerce(event: CommerceEvent): Turn[] {
+  switch (event.type) {
+    case "text":
+      return [{ kind: "text", text: event.message }];
+    case "note":
+      return [{ kind: "note", text: event.message }];
+    case "cart":
+      return [{ kind: "cart", cart: event.cart }];
+    case "quote":
+      return [{ kind: "quote", quote: event.quote }];
+    case "receipt":
+      return [{ kind: "receipt", receipt: event.receipt }];
+    case "status":
+    case "done":
+      return [];
+    default: {
+      const neverEvent: never = event;
+      return neverEvent;
+    }
+  }
+}
+
+function activityFromCommerce(event: CommerceEvent): string | null {
+  switch (event.type) {
+    case "status":
+      return event.message;
+    case "text":
+    case "note":
+    case "cart":
+    case "quote":
+    case "receipt":
+    case "done":
+      return null;
     default: {
       const neverEvent: never = event;
       return neverEvent;

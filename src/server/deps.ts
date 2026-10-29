@@ -4,8 +4,13 @@ import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { AddressBook } from "./addressBook.ts";
 import type { ApiDeps } from "./api.ts";
+import { PlaywrightBrowserDriver } from "./browser/playwrightDriver.ts";
+import { browserConfigFromEnv } from "./browser/policy.ts";
+import { BrowserStore } from "./browser/store.ts";
+import { BrowserWorker } from "./browser/worker.ts";
 import { PriceCache } from "./cache.ts";
 import { ChatMemoryStore } from "./chatMemory.ts";
+import { createCommerceHub } from "./commerce/hub.ts";
 import { ListingCache } from "./listingCache.ts";
 import { createArcGisGeocoder, createGoogleGeocoder } from "./geocode.ts";
 
@@ -35,7 +40,23 @@ export function createDeps(): ApiDeps {
     mapsApiKey: process.env.GOOGLE_MAPS_API_KEY?.trim() ?? "",
     pomeradoApiKey: process.env.POMERADO_API_KEY?.trim() ?? "",
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() ?? "",
+    commerce: createCommerceHub(Date.now),
+    browser: createBrowserWorker(),
   };
+}
+
+function createBrowserWorker(): BrowserWorker | undefined {
+  const config = browserConfigFromEnv(process.env, root);
+  if (!config.enabled) return undefined;
+  return new BrowserWorker({
+    driver: new PlaywrightBrowserDriver(config.operationTimeoutMs),
+    store: new BrowserStore(join(config.stateDir, "sessions.json")),
+    allowHosts: config.allowHosts,
+    operationTimeoutMs: config.operationTimeoutMs,
+    sessionTtlMs: config.sessionTtlMs,
+    maxSessions: config.maxSessions,
+    now: Date.now,
+  });
 }
 
 function googleGeocoder(timeoutMs: number) {

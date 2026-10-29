@@ -32,6 +32,12 @@ server.on("request", (request: IncomingMessage, response: ServerResponse) => {
   });
 });
 
+const stopBrowser = deps.browser?.startCleanup(30_000);
+server.on("close", () => {
+  stopBrowser?.();
+  void deps.browser?.stop();
+});
+
 server.listen(port, "127.0.0.1", () => {
   console.log(`Grocery Scout listening on http://127.0.0.1:${port}`);
 });

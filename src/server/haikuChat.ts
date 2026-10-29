@@ -9,11 +9,10 @@ import { bookMyShowTool } from "./tools/bookmyshow.ts";
 import { districtTool } from "./tools/district.ts";
 import { lumaTool } from "./tools/luma.ts";
 import type { EventTool, ToolName } from "./tools/types.ts";
+import { HAIKU_MODEL, postHaiku, type HaikuMessage } from "./haikuClient.ts";
+import { scoutPurpose } from "./scoutPrompt.ts";
 
-export const HAIKU_MODEL = "claude-haiku-5-5";
-
-const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
-const MODEL_TIMEOUT_MS = 20_000;
+export { HAIKU_MODEL } from "./haikuClient.ts";
 const CARD_LIMIT = 24;
 const ROUND_LIMIT = 3;
 
@@ -54,10 +53,11 @@ type WhenWord = DatePhrase;
 type KindWord = EventKind | "any";
 type SearchInput = { city: City; when: WhenWord; kind: EventKind | null; budget: number | null };
 type Block = Record<string, unknown>;
-type ApiMessage = { role: "user" | "assistant"; content: string | Block[] };
+type ApiMessage = HaikuMessage;
 
 export async function converseWithHaiku(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<boolean> {
-  const messages = transcript(turn.memory.get(turn.sessionId).lines, turn.text);
+  const remembered = turn.userMemory?.lines(turn.userId ?? turn.sessionId, "event") ?? turn.memory.get(turn.sessionId).lines;
+  const messages = transcript(remembered, turn.text);
   const seen = new Set<string>();
   const announced = new Set<string>();
   const spoken: string[] = [];
@@ -105,41 +105,22 @@ function finish(
   const remembered = spoken.length > 0 ? spoken : "I checked the listings.";
   const lines = [...previous.lines, { role: "user" as const, text: turn.text }, { role: "assistant" as const, text: remembered }].slice(-12);
   turn.memory.save(turn.sessionId, { ...previous, ...patch, lines });
+  const userId = turn.userId ?? turn.sessionId;
+  turn.userMemory?.append(userId, "event", "user", turn.text);
+  turn.userMemory?.append(userId, "event", "assistant", remembered);
   emit({ type: "done", count: shown });
   return true;
 }
 
 async function complete(turn: ChatTurn, messages: ApiMessage[]): Promise<{ stop_reason?: string; content?: unknown } | null> {
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), MODEL_TIMEOUT_MS);
-  const signal = AbortSignal.any([turn.signal, timeout.signal]);
-  try {
-    const response = await turn.fetchImpl(MESSAGES_URL, {
-      method: "POST",
-      headers: {
-        "x-api-key": turn.anthropicApiKey.trim(),
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-        accept: "application/json",
-      },
-      body: JSON.stringify({
-        model: HAIKU_MODEL,
-        max_tokens: 1024,
-        thinking: { type: "disabled" },
-        output_config: { effort: "low" },
-        system: instructions(turn.now(), timeZone(turn)),
-        tools: TOOLS,
-        messages,
-      }),
-      signal,
-    });
-    if (!response.ok) return null;
-    return (await response.json()) as { stop_reason?: string; content?: unknown };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  return postHaiku({
+    apiKey: turn.anthropicApiKey,
+    fetchImpl: turn.fetchImpl,
+    signal: turn.signal,
+    system: instructions(turn.now(), timeZone(turn)),
+    tools: TOOLS,
+    messages,
+  });
 }
 
 async function runTool(
@@ -273,7 +254,7 @@ function instructions(nowMs: number, timeZoneName: string): string {
   const today = calendarDate(nowMs, timeZoneName);
   const tomorrow = calendarDate(dateRange("tomorrow", nowMs, timeZoneName).startMs, timeZoneName);
   return [
-    "You are Event Scout, talking with one person. Reply in a few plain sentences.",
+    scoutPurpose("Event Scout", "Find shows, movies, and things to do on Luma, District, and BookMyShow. Reply in a few plain sentences."),
     "Your harness is three tools: search_luma, search_district, and search_bookmyshow.",
     "When they ask what is on, call all three with the same city, date, and kind.",
     "You can search Bengaluru, Mumbai, Delhi, and Hyderabad. For any other city, say so and do not call a tool.",

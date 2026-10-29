@@ -37,6 +37,12 @@ const server = createServer((request, response) => {
   serveFile(url.pathname, response);
 });
 
+const stopBrowser = deps.browser?.startCleanup(30_000);
+server.on("close", () => {
+  stopBrowser?.();
+  void deps.browser?.stop();
+});
+
 server.listen(port, "0.0.0.0", () => {
   console.log(`Scout listening on ${port}`);
 });

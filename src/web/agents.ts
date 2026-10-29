@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { CalendarDays, House, Plane, ShoppingBag, Sparkles, UtensilsCrossed } from "lucide-react";
+import { CalendarDays, House, Plane, Scissors, ShoppingBag, Sparkles, UtensilsCrossed } from "lucide-react";
 import type { AgentId } from "../shared/hosts.ts";
 
 export type { AgentId } from "../shared/hosts.ts";
@@ -41,17 +41,17 @@ export const AGENTS: Agent[] = [
   {
     id: "food",
     name: "Food Scout",
-    description: "Look for places to eat nearby.",
-    intro: "Food Scout is not connected yet.",
-    unavailable: "Food Scout is not connected, so I can't look up restaurants.",
+    description: "Look up dishes and review a simulated order.",
+    intro: "Ask for a dish. The menu, cart, and checkout are simulated.",
+    unavailable: "",
     icon: UtensilsCrossed,
   },
   {
     id: "shop",
     name: "Shop Scout",
-    description: "Help with everyday shopping.",
-    intro: "Shop Scout is not connected yet.",
-    unavailable: "Shop Scout is not connected, so I can't look up stores or prices.",
+    description: "Look up Instamart items and review a simulated order.",
+    intro: "Ask for an Instamart item. The cart and checkout are simulated.",
+    unavailable: "",
     icon: ShoppingBag,
   },
   {
@@ -62,6 +62,14 @@ export const AGENTS: Agent[] = [
     unavailable: "Home Scout is not connected, so I can't take that on.",
     icon: House,
   },
+  {
+    id: "appointments",
+    name: "Appointments Scout",
+    description: "Request a simulated salon time.",
+    intro: "Ask for a salon service. The request stays pending until the salon answers, and this booking is simulated.",
+    unavailable: "",
+    icon: Scissors,
+  },
 ];
 
 export function agentById(id: AgentId): Agent {
@@ -71,7 +79,8 @@ export function agentById(id: AgentId): Agent {
     case "travel":
     case "food":
     case "shop":
-    case "home": {
+    case "home":
+    case "appointments": {
       const found = AGENTS.find((agent) => agent.id === id);
       if (!found) throw new Error("Missing specialist");
       return found;
