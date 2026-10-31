@@ -70,13 +70,12 @@ export function PairPanel() {
   return (
     <div className="pair">
       <p className="plain">
-        Every device is {SCOUT_USER}. A phone shows a code and can scan one. A laptop or PC only shows a code.
-        Sign-in from a scan is not connected.
+        Show this code on one device and scan it from another. Scanning does not sign you in yet.
       </p>
       <p className="plain">{deviceLine(device)}</p>
       <div className="pair-card">
-        {image ? <img src={image} width={220} height={220} alt={`Scout device code for ${SCOUT_USER}`} /> : <p className="plain">Preparing a device code.</p>}
-        {error ? <p className="plain">{error}</p> : null}
+        {image ? <img src={image} width={220} height={220} alt={`Scout device code for ${SCOUT_USER}`} /> : <p className="plain">Preparing a device code…</p>}
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
         {secondsLeft != null ? <p className="plain">{countdown(secondsLeft)}</p> : null}
       </div>
       {device === "phone" ? (
@@ -89,9 +88,9 @@ export function PairPanel() {
 function deviceLine(device: PairDevice): string {
   switch (device) {
     case "phone":
-      return "This phone can do both.";
+      return "This phone can show a code and scan one.";
     case "desk":
-      return "This computer only shows the code.";
+      return "This computer can show a code. Scan it with the Scout app on your phone.";
     default: {
       const neverDevice: never = device;
       return neverDevice;
@@ -100,8 +99,8 @@ function deviceLine(device: PairDevice): string {
 }
 
 function countdown(seconds: number): string {
-  if (seconds === 1) return "A new code replaces this one in 1 second.";
-  return `A new code replaces this one in ${seconds} seconds.`;
+  if (seconds === 1) return "New code in 1 second.";
+  return `New code in ${seconds} seconds.`;
 }
 
 function PairScanner({ onCode, note }: { onCode: (text: string) => void; note: string | null }) {
@@ -170,11 +169,11 @@ function PairScanner({ onCode, note }: { onCode: (text: string) => void; note: s
     <div className="pair-scan">
       <div className="pair-scan-view" id={regionId} />
       {running ? (
-        <button className="chip" type="button" onClick={() => void stop()}>Stop scanning</button>
+        <button className="ghost-button" type="button" onClick={() => void stop()}>Stop scanning</button>
       ) : (
-        <button className="chip" type="button" onClick={() => void start()}>Scan a code</button>
+        <button className="ghost-button" type="button" onClick={() => void start()}>Scan a code</button>
       )}
-      {cameraError ? <p className="plain">{cameraError}</p> : null}
+      {cameraError ? <p className="form-error" role="alert">{cameraError}</p> : null}
       {note ? <p className="plain">{note}</p> : null}
     </div>
   );

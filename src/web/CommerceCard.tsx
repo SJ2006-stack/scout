@@ -7,6 +7,7 @@ import {
   type QuoteSnapshot,
   type ReceiptSnapshot,
 } from "../shared/commerce.ts";
+import { paymentTarget, type PayLink } from "../shared/payLink.ts";
 
 export function CartCard({ cart }: { cart: CartSnapshot }) {
   return (
@@ -60,13 +61,52 @@ export function QuoteCard({
       {quote.domain === "order" ? <p><span>Delivery</span><span>{formatAmount(quote.deliveryFee)}</span></p> : null}
       <p><span>Total</span><span>{formatAmount(quote.total)}</span></p>
       {quote.total == null ? (
-        <p>The total is unknown, so this stays unpaid.</p>
+        <p className="review-note">The total is unknown, so this stays unpaid.</p>
       ) : (
-        <button type="button" disabled={busy} onClick={() => onConfirm(quote.id)}>Confirm review</button>
+        <button type="button" disabled={busy} onClick={() => onConfirm(quote.id)}>
+          {quote.domain === "order" ? "Confirm order" : "Confirm booking"}
+        </button>
       )}
       <p className="review-note">A chat reply is not a payment. Scout does not ask for a UPI PIN.</p>
     </article>
   );
+}
+
+export function PayCard({ pay }: { pay: PayLink }) {
+  const phone = hasPayBridge();
+  const deeplink = paymentTarget(pay.url) != null;
+  return (
+    <article className="review">
+      <header>
+        <strong>{pay.merchant}</strong>
+        <span>{pay.amount ?? "Amount on the pay screen"}</span>
+      </header>
+      <p>{pay.title}</p>
+      <button className="card-book" type="button" disabled={!phone && deeplink} onClick={() => openPayLink(pay)}>
+        {pay.source === "page" ? "Open pay page" : "Pay"}
+      </button>
+      {!phone && deeplink ? <p className="review-note">{pay.url}</p> : null}
+      <p className="review-note">Opens the UPI app on your phone. Scout does not ask for a UPI PIN.</p>
+    </article>
+  );
+}
+
+function hasPayBridge(): boolean {
+  return typeof window.ScoutPay?.open === "function";
+}
+
+declare global {
+  interface Window {
+    ScoutPay?: { open: (url: string) => void };
+  }
+}
+
+export function openPayLink(pay: PayLink): void {
+  if (window.ScoutPay) {
+    window.ScoutPay.open(pay.url);
+    return;
+  }
+  if (pay.url.startsWith("https://")) window.open(pay.url, "_blank", "noopener,noreferrer");
 }
 
 export function ReceiptCard({ receipt }: { receipt: ReceiptSnapshot }) {

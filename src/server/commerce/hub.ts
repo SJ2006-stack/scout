@@ -11,6 +11,7 @@ import {
   type QuoteSnapshot,
   type ReceiptSnapshot,
 } from "../../shared/commerce.ts";
+import { withEmoji } from "../../shared/emoji.ts";
 import {
   createMockSalon,
   readBookingPhrase,
@@ -541,7 +542,7 @@ function statusEvent(message: string): CommerceEvent {
 }
 
 function textEvent(message: string): CommerceEvent {
-  return { type: "text", message };
+  return { type: "text", message: withEmoji(message) };
 }
 
 function noteEvent(message: string): CommerceEvent {

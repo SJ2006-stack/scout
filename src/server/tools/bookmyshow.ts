@@ -1,11 +1,11 @@
 import type { EventKind, Listing, ListingPrice } from "../../shared/event.ts";
+import { listingsFromHtml } from "../events/htmlListings.ts";
 import { httpsUrl, isListingUrl, kindFromText, priceFromAmount, unknownPrice } from "../../shared/event.ts";
 import { calendarDates } from "../../shared/when.ts";
 import type { EventTool, ToolContext, ToolResult } from "./types.ts";
 
 const TOOL_ID = "tool_1528e3718e37c1b0489614053d3b4080";
 const RUN_URL = "https://api.pomerado.ai/v1/runs/read-only";
-const POMERADO_TIMEOUT_MS = 60_000;
 const PAGE_LIMIT = 8;
 
 export const bookMyShowTool: EventTool = {
@@ -44,9 +44,23 @@ async function loadKind(context: ToolContext, kind: "movies" | "events", date: s
   const cached = context.cache.get(key);
   if (cached) return { ok: true, listings: cached };
   const ran = await runSearch(context, kind, date);
-  if (!ran.ok) return { ok: false, message: ran.message, listings: [] };
+  if (!ran.ok) {
+    const page = await loadBookMyShowPage(context, ran.message);
+    if (page.ok) context.cache.set(key, page.listings);
+    return page;
+  }
   const listings = bookMyShowListings(ran.payload, context.retrievedAt, context.city.name);
   context.cache.set(key, listings);
+  return { ok: true, listings };
+}
+
+async function loadBookMyShowPage(context: ToolContext, failure: string): Promise<CallResult> {
+  if (!context.readPage) return { ok: false, message: failure, listings: [] };
+  const url = `https://in.bookmyshow.com/explore/home/${encodeURIComponent(context.city.bookMyShowCity)}`;
+  const read = await context.readPage(url);
+  if (!read.ok) return { ok: false, message: read.message, listings: [] };
+  const listings = listingsFromHtml(read.html, "BookMyShow", context.city.name, context.retrievedAt);
+  if (listings.length === 0) return { ok: false, message: failure, listings: [] };
   return { ok: true, listings };
 }
 
@@ -54,7 +68,7 @@ type RunResult = { ok: true; payload: unknown } | { ok: false; message: string }
 
 async function runSearch(context: ToolContext, kind: "movies" | "events", date: string): Promise<RunResult> {
   const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), POMERADO_TIMEOUT_MS);
+  const timer = setTimeout(() => timeout.abort(), context.timeoutMs);
   const signal = AbortSignal.any([context.signal, timeout.signal]);
   try {
     const response = await context.fetchImpl(RUN_URL, {
@@ -77,7 +91,7 @@ async function runSearch(context: ToolContext, kind: "movies" | "events", date: 
     });
     if (!response.ok) return { ok: false, message: `BookMyShow is unavailable. HTTP ${response.status}` };
     let job = (await response.json()) as unknown;
-    const deadline = Date.now() + POMERADO_TIMEOUT_MS;
+    const deadline = Date.now() + context.timeoutMs;
     while (isPending(job) && Date.now() < deadline) {
       await wait(2_000, signal);
       job = await readJob(jobId(job), context, signal);

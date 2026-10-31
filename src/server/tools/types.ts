@@ -16,6 +16,7 @@ export type ToolContext = {
   fetchImpl: typeof fetch;
   cache: ListingCache;
   pomeradoApiKey: string;
+  readPage?: (url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>;
 };
 
 export type ToolResult = {

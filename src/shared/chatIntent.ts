@@ -1,6 +1,6 @@
 import { cityFromText, type City } from "./cities.ts";
 import type { EventKind } from "./event.ts";
-import type { DatePhrase } from "./when.ts";
+import { whenInMessage, type WhenWindow } from "./when.ts";
 
 export type BudgetUpdate = { kind: "set"; amount: number } | { kind: "clear" } | { kind: "keep" };
 
@@ -10,19 +10,19 @@ export type ChatIntent = {
   city: City | null;
   namedUnsupportedPlace: boolean;
   budget: BudgetUpdate;
-  date: DatePhrase | null;
+  date: WhenWindow | null;
   kind: KindUpdate;
 };
 
 const PLACES = ["pune", "chennai", "kolkata", "ahmedabad", "jaipur", "goa", "kochi", "lucknow"];
 
-export function parseChatIntent(text: string): ChatIntent {
+export function parseChatIntent(text: string, nowMs = Date.now(), timeZone = "Asia/Kolkata"): ChatIntent {
   const value = text.toLowerCase();
   return {
     city: cityFromText(value),
     namedUnsupportedPlace: cityFromText(value) == null && PLACES.some((place) => value.includes(place)),
     budget: readBudget(value),
-    date: readDate(value),
+    date: whenInMessage(text, nowMs, timeZone),
     kind: readKind(value),
   };
 }
@@ -34,19 +34,6 @@ function readBudget(value: string): BudgetUpdate {
   const amount = Number(match[1].replaceAll(",", ""));
   if (!Number.isFinite(amount) || amount < 0) return { kind: "keep" };
   return { kind: "set", amount };
-}
-
-export function datePhraseInMessage(text: string): DatePhrase | null {
-  const value = text.toLowerCase();
-  if (/\btomorrow\b/.test(value)) return "tomorrow";
-  if (/\b(today|tonight)\b/.test(value)) return "today";
-  if (/\bweekend\b/.test(value)) return "weekend";
-  if (/\b(this week|next seven days|7 days)\b/.test(value)) return "week";
-  return null;
-}
-
-function readDate(value: string): DatePhrase | null {
-  return datePhraseInMessage(value);
 }
 
 function readKind(value: string): KindUpdate {

@@ -1,106 +1,147 @@
-# Grocery Scout
+# Scout
 
-Personal prototype. The home screen is an event chat for Luma and District. Grocery search remains available at `POST /api/search`. There is no checkout, account, or payment flow.
+Scout is a set of chat agents that find things and act on them for one person. Event Scout is the live one: it searches Luma, District, and BookMyShow, and can drive a real browser to register. Food, Shop, and Appointments run on a simulated commerce hub. Travel and Home are placeholders.
 
-## Event chat
+This folder is the server and the web app. The Android companion is in `../scout.apk`. See the workspace `../README.md` for the overview and the changelog.
 
-Ask for comedy, concerts, workshops, or movies in Bengaluru, Mumbai, Delhi, or Hyderabad. A missing city gets a question. A budget is optional. "Under 500" hides advertised prices above that amount, and keeps free events and events whose price was not on the page.
+## Agents
 
-When `ANTHROPIC_API_KEY` is set, Claude Haiku 5.5 (`claude-haiku-5-5`) talks with you and calls Luma, District, and BookMyShow. Leave it empty and Scout uses the keyword parser. Each search can use three tools: Luma, District, and BookMyShow. Luma comes from one plain request to its public discovery feed. District events and movies come from the public pages `https://www.district.in/events/` and `https://www.district.in/movies/`. BookMyShow uses Pomerado's read-only "Search movies and events" tool when `POMERADO_API_KEY` is set. A source that fails leaves the other cards on screen. Movie cards appear only when that page includes the movie's own link. Drive time appears only when `GOOGLE_MAPS_API_KEY` is set and Google returns a driving route.
+| Agent | Status | What it does |
+| --- | --- | --- |
+| Main | Router | Points you to the right agent |
+| Event | Live | Luma, District, BookMyShow search; browser-assisted registration |
+| Travel | Not connected | Talks through a trip. No live fares |
+| Food | Simulated | Looks up dishes on a simulated menu and reviews an order |
+| Shop | Simulated | Compares Blinkit, Zepto, Instamart, then hands a pay link to the phone |
+| Home | Not connected | Plans with you. No service attached |
+| Appointments | Simulated | Requests a simulated salon time |
 
-View on Luma, View on District, and View on BookMyShow open the listing. Scout does not sign in, choose seats, or pay. See `docs/stage2-booking.md` for the later booking limits.
+One codebase serves every agent. `SCOUT_AGENT` pins a process to one agent. Each agent has its own Azure host (`src/shared/hosts.ts`), and `GET /api/health` returns `{ ok: true, agent }`.
 
-The only live candidate, QuickCompare's public group search, was checked once from this machine and rejected. Scout does not invent live prices. Demo mode replays a fixed, labelled sample through the same chat.
+## How a chat turn works
 
-## Setup
+1. The web app posts to `POST /api/chat` and reads Server-Sent Events.
+2. With `ANTHROPIC_API_KEY` set, Claude Haiku 5.5 (`claude-haiku-5-5`) runs a tool loop of at most 4 rounds (`src/server/haikuChat.ts`). Event tools are Luma, District, and BookMyShow. Specialist agents use `compare_shops`, `shop_catalog`, `food_order`, and `salon_request` (`src/server/specialistChat.ts`). With no key, a keyword parser answers instead.
+3. The final text streams into the question bubble. The first sentence can start speech before the stream closes.
+4. A source that fails leaves the other cards on screen. Failures are never cached.
 
-Requires Node 22.6 or newer. This copy was run on Node 26.
+Event sources:
+
+- **Luma:** the public discovery feed.
+- **District:** the public events and movies pages.
+- **BookMyShow:** Pomerado's read-only "Search movies and events" tool, when `POMERADO_API_KEY` is set. It is capped by `CONNECTOR_TIMEOUT_MS` (8 s).
+- Movie cards appear only when the page carries the movie's own link. Drive time appears only when `GOOGLE_MAPS_API_KEY` is set.
+- Successful listings are cached for `LISTING_CACHE_TTL_MS` (10 minutes). Price checks use `CACHE_TTL_MS` (60 s).
+
+Cards open the listing. Scout does not pick seats or pay on Luma, District, or BookMyShow. See `docs/stage2-booking.md` for the booking limits.
+
+## Voice
+
+The mic button records a clip and posts it to `POST /api/voice/stt`, which calls Sarvam (`saaras:v4`) and returns text. `POST /api/voice/tts` speaks a reply with Sarvam (`bulbul:v3`). There is no realtime or WebSocket speech. It was removed on purpose, so `/api/voice/live` does not exist.
+
+- **Browser:** the web `MediaRecorder` posts the clip (`src/web/voice.ts`).
+- **Android app:** the web page calls `window.ScoutNative.request({ op: "microphone" })`. The app records with `MediaRecorder` and posts the clip to the same route.
+- With `SARVAM_API_KEY` empty, the mic stays quiet.
+
+## Browser worker
+
+A Playwright Chromium worker opens public https pages for registration and RSVP flows. It is off until `BROWSER_WORKER_ENABLED=1`.
+
+- Private, loopback, link-local, and metadata hosts are blocked, including after DNS lookup. `BROWSER_ALLOWED_HOSTS` limits the worker to listed hosts.
+- A host check that does not answer in 4 seconds counts as not public and is remembered, so one stalled DNS lookup cannot freeze a navigation.
+- One operation is capped by `BROWSER_OP_TIMEOUT_MS`. A timeout closes that session, records it, and logs to `console.error`.
+- Sign-in is saved as AES-256-GCM encrypted browser state, bound to the owner. It needs `BROWSER_PROFILE_KEY`.
+- A visible window handoff needs `BROWSER_HEADED=1` on a machine with a display. The Azure container stays headless.
+- One-time codes are typed into the code field and never written to the task log.
+
+Central browser (staging only, not deployed): `SCOUT_ROLE=browser` runs the one Chromium process. Site apps set `BROWSER_RUNTIME_URL` and `BROWSER_RUNTIME_KEY` and send each request with a short-lived signed ticket. Admission limits (`BROWSER_GLOBAL_LIMIT`, `BROWSER_USER_LIMIT`, `BROWSER_DOMAIN_LIMIT`, `BROWSER_RSS_CEILING_MB`) and `BROWSER_IDLE_MS` bound it. `GET /api/browser/budget` shows the planning estimate for six sites on one P1v3. These figures are estimates, not measurements. Full details are in `docs/browser-worker.md`.
+
+## Accounts and storage
+
+- Sign-in is by email code, sent from an AgentMail inbox (`AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`).
+- Users and their browser sessions live in SQLite (`SCOUT_DB_PATH`, default `.data/scout.sqlite`, `/home/data/scout.sqlite` on Azure).
+- Browser session status is also kept in `sessions.json` under `BROWSER_STATE_DIR`.
+- These are in memory and reset on restart: chat memory, saved addresses, rate limits, the commerce hub, payment approvals, and pair tickets.
+- Payments run through a gate with approvals, idempotency keys, and quote expiry, backed by a sandbox adapter. No real money moves.
+
+## API
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/health` | Liveness and the pinned agent |
+| `POST /api/chat` | Chat turn over SSE |
+| `POST /api/demo` | Replay the prepared sample |
+| `POST /api/search` | Grocery price search |
+| `POST /api/commerce`, `POST /api/pay` | Simulated food, shop, appointments, and payment |
+| `POST /api/voice/stt`, `POST /api/voice/tts` | Sarvam speech in and out |
+| `POST /api/ocr` | Read text from an attached image |
+| `/api/auth/*` | Email code sign-in and session |
+| `/api/onboarding/*` | Name and phone |
+| `/api/addresses`, `/api/location/reverse-geocode` | Saved addresses and address lookup |
+| `/api/browser/*` | Browser sessions, handoff, code, profile, budget |
+| `/api/desk`, `/api/pair` | Phone companion desk and pairing |
+| `/api/invite` | Sends the Android install invite through Firebase App Distribution |
+
+## Run it
+
+Requires Node 22.6 or newer.
 
 ```bash
 cd scout
 npm install
-npm test
-npm run dev
+cp .env.example .env   # fill in the keys you want
+npm run dev            # http://127.0.0.1:8787
+npm test               # node's test runner over test/*.test.ts
+npm run build          # Vite build into dist/
+npm start              # production server (src/server/prod.ts)
 ```
 
-Open http://127.0.0.1:8787.
+For the browser worker, also run `npx playwright-core install chromium`.
 
-Optional environment variables are listed in `.env.example`:
+Settings are listed with comments in `.env.example`. The main ones:
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `PORT` | `8787` | Local server port |
-| `CACHE_TTL_MS` | `60000` | How long a successful price stays cached |
-| `CONNECTOR_TIMEOUT_MS` | `8000` | Per-connector limit for a live search |
-| `DEMO_STEP_MS` | `400` | Pause between demo events |
-| `BROWSER_WORKER_ENABLED` | `0` | `1` turns on the Playwright browser worker |
-| `BROWSER_ALLOW_HOSTS` | empty | Hostnames the worker may open |
-| `BROWSER_OP_TIMEOUT_MS` | `15000` | Limit for one browser operation |
-| `BROWSER_SESSION_TTL_MS` | `900000` | How long a browser session stays open |
-| `BROWSER_MAX_SESSIONS` | `4` | Open browser sessions on this process |
+| Variable | Meaning |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Haiku chat. Empty uses the keyword parser |
+| `SARVAM_API_KEY` | Speech in and out |
+| `POMERADO_API_KEY` | BookMyShow listings |
+| `GOOGLE_MAPS_API_KEY` | Drive time and formatted addresses |
+| `SCOUT_AGENT` | Pins the process to one agent |
+| `SCOUT_ROLE` | `browser` runs the Chromium-only process |
+| `BROWSER_WORKER_ENABLED` | `1` starts the browser worker |
+| `BROWSER_PROFILE_KEY` | 64 hex characters for encrypted sign-in |
+| `AGENTMAIL_*` | Email sign-in codes |
+| `FIREBASE_DISTRIBUTION_*` | Android invite from the landing page |
 
-Copy `.env.example` to `.env` only if you want to change those values. The app has no secrets.
+Never commit `.env`, keys, or publish profiles.
 
-## What a search does
+## Deploy
 
-1. The request is parsed without a model. "1 litre" and "1 L" become 1000 ml. A 200 ml pack does not match a 1 L pack.
-2. Choose **Detect your location**. The browser asks for permission only after that click, then Scout turns that device point into an address. A VPN does not move this reading. Saved addresses belong to an anonymous browser session and are kept in memory until Scout restarts.
-3. Connectors run together. One timeout or failure still leaves the other connector's offers on screen. Stopping the request cancels work that has not emitted yet.
-4. Successful prices are cached for 60 seconds. The cache key is the source, the normalised query, the pack size, the pincode, and coordinates rounded to two decimal degrees. Failures, timeouts, and malformed payloads are not cached. An expired entry is a miss.
-5. Cards sort by ascending price. A discount is shown only when both MRP and price are numbers and MRP is higher. Every product link must be `https`.
+- Azure runs the `scout-site` container image from `sjscoutacr.azurecr.io`, which includes Chromium (`deploy/site.Dockerfile`). Six App Service apps share one P1v3: `sj-scout`, `sj-event-scout`, `sj-travel-scout`, `sj-food-scout`, `sj-shop-scout`, `sj-home-scout`. Appointments has a host name in code but no Azure site.
+- A zip deploy switches the apps back to the Node stack, which has no Chromium, so the browser worker cannot start. Do not zip deploy.
+- `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the container image is manual.
+- `deploy/browser-worker.Dockerfile` is the Chromium-only process. It refuses to start without `BROWSER_PROFILE_KEY` and `BROWSER_ALLOWED_HOSTS`.
+- Always On and the `/api/health` check are set on the six apps.
+- Public page: `https://scout.shrianshjaiswal.me`.
 
-Provenance on a card is one of `Live`, `Cached`, or `Demonstration data`.
+## Layout
 
-## Address lookup
+```
+src/server/        API, chat loops, tools, browser worker, commerce, payments, auth, voice
+src/server/browser/  Playwright driver, policy, worker, store, budget, runtime tickets
+src/shared/        Types and rules used by server and web
+src/web/           React 19 app: App.tsx (state and chat), Sidebar, Welcome, Composer, EventCard, CommerceCard, SettingsPanel, PairPanel, BrowserTasks, SignIn, app.css
+test/              Node test files
+deploy/            Site and browser-worker Dockerfiles
+docs/              Browser worker and booking notes
+scout-landing/     Public landing page
+```
 
-The page asks the browser for this device's location, then the server reverse-geocodes that point. Set `GOOGLE_MAPS_API_KEY` to use Google's formatted address. Leave it empty and Scout uses ArcGIS instead. The key stays on the server. A successful lookup for the same coordinate is remembered for one minute.
+## Known limits
 
-There is no user account and no database. `GET` and `POST /api/addresses` store addresses for the `scout_session` cookie issued by the server. A caller cannot supply a user id, and one session cannot read another session's addresses. Restarting the process drops them. Do not put a secret in `NOMINATIM_USER_AGENT`.
-
-## Live source check
-
-One plain GET, with `Accept: application/json`, a 10 second timeout, and no stealth headers:
-
-`GET https://api.quickcompare.in/qc?type=groupsearch&query=milk&pincode=110054`
-
-The response was HTTP 401 in 2787 ms: "Security validation failed: missing encrypted request id." That was the one allowed attempt. It was not retried with a browser, a different header set, or a TLS impersonation client.
-
-No direct store connector was added. The store clients in the reference projects depend on browser automation or TLS impersonation, and those were out of scope. `src/server/index.ts` keeps the live connector list empty. A live search returns the unavailable message, zero offers, and a link to Blinkit's own search page for the same query. Scout does not request Blinkit.
-
-The recorded result lives in `src/shared/liveCheck.ts`.
-
-## Demo mode
-
-Replay demo uses the prepared request "Find Amul Taaza milk, 1 litre, near my delivery location." The area label is "Demonstration area, pincode 110001". It is sample data, not your address.
-
-Two fixture connectors run: Demo Mart returns two sample offers, and Demo Corner reports a typed failure. Links point at `https://example.com/scout-demo/...` so link handling can be checked. They are not store pages. Replay clears the transcript and streams the same sequence again. It does not call the network.
-
-## Measured timings
-
-These numbers are from the first working end-to-end demo replay with `DEMO_STEP_MS=400`. They are observations. This prototype does not set a latency target.
-
-The `done` event reports the fixture clock: first useful offer at 400 ms, completion at 1200 ms, 2 offers. That clock is fixed so tests can compare replays.
-
-A POST to `/api/demo` on this machine, with the default 400 ms step, received the first offer event at about 869 ms and finished the stream at about 2478 ms. Two status events are emitted before the first offer, so the wall clock is longer than the fixture clock.
-
-A live search with no connector connected finished on this machine with `totalMs` of 1, returned no offers, and included a Blinkit search link.
-
-## Manual check
-
-After `npm test` and `npm run dev`:
-
-1. Choose Replay demo. Confirm the transcript shows "Demonstration data", two sample prices, the Demo Corner failure, and example.com links. Replay again and confirm the same sequence replaces the transcript.
-2. Choose Enter an address manually, add a 6-digit postal code, and choose Use this address. The note should name the pincode and say the area is approximate. Or choose Use my current location, check the suggested fields, and only then use the address.
-3. Choose Search. The page should show the unavailable live-source message and no sample prices. A dead connector should leave that message visible rather than clearing the page.
-
-## Browser worker
-
-The Tasks screen can start an isolated browser session and show its status. The worker stays off until `BROWSER_WORKER_ENABLED=1`, and it only opens https hosts listed in `BROWSER_ALLOW_HOSTS`. Cookies stay in the browser process and are not written to the task log. Local Chromium setup, timeouts, and the Azure deploy notes are in `docs/browser-worker.md`.
-
-## Limits
-
-- Prices in demo mode are samples. Live mode opens a Blinkit search link and does not return a price.
-- The price cache is in memory and lasts 60 seconds. Restarting the server drops it.
-- A saved address is for this browser session only. There is no account, and restarting Scout clears it. The detected line is the address for the browser's point, and another geocoder can name the same building differently.
-- Scout does not place an order.
-- The QuickCompare endpoint is unofficial. A browser capture of it is not a feed this server is allowed to keep calling after a 401.
+- Travel and Home are not connected. Food, Shop, and Appointments are simulated.
+- Scout does not book or pay on Luma, District, or BookMyShow.
+- State listed under "Accounts and storage" as in memory is lost on restart, and the server cannot run as more than one instance.
+- Browser operations run one at a time per process.
+- The central browser layout is a design with planning estimates. It is not deployed or measured.
+- Shop price data is simulated. The only live grocery candidate (QuickCompare) returned HTTP 401 and was not retried. The record is in `src/shared/liveCheck.ts`.

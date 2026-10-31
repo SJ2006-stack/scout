@@ -36,9 +36,9 @@ async function loadEvents(context: ToolContext): Promise<Part> {
   const key = `district-events|${context.city.id}`;
   const cached = context.cache.get(key);
   if (cached) return { ok: true, message: "Cached District events.", listings: cached };
-  const response = await plainGet("https://www.district.in/events/", "text/html", context.timeoutMs, context.signal, context.fetchImpl);
-  if (!response.ok) return { ok: false, message: `District events are unavailable. ${response.message}`, listings: [] };
-  const listings = districtEvents(response.body, context.city, context.retrievedAt);
+  const page = await districtPage(context, "https://www.district.in/events/");
+  if (!page.ok) return { ok: false, message: `District events are unavailable. ${page.message}`, listings: [] };
+  const listings = districtEvents(page.body, context.city, context.retrievedAt);
   context.cache.set(key, listings);
   return { ok: true, message: "District events loaded.", listings };
 }
@@ -47,9 +47,17 @@ async function loadMovies(context: ToolContext): Promise<Part> {
   const key = "district-movies";
   const cached = context.cache.get(key);
   if (cached) return { ok: true, message: "Cached District movies.", listings: cached };
-  const response = await plainGet("https://www.district.in/movies/", "text/html", context.timeoutMs, context.signal, context.fetchImpl);
-  if (!response.ok) return { ok: false, message: `District movies are unavailable. ${response.message}`, listings: [] };
-  const listings = districtMovies(response.body, context.retrievedAt);
+  const page = await districtPage(context, "https://www.district.in/movies/");
+  if (!page.ok) return { ok: false, message: `District movies are unavailable. ${page.message}`, listings: [] };
+  const listings = districtMovies(page.body, context.retrievedAt);
   context.cache.set(key, listings);
   return { ok: true, message: "District movies loaded.", listings };
+}
+
+async function districtPage(context: ToolContext, url: string): Promise<{ ok: true; body: string } | { ok: false; message: string }> {
+  const response = await plainGet(url, "text/html", context.timeoutMs, context.signal, context.fetchImpl);
+  if (response.ok || response.message !== "HTTP 403" || !context.readPage) return response;
+  const read = await context.readPage(url);
+  if (!read.ok) return { ok: false, message: read.message };
+  return { ok: true, body: read.html };
 }

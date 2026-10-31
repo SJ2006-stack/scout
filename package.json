@@ -11,17 +11,23 @@
   },
   "dependencies": {
     "html5-qrcode": "^2.3.8",
+    "jsqr": "^1.4.0",
     "lucide-react": "^1.61.0",
     "playwright-core": "^1.64.1",
+    "pngjs": "^7.0.0",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "sarvamai": "^1.1.14",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "@types/pngjs": "^6.0.5",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^4.4.1",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"

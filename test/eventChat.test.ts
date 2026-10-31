@@ -254,6 +254,17 @@ describe("event listings", () => {
     assert.equal(dayRange("2026-02-31", "Asia/Kolkata"), null);
     assert.equal(parseChatIntent("okay, what's happening tomorrow in delhi").date, "tomorrow");
     assert.equal(parseChatIntent("this week in delhi").date, "week");
+    const thirtyFirst = Date.parse("2026-10-29T06:30:00.000Z");
+    assert.equal(parseChatIntent("what's happening on the 31st in delhi", thirtyFirst, "Asia/Kolkata").date, "2026-10-31");
+    assert.equal(parseChatIntent("shows on 31 October in delhi", thirtyFirst, "Asia/Kolkata").date, "2026-10-31");
+    assert.equal(parseChatIntent("friday night in delhi", thirtyFirst, "Asia/Kolkata").date, "2026-10-30");
+    const hindi = parseChatIntent("दिल्ली में 31 तारीख को क्या हो रहा है", thirtyFirst, "Asia/Kolkata");
+    assert.equal(hindi.city?.id, "delhi");
+    assert.equal(hindi.date, "2026-10-31");
+    assert.equal(parseChatIntent("मुंबई में कल क्या है", thirtyFirst, "Asia/Kolkata").date, "tomorrow");
+    const named = dateRange("2026-10-31", thirtyFirst, "Asia/Kolkata");
+    assert.equal(calendarDate(named.startMs, "Asia/Kolkata"), "2026-10-31");
+    assert.equal(new Date(named.endMs - 1).toISOString() > new Date(named.startMs).toISOString(), true);
   });
 
   it("remembers the city for a later budget", async () => {
@@ -325,7 +336,7 @@ describe("event listings", () => {
     assert.equal(events.some((event) => event.type === "card" && event.listing.title === "Roast Tank"), true);
     assert.equal(events.some((event) => event.type === "source" && event.source === "BookMyShow"), true);
     const names = bodies[0]?.tools?.map((tool) => tool.name);
-    assert.deepEqual(names, ["search_luma", "search_district", "search_bookmyshow"]);
+    assert.deepEqual(names, ["search_luma", "search_district", "search_bookmyshow", "open_event", "register_event", "phone_action"]);
     assert.equal(bodies[0]?.model, HAIKU_MODEL);
     assert.equal(bodies[0]?.temperature, undefined);
     assert.equal(bodies[0]?.thinking?.type, "disabled");
@@ -417,9 +428,10 @@ describe("event listings", () => {
     }
     assert.match(bodies[0]?.system ?? "", /2026-10-27/);
     assert.match(bodies[0]?.system ?? "", /Asia\/Kolkata/);
-    assert.match(bodies[0]?.system ?? "", /Do not use week for tomorrow/);
-    assert.match(bodies[0]?.tools?.[0]?.description ?? "", /Do not use week for tomorrow/);
-    assert.deepEqual(bodies[0]?.tools?.[0]?.input_schema?.properties?.when?.enum, ["today", "tomorrow", "weekend", "week"]);
+    assert.match(bodies[0]?.system ?? "", /Do not use week for one day/);
+    assert.match(bodies[0]?.system ?? "", /Reply in the language of their latest message/);
+    assert.match(bodies[0]?.tools?.[0]?.description ?? "", /YYYY-MM-DD/);
+    assert.equal(bodies[0]?.tools?.[0]?.input_schema?.properties?.when?.enum, undefined);
   });
 
   it("asks through the chat route when the city is missing", async () => {

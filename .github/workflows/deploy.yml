@@ -1,5 +1,9 @@
 name: Deploy Scout
 
+# Azure runs sjscoutacr.azurecr.io/scout-site:latest (Chromium is in that image).
+# A zip deploy switches the sites back to NODE|22-lts and the browser worker cannot start.
+# This workflow only checks the build. Container updates stay manual until this file is pushed.
+
 on:
   push:
     branches: [main]
@@ -29,33 +33,3 @@ jobs:
           name: publish
           path: publish
           if-no-files-found: error
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - app: sj-event-scout
-            secret: AZURE_WEBAPP_PUBLISH_PROFILE
-          - app: sj-scout
-            secret: AZURE_WEBAPP_PUBLISH_PROFILE_MAIN
-          - app: sj-travel-scout
-            secret: AZURE_WEBAPP_PUBLISH_PROFILE_TRAVEL
-          - app: sj-food-scout
-            secret: AZURE_WEBAPP_PUBLISH_PROFILE_FOOD
-          - app: sj-shop-scout
-            secret: AZURE_WEBAPP_PUBLISH_PROFILE_SHOP
-          - app: sj-home-scout
-            secret: AZURE_WEBAPP_PUBLISH_PROFILE_HOME
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: publish
-          path: publish
-      - uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ matrix.app }}
-          publish-profile: ${{ secrets[matrix.secret] }}
-          package: publish

@@ -247,12 +247,12 @@ describe("appointments mock", () => {
 describe("commerce routes and saved chats", () => {
   it("sends event chat only to /api/chat", () => {
     assert.equal(agentEndpoint("event"), "/api/chat");
-    assert.equal(agentEndpoint("shop"), "/api/commerce");
-    assert.equal(agentEndpoint("food"), "/api/commerce");
-    assert.equal(agentEndpoint("appointments"), "/api/commerce");
-    assert.equal(agentEndpoint("travel"), null);
-    assert.equal(agentEndpoint("main"), null);
-    assert.equal(agentEndpoint("home"), null);
+    assert.equal(agentEndpoint("shop"), "/api/chat");
+    assert.equal(agentEndpoint("food"), "/api/chat");
+    assert.equal(agentEndpoint("appointments"), "/api/chat");
+    assert.equal(agentEndpoint("travel"), "/api/chat");
+    assert.equal(agentEndpoint("main"), "/api/chat");
+    assert.equal(agentEndpoint("home"), "/api/chat");
     assert.equal(hostFor("appointments"), "https://sj-appointments-scout.azurewebsites.net");
     assert.equal(agentFromHostname("appointments-scout.example.com"), "appointments");
     assert.equal(scoutAgent("appointments"), "appointments");

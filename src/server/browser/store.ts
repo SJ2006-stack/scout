@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { BrowserSessionStatus, BrowserTaskEvent, BrowserTaskStatus } from "../../shared/browser.ts";
+import type { UserDirectory } from "../db/userDirectory.ts";
 
 export type StoredTask = {
   id: string;
@@ -40,9 +41,11 @@ const SECRET_KEY = /cookie|storageState|password|authorization|otp|cardNumber|cv
 
 export class BrowserStore {
   private readonly file: string;
+  private readonly directory: UserDirectory | null;
 
-  constructor(file: string) {
+  constructor(file: string, directory: UserDirectory | null = null) {
     this.file = file;
+    this.directory = directory;
   }
 
   task(id: string): StoredTask | null {
@@ -168,6 +171,11 @@ export class BrowserStore {
     const tmp = `${this.file}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(data));
     renameSync(tmp, this.file);
+    try {
+      this.directory?.record(data.sessions);
+    } catch {
+      console.error("User directory could not store the browser session.");
+    }
   }
 }
 

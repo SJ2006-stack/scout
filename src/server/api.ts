@@ -1,4 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseAddressDraft } from "../shared/address.ts";
 import type { DeliveryArea } from "../shared/offer.ts";
 import { AddressBook } from "./addressBook.ts";
@@ -13,12 +16,34 @@ import { RateLimit } from "./rateLimit.ts";
 import { runSearch } from "./search.ts";
 import { applyCors } from "./cors.ts";
 import { healthPayload } from "./health.ts";
-import { routeBrowser } from "./browser/routes.ts";
+import { browserRuntimeMaySkipSignIn, routeBrowser } from "./browser/routes.ts";
+import type { BrowserRuntimeConfig } from "./browser/runtimeTicket.ts";
 import type { BrowserWorker } from "./browser/worker.ts";
+import type { EmailAuth } from "./auth/emailAuth.ts";
 import { CommerceHub, createCommerceHub, type CommerceRequest } from "./commerce/hub.ts";
+import { isAgentId } from "../shared/hosts.ts";
+import { isLiveShopQuery, parsePayRequest, runListingPay, runShopSearch } from "./shopRun.ts";
+import { listingPlatform } from "./events/pageText.ts";
+import { DeskStore } from "./desk.ts";
+import type { UserDirectory } from "./db/userDirectory.ts";
 import { PairTickets } from "./pairTickets.ts";
-import { sessionId } from "./session.ts";
+import { indianMobile, preferredName } from "../shared/onboarding.ts";
+import { ocrResponse } from "./ocr.ts";
+import { OCR_BYTES } from "../shared/ocr.ts";
+import { voiceResponse } from "./voice/sarvam.ts";
+import type { AppInvite } from "./invites/appRelease.ts";
+import { clearSessionCookie, currentSessionId, sessionId, setSessionCookie } from "./session.ts";
 import { writeEvents } from "./sseWriter.ts";
+import { isAssistantRoute, routeAssistant } from "./assistantRoutes.ts";
+import type { InboxStore } from "./notify/inbox.ts";
+import type { ProfileStore } from "./profile/profileStore.ts";
+import type { WatchRunner } from "./watch/watchRunner.ts";
+import type { WatchStore } from "./watch/watchStore.ts";
+import type { ChatTurn } from "./chatRun.ts";
+import type { AgentId } from "../shared/hosts.ts";
+import type { BolnaConfig } from "./voice/bolna.ts";
+import { isBolnaLlmRoute, routeBolnaLlm, routeBolnaSession, routeVoiceLive, type TurnBuilder } from "./voice/bolnaRoutes.ts";
+import type { LiveRelay } from "./voice/liveRelay.ts";
 
 export type ApiDeps = {
   liveConnectors: Connector[];
@@ -38,6 +63,18 @@ export type ApiDeps = {
   commerce?: CommerceHub;
   pairTickets?: PairTickets;
   browser?: BrowserWorker;
+  browserRuntime?: BrowserRuntimeConfig;
+  desk?: DeskStore;
+  directory?: UserDirectory;
+  auth?: EmailAuth;
+  invite?: AppInvite;
+  sarvamApiKey?: string;
+  profile?: ProfileStore;
+  watches?: WatchStore;
+  watchRunner?: WatchRunner;
+  inbox?: InboxStore;
+  bolna?: BolnaConfig | null;
+  liveRelay?: LiveRelay;
 };
 
 export function createApiServer(deps: ApiDeps): Server {
@@ -79,6 +116,52 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     sendJson(response, 200, healthPayload());
     return;
   }
+  if (url.pathname.startsWith("/api/auth/")) {
+    await routeSignIn(request, response, url, deps);
+    return;
+  }
+  if (isBolnaLlmRoute(url.pathname)) {
+    await routeBolnaLlm(request, response, url, deps, voiceTurn(deps));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/invite") {
+    await routeInvite(request, response, deps);
+    return;
+  }
+  if (deps.auth && !browserRuntimeMaySkipSignIn(request, url.pathname, deps.browser) && !deps.auth.account(currentSessionId(request))) {
+    sendJson(response, 401, { error: "Sign in with the code from your email." });
+    return;
+  }
+  if (url.pathname === "/api/onboarding/phone" || url.pathname === "/api/onboarding/name") {
+    await routeOnboarding(request, response, url, deps);
+    return;
+  }
+  if (url.pathname === "/api/voice/stt" || url.pathname === "/api/voice/tts") {
+    const raw = await readBytes(request, 4_000_000);
+    if (!raw.ok) {
+      sendJson(response, 400, { error: raw.error });
+      return;
+    }
+    const result = await voiceResponse(
+      request.method ?? "GET",
+      url.pathname,
+      raw.bytes,
+      request.headers["content-type"] ?? "",
+      deps,
+    );
+    if (result) sendJson(response, result.status, result.body);
+    return;
+  }
+  if (url.pathname === "/api/ocr") {
+    const raw = await readBytes(request, OCR_BYTES);
+    if (!raw.ok) {
+      sendJson(response, 400, { error: raw.error });
+      return;
+    }
+    const result = await ocrResponse(request.method ?? "GET", raw.bytes, request.headers["content-type"] ?? "", deps);
+    sendJson(response, result.status, result.body);
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/pair") {
     const ticket = currentPairTicket(deps);
     const secondsLeft = Math.max(0, Math.ceil((ticket.expiresAt - deps.now()) / 1000));
@@ -102,32 +185,29 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
       return;
     }
     const owner = sessionId(request, response);
+    deps.directory?.touch(owner, deps.now());
     await writeEvents(response, (emit, signal) =>
       runChat(
-        {
-          sessionId: owner,
-          text: parsed.text,
-          timezone: parsed.timezone,
-          pincode: parsed.pincode,
-          lat: parsed.lat,
-          lon: parsed.lon,
-          timeoutMs: deps.timeoutMs,
-          signal,
-          now: deps.now,
-          memory: deps.chatMemory ?? new ChatMemoryStore(),
-          cache: deps.listingCache ?? new ListingCache(60_000, deps.now),
-          fetchImpl: deps.fetchImpl ?? fetch,
-          mapsApiKey: deps.mapsApiKey ?? "",
-          pomeradoApiKey: deps.pomeradoApiKey ?? "",
-          anthropicApiKey: deps.anthropicApiKey ?? "",
-        },
+        chatTurn(deps, owner, { ...parsed, agent: parsed.agent ?? "event" }, signal),
         emit,
       ),
     );
     return;
   }
+  if (request.method === "POST" && url.pathname === "/api/voice/bolna/session") {
+    await routeBolnaSession(request, response, sessionId(request, response), deps);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/voice/live") {
+    await routeVoiceLive(request, response, sessionId(request, response), deps);
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/commerce") {
     await commerceTurn(request, response, deps);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/pay") {
+    await payTurn(request, response, deps);
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/search") {
@@ -161,6 +241,14 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     await reverseGeocode(request, response, deps);
     return;
   }
+  if (url.pathname === "/api/desk" && (request.method === "GET" || request.method === "PUT")) {
+    await deskRoute(request, response, deps);
+    return;
+  }
+  if (isAssistantRoute(url.pathname)) {
+    await routeAssistant(request, response, url, sessionId(request, response), deps);
+    return;
+  }
   if (url.pathname === "/api/browser" || url.pathname.startsWith("/api/browser/")) {
     await routeBrowser(request, response, url, deps);
     return;
@@ -171,6 +259,212 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     return;
   }
   sendJson(response, 404, { error: "Not found" });
+}
+
+type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null };
+
+function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortSignal): ChatTurn {
+  if (!deps.commerce) deps.commerce = createCommerceHub(deps.now);
+  const browser = deps.browser;
+  return {
+    sessionId: owner,
+    text: input.text,
+    timezone: input.timezone,
+    pincode: input.pincode,
+    lat: input.lat,
+    lon: input.lon,
+    timeoutMs: deps.timeoutMs,
+    signal,
+    now: deps.now,
+    memory: deps.chatMemory ?? new ChatMemoryStore(),
+    cache: deps.listingCache ?? new ListingCache(60_000, deps.now),
+    fetchImpl: deps.fetchImpl ?? fetch,
+    mapsApiKey: deps.mapsApiKey ?? "",
+    pomeradoApiKey: deps.pomeradoApiKey ?? "",
+    anthropicApiKey: deps.anthropicApiKey ?? "",
+    agent: input.agent,
+    commerce: deps.commerce,
+    ...(deps.profile ? { profile: deps.profile } : {}),
+    ...(deps.watches ? { watches: deps.watches } : {}),
+    compareShop: browser ? (query, shopSignal, onStatus) => browser.compareShop(query, shopSignal, owner, onStatus) : undefined,
+    readPage: browser ? (url) => browser.readHtml(url, signal, owner) : undefined,
+    registerPage: browser
+      ? (url, title) => {
+          const merchant = listingPlatform(url);
+          if (!merchant) return Promise.resolve(null);
+          return browser.collectPay(url, title, merchant, signal, owner);
+        }
+      : undefined,
+  };
+}
+
+function voiceTurn(deps: ApiDeps): TurnBuilder {
+  return (userId, agent, text, signal) =>
+    chatTurn(deps, userId, { text, agent, timezone: "Asia/Kolkata", pincode: "", lat: null, lon: null }, signal);
+}
+
+async function routeInvite(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
+  const invite = deps.invite;
+  if (!invite?.configured) {
+    await drain(request);
+    sendJson(response, 503, { error: "The install link is not connected." });
+    return;
+  }
+  const body = await readJson(request, "Send an email address.");
+  if (!body.ok) {
+    sendJson(response, 400, { error: body.error });
+    return;
+  }
+  const record = body.value && typeof body.value === "object" ? body.value as Record<string, unknown> : {};
+  const email = typeof record.email === "string" ? record.email : "";
+  const result = await invite.send(email);
+  if (!result.ok) {
+    sendJson(response, result.status, { error: result.error });
+    return;
+  }
+  sendJson(response, 200, { sent: true });
+}
+
+async function routeSignIn(request: IncomingMessage, response: ServerResponse, url: URL, deps: ApiDeps): Promise<void> {
+  const auth = deps.auth;
+  if (!auth) {
+    sendJson(response, 503, { error: "Email sign-in is not connected." });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/auth/session") {
+    const account = auth.account(currentSessionId(request));
+    sendJson(response, 200, account
+      ? { signedIn: true, email: account.email, userId: account.id, phone: account.phone, name: account.name }
+      : { signedIn: false });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/auth/signout") {
+    await drain(request);
+    clearSessionCookie(response);
+    sendJson(response, 200, { signedIn: false });
+    return;
+  }
+  if (request.method !== "POST") {
+    sendJson(response, 404, { error: "Not found" });
+    return;
+  }
+  const body = await readJson(request);
+  if (!body.ok) {
+    sendJson(response, 400, { error: body.error });
+    return;
+  }
+  const record = body.value && typeof body.value === "object" ? body.value as Record<string, unknown> : {};
+  const email = typeof record.email === "string" ? record.email : "";
+  if (url.pathname === "/api/auth/email") {
+    const result = await auth.requestCode(email);
+    if (!result.ok) {
+      sendJson(response, result.status, { error: result.error });
+      return;
+    }
+    sendJson(response, 200, { sent: true });
+    return;
+  }
+  if (url.pathname === "/api/auth/verify") {
+    const code = typeof record.code === "string" ? record.code : "";
+    const result = auth.verify(email, code);
+    if (!result.ok || result.kind !== "session") {
+      sendJson(response, result.ok ? 400 : result.status, { error: result.ok ? "Enter the 6-digit code from your email." : result.error });
+      return;
+    }
+    setSessionCookie(response, result.userId);
+    sendJson(response, 200, { signedIn: true, email: result.email, userId: result.userId });
+    return;
+  }
+  sendJson(response, 404, { error: "Not found" });
+}
+
+async function routeOnboarding(request: IncomingMessage, response: ServerResponse, url: URL, deps: ApiDeps): Promise<void> {
+  if (request.method !== "POST") {
+    sendJson(response, 404, { error: "Not found" });
+    return;
+  }
+  const auth = deps.auth;
+  const directory = deps.directory;
+  if (!auth || !directory) {
+    sendJson(response, 503, { error: "Sign-in is not connected." });
+    return;
+  }
+  const account = auth.account(currentSessionId(request));
+  if (!account) {
+    sendJson(response, 401, { error: "Sign in with the code from your email." });
+    return;
+  }
+  const body = await readJson(request);
+  if (!body.ok) {
+    sendJson(response, 400, { error: body.error });
+    return;
+  }
+  const record = body.value && typeof body.value === "object" ? body.value as Record<string, unknown> : {};
+  if (url.pathname === "/api/onboarding/phone") {
+    const phone = indianMobile(typeof record.phone === "string" ? record.phone : "");
+    if (!phone) {
+      sendJson(response, 400, { error: "Enter an Indian mobile number." });
+      return;
+    }
+    if (!directory.setPhone(account.id, phone, deps.now())) {
+      sendJson(response, 400, { error: "Sign in with Gmail before adding a phone number." });
+      return;
+    }
+    sendJson(response, 200, { phone });
+    return;
+  }
+  if (account.phone == null) {
+    sendJson(response, 400, { error: "Add an Indian mobile number first." });
+    return;
+  }
+  const name = preferredName(typeof record.name === "string" ? record.name : "");
+  if (!name) {
+    sendJson(response, 400, { error: "Enter the name Scout should use." });
+    return;
+  }
+  if (!directory.setName(account.id, name, deps.now())) {
+    sendJson(response, 400, { error: "Add an Indian mobile number first." });
+    return;
+  }
+  sendJson(response, 200, { name });
+}
+
+async function deskRoute(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
+  const desk = deps.desk ?? new DeskStore(join(tmpdir(), `scout-desk-${randomBytes(8).toString("hex")}.json`));
+  if (!deps.desk) deps.desk = desk;
+  if (request.method === "GET") {
+    sendJson(response, 200, { conversations: desk.read() });
+    return;
+  }
+  const body = await readDeskBody(request);
+  if (!body.ok) {
+    sendJson(response, 400, { error: body.error });
+    return;
+  }
+  const saved = desk.write(body.value);
+  if (saved == null) {
+    sendJson(response, 400, { error: "Send the conversation list." });
+    return;
+  }
+  sendJson(response, 200, { conversations: saved });
+}
+
+async function readDeskBody(request: IncomingMessage): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 2_000_000) return { ok: false, error: "That desk is too large." };
+    chunks.push(buffer);
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (text.trim().length === 0) return { ok: false, error: "Send the conversation list." };
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false, error: "Request was not valid JSON." };
+  }
 }
 
 function currentPairTicket(deps: ApiDeps) {
@@ -185,16 +479,18 @@ function parseChatRequest(value: unknown): {
   pincode: string;
   lat: number | null;
   lon: number | null;
+  agent: "main" | "event" | "travel" | "food" | "shop" | "home" | "appointments";
 } | { ok: false; error: string } {
   if (!value || typeof value !== "object") return { ok: false, error: "Send a message." };
   const body = value as Record<string, unknown>;
   if (typeof body.text !== "string" || body.text.trim().length === 0) return { ok: false, error: "Tell Scout what you want to find." };
+  if (body.agent != null && !isAgentId(body.agent)) return { ok: false, error: "That scout is not available." };
   const timezone = typeof body.timezone === "string" && body.timezone.trim().length > 0 ? body.timezone.trim() : "Asia/Kolkata";
   const pincode = typeof body.pincode === "string" && /^\d{6}$/.test(body.pincode) ? body.pincode : "";
   const lat = readOptionalCoord(body.lat, -90, 90);
   const lon = readOptionalCoord(body.lon, -180, 180);
   if (lat === "bad" || lon === "bad") return { ok: false, error: "Coordinates are not a valid point." };
-  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon };
+  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon, agent: isAgentId(body.agent) ? body.agent : "event" };
 }
 
 function readOptionalCoord(value: unknown, min: number, max: number): number | null | "bad" {
@@ -274,13 +570,40 @@ async function commerceTurn(request: IncomingMessage, response: ServerResponse, 
     return;
   }
   const owner = sessionId(request, response);
+  deps.directory?.touch(owner, deps.now());
   const hub = deps.commerce ?? createCommerceHub(deps.now);
   deps.commerce = hub;
   const commerceRequest: CommerceRequest = parsed.action === "confirm"
     ? { sessionId: owner, agent: parsed.agent, action: "confirm", quoteId: parsed.quoteId }
     : { sessionId: owner, agent: parsed.agent, action: "message", text: parsed.text };
-  await writeEvents(response, async (emit) => {
+  await writeEvents(response, async (emit, signal) => {
+    if (commerceRequest.action === "message" && commerceRequest.agent === "shop" && deps.browser && isLiveShopQuery(commerceRequest.text)) {
+      await runShopSearch(deps.browser, commerceRequest.text, emit, signal, owner);
+      return;
+    }
     for (const event of hub.handle(commerceRequest)) emit(event);
+  });
+}
+
+async function payTurn(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
+  const body = await readJson(request, "Send the listing to book.");
+  if (!body.ok) {
+    sendJson(response, 400, { error: body.error });
+    return;
+  }
+  const parsed = parsePayRequest(body.value);
+  if (!parsed.ok) {
+    sendJson(response, 400, { error: parsed.error });
+    return;
+  }
+  if (!deps.browser) {
+    sendJson(response, 503, { error: "Browser worker is not enabled on this server." });
+    return;
+  }
+  const worker = deps.browser;
+  const owner = sessionId(request, response);
+  await writeEvents(response, async (emit, signal) => {
+    await runListingPay(worker, parsed.url, parsed.title, emit, signal, owner);
   });
 }
 
@@ -316,6 +639,21 @@ function parseCommerceRequest(value: unknown): {
 
 async function drain(request: IncomingMessage): Promise<void> {
   for await (const chunk of request) void chunk;
+}
+
+async function readBytes(
+  request: IncomingMessage,
+  limit: number,
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; error: string }> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > limit) return { ok: false, error: "Request is too large." };
+    chunks.push(buffer);
+  }
+  return { ok: true, bytes: new Uint8Array(Buffer.concat(chunks)) };
 }
 
 async function readJson(
@@ -383,6 +721,7 @@ async function savedAddresses(
 ): Promise<void> {
   const book = deps.addressBook ?? new AddressBook(deps.now);
   const owner = sessionId(request, response);
+  deps.directory?.touch(owner, deps.now());
   if (request.method === "GET" && id == null) {
     sendJson(response, 200, { addresses: book.list(owner) });
     return;

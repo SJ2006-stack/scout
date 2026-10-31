@@ -8,10 +8,10 @@ export type City = {
 };
 
 export const CITIES: City[] = [
-  { id: "bengaluru", name: "Bengaluru", lumaSlug: "bengaluru", bookMyShowCity: "Bengaluru", aliases: ["bengaluru", "bangalore"], pincodePrefix: "560" },
-  { id: "mumbai", name: "Mumbai", lumaSlug: "mumbai", bookMyShowCity: "Mumbai", aliases: ["mumbai"], pincodePrefix: "400" },
-  { id: "delhi", name: "Delhi", lumaSlug: "new-delhi", bookMyShowCity: "Delhi-NCR", aliases: ["delhi", "new delhi"], pincodePrefix: "110" },
-  { id: "hyderabad", name: "Hyderabad", lumaSlug: "hyderabad", bookMyShowCity: "Hyderabad", aliases: ["hyderabad"], pincodePrefix: "500" },
+  { id: "bengaluru", name: "Bengaluru", lumaSlug: "bengaluru", bookMyShowCity: "Bengaluru", aliases: ["bengaluru", "bangalore", "बेंगलुरु", "बेंगलूरू"], pincodePrefix: "560" },
+  { id: "mumbai", name: "Mumbai", lumaSlug: "mumbai", bookMyShowCity: "Mumbai", aliases: ["mumbai", "मुंबई", "मुम्बई"], pincodePrefix: "400" },
+  { id: "delhi", name: "Delhi", lumaSlug: "new-delhi", bookMyShowCity: "Delhi-NCR", aliases: ["delhi", "new delhi", "दिल्ली"], pincodePrefix: "110" },
+  { id: "hyderabad", name: "Hyderabad", lumaSlug: "hyderabad", bookMyShowCity: "Hyderabad", aliases: ["hyderabad", "हैदराबाद"], pincodePrefix: "500" },
 ];
 
 export function cityById(id: string | null): City | null {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { agentFromHostname, hostFor, scoutAgent } from "../src/shared/hosts.ts";
+import { agentFromHostname, agentFromPathname, hostFor, publicScoutUrl, scoutAgent } from "../src/shared/hosts.ts";
 import { healthPayload } from "../src/server/health.ts";
 
 describe("scout hosts", () => {
@@ -21,5 +21,15 @@ describe("scout hosts", () => {
     assert.equal(scoutAgent("travel"), "travel");
     assert.equal(healthPayload("main").agent, "main");
     assert.equal(hostFor("event"), "https://sj-event-scout.azurewebsites.net");
+    assert.equal(agentFromHostname("scout.shrianshjaiswal.me"), "main");
+    assert.equal(agentFromPathname("/event-scout"), "event");
+    assert.equal(agentFromPathname("/grocery-scout/"), "shop");
+    assert.equal(agentFromPathname("/food-scout"), "food");
+    assert.equal(agentFromPathname("/travel-scout"), "travel");
+    assert.equal(agentFromPathname("/home-scout"), "home");
+    assert.equal(agentFromPathname("/appointments-scout"), "appointments");
+    assert.equal(agentFromPathname("/"), null);
+    assert.equal(publicScoutUrl("event"), "https://scout.shrianshjaiswal.me/event-scout");
+    assert.equal(publicScoutUrl("shop"), "https://scout.shrianshjaiswal.me/grocery-scout");
   });
 });

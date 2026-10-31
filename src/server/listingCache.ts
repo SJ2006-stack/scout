@@ -1,5 +1,10 @@
 import type { Listing } from "../shared/event.ts";
 
+export function listingCacheTtlMs(value: string | undefined): number {
+  const parsed = Number(value ?? 600_000);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 600_000;
+}
+
 type Record = { listings: Listing[]; storedAt: number };
 
 export class ListingCache {

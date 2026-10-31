@@ -1,7 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
-import type { BrowserSessionStatus, BrowserSessionView, BrowserTaskEvent, BrowserTaskStatus } from "../shared/browser.ts";
+import { ShieldCheck } from "lucide-react";
+import type { BrowserSessionStatus, BrowserSessionView, BrowserTaskEvent, BrowserTaskStatus, ProfileState } from "../shared/browser.ts";
 import { apiUrl } from "./backend.ts";
 import { readSse } from "./sse.ts";
+import { Thinking } from "./Thinking.tsx";
+import { friendlyBrowserError } from "./uiText.ts";
 
 const headers = { "bypass-tunnel-reminder": "true" };
 
@@ -12,6 +15,9 @@ export function BrowserTasks() {
   const [sessions, setSessions] = useState<BrowserSessionView[]>([]);
   const [detail, setDetail] = useState<BrowserSessionView | null>(null);
   const [activity, setActivity] = useState<string[]>([]);
+  const [traceStart, setTraceStart] = useState<number | null>(null);
+  const [traceEnd, setTraceEnd] = useState<number | null>(null);
+  const [profile, setProfile] = useState<ProfileState>("absent");
 
   useEffect(() => {
     void refresh();
@@ -22,10 +28,15 @@ export function BrowserTasks() {
       const response = await fetch(apiUrl("/api/browser/sessions"), { credentials: "include", headers });
       const payload = (await response.json()) as { sessions?: BrowserSessionView[]; error?: unknown };
       if (!response.ok || !payload.sessions) {
-        setError(typeof payload.error === "string" ? payload.error : "Scout could not list browser sessions.");
+        setError(typeof payload.error === "string" ? payload.error : "Scout could not load your pages.");
         return;
       }
       setSessions(payload.sessions);
+      const profileResponse = await fetch(apiUrl("/api/browser/profile"), { credentials: "include", headers });
+      if (!profileResponse.ok) return;
+      const profilePayload = (await profileResponse.json()) as { profile?: { state?: ProfileState } };
+      const state = profilePayload.profile?.state;
+      if (state) setProfile(state);
     } catch {
       setError("Scout could not reach the browser worker.");
     }
@@ -38,6 +49,9 @@ export function BrowserTasks() {
     setBusy(true);
     setError(null);
     setDetail(null);
+    setTraceStart(Date.now());
+    setTraceEnd(null);
+    setActivity([]);
     try {
       const response = await fetch(apiUrl("/api/browser/sessions"), {
         method: "POST",
@@ -63,6 +77,71 @@ export function BrowserTasks() {
     } catch {
       setError("Scout could not reach the browser worker.");
     } finally {
+      setTraceEnd(Date.now());
+      setBusy(false);
+    }
+  }
+
+  async function act(id: string, action: "resume" | "close"): Promise<void> {
+    setBusy(true);
+    setError(null);
+    setTraceStart(Date.now());
+    setTraceEnd(null);
+    setActivity([]);
+    try {
+      const response = await fetch(apiUrl(`/api/browser/sessions/${id}/${action}`), {
+        method: "POST",
+        credentials: "include",
+        headers,
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: unknown };
+        setError(typeof payload.error === "string" ? payload.error : "The browser session could not be updated.");
+        return;
+      }
+      const lines: string[] = [];
+      await readSse<BrowserTaskEvent>(response, (item) => {
+        const line = activityLine(item);
+        if (line) lines.push(line);
+      });
+      setActivity(lines);
+      await refresh();
+      await viewStatus(id, false);
+    } catch {
+      setError("Scout could not reach the browser worker.");
+    } finally {
+      setTraceEnd(Date.now());
+      setBusy(false);
+    }
+  }
+
+  async function revoke(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    setTraceStart(Date.now());
+    setTraceEnd(null);
+    setActivity([]);
+    try {
+      const response = await fetch(apiUrl("/api/browser/profile/revoke"), { method: "POST", credentials: "include", headers });
+      const type = response.headers.get("content-type") ?? "";
+      if (type.includes("text/event-stream")) {
+        const lines: string[] = [];
+        await readSse<BrowserTaskEvent>(response, (item) => {
+          const line = activityLine(item);
+          if (line) lines.push(line);
+        });
+        setActivity(lines);
+      } else if (!response.ok) {
+        const payload = (await response.json()) as { error?: unknown };
+        setError(typeof payload.error === "string" ? payload.error : "The saved sign-in could not be revoked.");
+        return;
+      }
+      setDetail(null);
+      await refresh();
+    } catch {
+      setError("Scout could not reach the browser worker.");
+    } finally {
+      setTraceEnd(Date.now());
       setBusy(false);
     }
   }
@@ -91,6 +170,8 @@ export function BrowserTasks() {
         if (line) lines.push(line);
       });
       setActivity(lines);
+      setTraceStart(Date.now());
+      setTraceEnd(Date.now());
     } catch {
       setError("Scout could not reach the browser worker.");
     } finally {
@@ -100,44 +181,62 @@ export function BrowserTasks() {
 
   return (
     <div className="task-panel">
-      <h2>Browser session</h2>
-      <p className="plain">Open an allowlisted https page in an isolated browser. Payment, one-time codes, and saved logins are not part of this.</p>
-      <form className="task-form" onSubmit={(event) => void start(event)}>
-        <label htmlFor="browser-url">Page URL</label>
-        <input
-          id="browser-url"
-          className="task-url"
-          type="url"
-          inputMode="url"
-          placeholder="https://example.com/"
-          value={url}
-          onChange={(event) => setUrl(event.target.value)}
-        />
-        <div className="task-actions">
-          <button type="submit" disabled={busy || url.trim().length === 0}>Start browser session</button>
-        </div>
-      </form>
-      {error ? <p className="note">{error}</p> : null}
-      {sessions.length === 0 && error == null ? <p className="plain">No browser session yet.</p> : null}
-      {sessions.map((session) => (
-        <div className="task-row" key={session.id}>
-          <p>{statusLabel(session.status)} · {session.url || "No page opened"}</p>
-          <button type="button" disabled={busy} onClick={() => void viewStatus(session.id)}>View browser status</button>
-        </div>
-      ))}
+      <section className="panel">
+        <h3>Open a web page</h3>
+        <p className="plain">Scout opens the page in the background and can tap its buttons for you. You won't see a browser window.</p>
+        <p className="profile-state"><ShieldCheck size={16} aria-hidden="true" />{profileLabel(profile)}</p>
+        <form className="task-form" onSubmit={(event) => void start(event)}>
+          <label htmlFor="browser-url">Web address</label>
+          <input
+            id="browser-url"
+            className="task-url"
+            type="url"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder="https://example.com"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+          />
+          <div className="task-actions">
+            <button className="primary-button" type="submit" disabled={busy || url.trim().length === 0}>
+              {busy ? "Working…" : "Open page"}
+            </button>
+          </div>
+        </form>
+        {error ? <p className="form-error" role="alert">{friendlyBrowserError(error)}</p> : null}
+      </section>
+      <section className="task-list">
+        <h3>Your pages</h3>
+        {sessions.length === 0 && error == null ? <p className="plain">Nothing open yet. Paste a web address above to start.</p> : null}
+        {sessions.map((session) => (
+          <div className="task-row" key={session.id}>
+            <div className="task-row-text">
+              <span className={`status-pill ${session.status}`}>{statusLabel(session.status)}</span>
+              <p>{session.url || "No page opened"}</p>
+            </div>
+            <button className="ghost-button" type="button" disabled={busy} onClick={() => void viewStatus(session.id)}>Details</button>
+          </div>
+        ))}
+      </section>
       {detail ? (
-        <div className="review">
-          <p><span>Status</span><span>{statusLabel(detail.status)}</span></p>
-          <p><span>Task</span><span>{taskLabel(detail.taskStatus)}</span></p>
-          <p><span>Page</span><span>{detail.title || "No page title"}</span></p>
-          <p><span>URL</span><span>{detail.url || "No page opened"}</span></p>
-        </div>
+        <section className="panel">
+          <h3>Page details</h3>
+          <dl className="detail-list">
+            <div><dt>Status</dt><dd>{statusLabel(detail.status)}</dd></div>
+            <div><dt>Task</dt><dd>{taskLabel(detail.taskStatus)}</dd></div>
+            <div><dt>Page</dt><dd>{detail.title || "Untitled"}</dd></div>
+            <div><dt>Address</dt><dd className="task-token">{detail.url || "No page opened"}</dd></div>
+          </dl>
+          <div className="task-actions">
+            {detail.status === "paused" ? <button className="primary-button" type="button" disabled={busy} onClick={() => void act(detail.id, "resume")}>Resume</button> : null}
+            {detail.status === "open" || detail.status === "paused" ? <button className="ghost-button" type="button" disabled={busy} onClick={() => void act(detail.id, "close")}>Close page</button> : null}
+            <button className="ghost-button danger" type="button" disabled={busy} onClick={() => void revoke()}>Forget saved sign-in</button>
+          </div>
+        </section>
       ) : null}
-      {activity.length > 0 ? (
-        <ol className="task-activity">
-          {activity.map((line, index) => <li key={`${index}-${line}`}>{line}</li>)}
-        </ol>
-      ) : null}
+      {traceStart != null ? <Thinking steps={activity} startedAt={traceStart} finishedAt={busy ? null : traceEnd} /> : null}
     </div>
   );
 }
@@ -154,6 +253,23 @@ function activityLine(event: BrowserTaskEvent): string | null {
     default: {
       const neverEvent: never = event;
       return neverEvent;
+    }
+  }
+}
+
+function profileLabel(state: ProfileState): string {
+  switch (state) {
+    case "saved":
+      return "A saved sign-in is stored encrypted on this computer.";
+    case "expired":
+      return "Your saved sign-in expired. Scout will ask you to sign in again.";
+    case "revoked":
+      return "Your saved sign-in was removed.";
+    case "absent":
+      return "No saved sign-in yet. Scout will ask the first time it needs one.";
+    default: {
+      const neverState: never = state;
+      return neverState;
     }
   }
 }

@@ -1,3 +1,5 @@
+export type ProfileState = "saved" | "expired" | "revoked" | "absent";
+
 export type BrowserSessionStatus = "open" | "paused" | "closed" | "expired" | "failed";
 
 export type BrowserTaskStatus = "running" | "paused" | "closed" | "expired" | "failed";
@@ -15,6 +17,7 @@ export type BrowserSessionView = {
   taskStatus: BrowserTaskStatus;
   url: string;
   title: string;
+  phoneToken: string | null;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;

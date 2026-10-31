@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createViteServer } from "vite";
 import { handleApi } from "./api.ts";
+import { startBrowserWarm } from "./browser/worker.ts";
 import { appRoot, createDeps, loadLocalEnv } from "./deps.ts";
 
 loadLocalEnv();
@@ -33,11 +34,26 @@ server.on("request", (request: IncomingMessage, response: ServerResponse) => {
 });
 
 const stopBrowser = deps.browser?.startCleanup(30_000);
+const stopWatches = deps.watchRunner?.start(60_000);
 server.on("close", () => {
   stopBrowser?.();
+  stopWatches?.();
   void deps.browser?.stop();
 });
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Grocery Scout listening on http://127.0.0.1:${port}`);
+  startBrowserWarm(deps.browser);
 });
+
+let closing = false;
+function shutdown(): void {
+  if (closing) return;
+  closing = true;
+  server.close(() => {
+    void deps.browser?.stop().finally(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(0), 5_000).unref();
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

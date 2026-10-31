@@ -1,22 +1,72 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { writeEvents } from "../sseWriter.ts";
 import { browserOwner } from "../session.ts";
+import type { UserDirectory } from "../db/userDirectory.ts";
+import { signRuntimeTicket, verifyRuntimeTicket, type BrowserRuntimeConfig } from "./runtimeTicket.ts";
 import type { BrowserWorker } from "./worker.ts";
 
 type BrowserDeps = {
   browser?: BrowserWorker;
+  directory?: UserDirectory;
+  now?: () => number;
+  browserRuntime?: BrowserRuntimeConfig;
 };
+
+const RUNTIME_HEADER = "x-scout-runtime";
+
+export function browserRuntimeMaySkipSignIn(request: IncomingMessage, pathname: string, worker: BrowserWorker | undefined): boolean {
+  if (!worker) return false;
+  if (pathname !== "/api/browser" && !pathname.startsWith("/api/browser/")) return false;
+  const header = request.headers[RUNTIME_HEADER];
+  return typeof header === "string" && header.length > 0;
+}
 
 export async function routeBrowser(request: IncomingMessage, response: ServerResponse, url: URL, deps: BrowserDeps): Promise<void> {
   const worker = deps.browser;
   if (!worker) {
-    sendJson(response, 503, { error: "Browser worker is not enabled on this server." });
+    await proxyBrowser(request, response, url, deps);
     return;
   }
-  const ownerId = browserOwner(request, response);
+  const owner = runtimeOwner(request, response, url, deps);
+  if (!owner.ok) {
+    sendJson(response, owner.status, { error: owner.error });
+    return;
+  }
+  const ownerId = owner.ownerId;
+  deps.directory?.touch(ownerId, deps.now?.() ?? Date.now());
   const path = url.pathname;
+  if (request.method === "GET" && path === "/api/browser/budget") {
+    sendJson(response, 200, worker.budget());
+    return;
+  }
+  if (request.method === "GET" && path === "/api/browser/profile") {
+    await reply(response, await worker.profile(ownerId));
+    return;
+  }
+  if (request.method === "POST" && path === "/api/browser/profile/revoke") {
+    await reply(response, await worker.revokeProfile(ownerId));
+    return;
+  }
   if (request.method === "GET" && path === "/api/browser/sessions") {
     await reply(response, await worker.list(ownerId));
+    return;
+  }
+  if (request.method === "POST" && path === "/api/browser/phone/open") {
+    if (!isLoopback(request)) {
+      sendJson(response, 404, { error: "Not found" });
+      return;
+    }
+    const body = await readJson(request);
+    if (!body.ok) {
+      sendJson(response, 400, { error: body.error });
+      return;
+    }
+    const parsed = parseUrl(body.value);
+    if (!parsed.ok) {
+      sendJson(response, 400, { error: parsed.error });
+      return;
+    }
+    await reply(response, await worker.openFromPhone(parsed.url));
     return;
   }
   if (request.method === "POST" && path === "/api/browser/sessions") {
@@ -33,6 +83,39 @@ export async function routeBrowser(request: IncomingMessage, response: ServerRes
     await reply(response, await worker.create(ownerId, parsed.url, parsed.taskId));
     return;
   }
+  if (request.method === "POST" && path === "/api/browser/code") {
+    const body = await readJson(request);
+    if (!body.ok) {
+      sendJson(response, 400, { error: body.error });
+      return;
+    }
+    const code = body.value && typeof body.value === "object" ? (body.value as Record<string, unknown>).code : "";
+    if (typeof code !== "string") {
+      sendJson(response, 400, { error: "Send the numeric code from the message." });
+      return;
+    }
+    await reply(response, await worker.submitOwnerCode(ownerId, code));
+    return;
+  }
+  const taskCode = path.match(/^\/api\/browser\/tasks\/([a-f0-9]{32})\/code$/);
+  if (taskCode) {
+    if (request.method !== "POST") {
+      sendJson(response, 404, { error: "Not found" });
+      return;
+    }
+    const body = await readJson(request);
+    if (!body.ok) {
+      sendJson(response, 400, { error: body.error });
+      return;
+    }
+    const parsed = parseCode(body.value);
+    if (!parsed.ok) {
+      sendJson(response, parsed.status, { error: parsed.error });
+      return;
+    }
+    await reply(response, await worker.submitCode(taskCode[1] ?? "", parsed.token, parsed.code));
+    return;
+  }
   const taskEvents = path.match(/^\/api\/browser\/tasks\/([a-f0-9]{32})\/events$/);
   if (taskEvents) {
     if (request.method !== "GET") {
@@ -42,7 +125,7 @@ export async function routeBrowser(request: IncomingMessage, response: ServerRes
     await reply(response, await worker.eventsFor(ownerId, taskEvents[1] ?? ""));
     return;
   }
-  const sessionPath = path.match(/^\/api\/browser\/sessions\/([a-f0-9]{32})(?:\/(navigate|snapshot|click|fill|pause|resume|close))?$/);
+  const sessionPath = path.match(/^\/api\/browser\/sessions\/([a-f0-9]{32})(?:\/(navigate|snapshot|click|fill|pause|resume|close|handoff))?$/);
   if (!sessionPath) {
     sendJson(response, 404, { error: "Not found" });
     return;
@@ -70,6 +153,9 @@ export async function routeBrowser(request: IncomingMessage, response: ServerRes
       return;
     case "close":
       await reply(response, await worker.close(ownerId, sessionId));
+      return;
+    case "handoff":
+      await reply(response, await worker.handoff(ownerId, sessionId));
       return;
     case "navigate": {
       const body = await readJson(request);
@@ -124,7 +210,7 @@ export async function routeBrowser(request: IncomingMessage, response: ServerRes
   }
 }
 
-type SessionAction = "navigate" | "snapshot" | "click" | "fill" | "pause" | "resume" | "close";
+type SessionAction = "navigate" | "snapshot" | "click" | "fill" | "pause" | "resume" | "close" | "handoff";
 
 function sessionAction(value: string | undefined): SessionAction | null {
   switch (value) {
@@ -135,6 +221,7 @@ function sessionAction(value: string | undefined): SessionAction | null {
     case "pause":
     case "resume":
     case "close":
+    case "handoff":
       return value;
     default:
       return null;
@@ -156,6 +243,19 @@ function parseUrl(value: unknown): { ok: true; url: string } | { ok: false; erro
   const url = (value as Record<string, unknown>).url;
   if (typeof url !== "string" || url.trim().length === 0) return { ok: false, error: "Send a URL." };
   return { ok: true, url };
+}
+
+function parseCode(value: unknown): { ok: true; token: string; code: string } | { ok: false; status: number; error: string } {
+  if (!value || typeof value !== "object") return { ok: false, status: 400, error: "Send the code for this task." };
+  const token = (value as Record<string, unknown>).token;
+  const code = (value as Record<string, unknown>).code;
+  if (typeof token !== "string" || !/^[a-f0-9]{32}$/.test(token)) {
+    return { ok: false, status: 404, error: "That browser task is not waiting for a code." };
+  }
+  if (typeof code !== "string" || !/^\d{4,8}$/.test(code)) {
+    return { ok: false, status: 400, error: "Send the numeric code from the message." };
+  }
+  return { ok: true, token, code };
 }
 
 function parseRef(value: unknown): { ok: true; ref: string } | { ok: false; error: string } {
@@ -201,6 +301,132 @@ async function readJson(request: IncomingMessage): Promise<{ ok: true; value: un
   } catch {
     return { ok: false, error: "Request was not valid JSON." };
   }
+}
+
+function runtimeOwner(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  deps: BrowserDeps,
+): { ok: true; ownerId: string } | { ok: false; status: number; error: string } {
+  const header = request.headers[RUNTIME_HEADER];
+  if (header == null || header === "") return { ok: true, ownerId: browserOwner(request, response) };
+  if (typeof header !== "string") return { ok: false, status: 401, error: "Browser runtime ticket was rejected." };
+  const key = deps.browserRuntime?.key ?? "";
+  const verified = verifyRuntimeTicket(header, {
+    method: request.method ?? "GET",
+    pathname: url.pathname,
+    now: deps.now?.() ?? Date.now(),
+    key,
+  });
+  if (!verified.ok) return { ok: false, status: 401, error: "Browser runtime ticket was rejected." };
+  return { ok: true, ownerId: verified.ownerId };
+}
+
+async function proxyBrowser(request: IncomingMessage, response: ServerResponse, url: URL, deps: BrowserDeps): Promise<void> {
+  const runtime = deps.browserRuntime;
+  const base = runtime?.url.trim() ?? "";
+  if (base.length === 0) {
+    sendJson(response, 503, { error: "Browser worker is not enabled on this server." });
+    return;
+  }
+  const key = runtime?.key ?? "";
+  if (key.length < 32) {
+    sendJson(response, 503, { error: "Browser runtime is not configured." });
+    return;
+  }
+  const target = runtimeTarget(base, url);
+  if (!target) {
+    sendJson(response, 503, { error: "Browser runtime is not configured." });
+    return;
+  }
+  const ownerId = browserOwner(request, response);
+  const method = request.method ?? "GET";
+  const ticket = signRuntimeTicket({
+    ownerId,
+    method,
+    pathname: url.pathname,
+    now: deps.now?.() ?? Date.now(),
+    key,
+  });
+  if (!ticket) {
+    sendJson(response, 503, { error: "Browser runtime is not configured." });
+    return;
+  }
+  const headers = new Headers();
+  const contentType = request.headers["content-type"];
+  if (typeof contentType === "string" && contentType.length > 0) headers.set("content-type", contentType);
+  headers.set(RUNTIME_HEADER, ticket);
+  let body: Uint8Array<ArrayBuffer> | undefined;
+  if (method !== "GET" && method !== "HEAD") {
+    const read = await readRaw(request);
+    if (!read.ok) {
+      sendJson(response, 400, { error: read.error });
+      return;
+    }
+    body = read.value.length > 0 ? new Uint8Array(read.value) : undefined;
+  }
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, { method, headers, body, redirect: "manual" });
+  } catch {
+    sendJson(response, 503, { error: "The browser runtime could not be reached." });
+    return;
+  }
+  const outHeaders: Record<string, string | number | string[]> = { "cache-control": "no-store" };
+  const type = upstream.headers.get("content-type");
+  if (type) outHeaders["content-type"] = type;
+  const setCookie = response.getHeader("set-cookie");
+  if (setCookie !== undefined) outHeaders["set-cookie"] = setCookie;
+  response.writeHead(upstream.status, outHeaders);
+  const reader = upstream.body?.getReader();
+  if (!reader) {
+    response.end();
+    return;
+  }
+  try {
+    while (true) {
+      const step = await reader.read();
+      if (step.done) break;
+      if (step.value) response.write(Buffer.from(step.value));
+    }
+  } catch {
+    // The upstream body is already being returned. Do not log it.
+  } finally {
+    if (!response.writableEnded) response.end();
+  }
+}
+
+function runtimeTarget(base: string, url: URL): URL | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(base);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+  if (parsed.username.length > 0 || parsed.password.length > 0) return null;
+  parsed.pathname = url.pathname;
+  parsed.search = url.search;
+  parsed.hash = "";
+  return parsed;
+}
+
+async function readRaw(request: IncomingMessage): Promise<{ ok: true; value: Buffer } | { ok: false; error: string }> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 20_000) return { ok: false, error: "Request is too large." };
+    chunks.push(buffer);
+  }
+  return { ok: true, value: Buffer.concat(chunks) };
+}
+
+function isLoopback(request: IncomingMessage): boolean {
+  const address = request.socket.remoteAddress ?? "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {

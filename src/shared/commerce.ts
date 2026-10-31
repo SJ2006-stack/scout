@@ -1,5 +1,6 @@
 import type { AgentId } from "./hosts.ts";
 import { roundMoney } from "./offer.ts";
+import type { PayLink } from "./payLink.ts";
 
 export type CommerceAgent = Extract<AgentId, "shop" | "food" | "appointments">;
 
@@ -67,6 +68,7 @@ export type CommerceEvent =
   | { type: "cart"; cart: CartSnapshot }
   | { type: "quote"; quote: QuoteSnapshot }
   | { type: "receipt"; receipt: ReceiptSnapshot }
+  | { type: "pay"; pay: PayLink }
   | { type: "done" };
 
 export function lineTotal(unitPrice: number | null, quantity: number): number | null {

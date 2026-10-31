@@ -20,8 +20,14 @@ export function parseAriaSnapshot(snapshot: string): PageElement[] {
     const match = /^\s*-\s+([a-zA-Z]+)\s+"([^"]*)"/.exec(line);
     const role = match?.[1]?.toLowerCase();
     const name = match?.[2];
-    if (!role || name == null || !INTERACTIVE.has(role)) continue;
-    elements.push({ role, name });
+    if (role && name != null && INTERACTIVE.has(role)) {
+      elements.push({ role, name });
+      continue;
+    }
+    const quoted = /^\s*-\s+text\s+"([^"]*)"/.exec(line);
+    const bare = /^\s*-\s+text:\s+(.+)$/.exec(line);
+    const text = quoted?.[1] ?? bare?.[1]?.trim();
+    if (text && /₹|\b\d/.test(text)) elements.push({ role: "text", name: text });
   }
   return elements;
 }

@@ -1,23 +1,18 @@
 import type { CommerceAgent } from "../shared/commerce.ts";
 import type { AgentId } from "../shared/hosts.ts";
 
-export type AgentRoute =
-  | { kind: "event" }
-  | { kind: "commerce"; agent: CommerceAgent }
-  | { kind: "unavailable" };
+export type AgentRoute = { kind: "chat"; agent: AgentId };
 
 export function agentRoute(agent: AgentId): AgentRoute {
   switch (agent) {
-    case "event":
-      return { kind: "event" };
-    case "shop":
-    case "food":
-    case "appointments":
-      return { kind: "commerce", agent };
     case "main":
+    case "event":
     case "travel":
+    case "food":
+    case "shop":
     case "home":
-      return { kind: "unavailable" };
+    case "appointments":
+      return { kind: "chat", agent };
     default: {
       const neverAgent: never = agent;
       return neverAgent;
@@ -25,18 +20,37 @@ export function agentRoute(agent: AgentId): AgentRoute {
   }
 }
 
-export function agentEndpoint(agent: AgentId): "/api/chat" | "/api/commerce" | null {
-  const route = agentRoute(agent);
-  switch (route.kind) {
+export function agentEndpoint(agent: AgentId): "/api/chat" {
+  switch (agent) {
+    case "main":
     case "event":
+    case "travel":
+    case "food":
+    case "shop":
+    case "home":
+    case "appointments":
       return "/api/chat";
-    case "commerce":
-      return "/api/commerce";
-    case "unavailable":
+    default: {
+      const neverAgent: never = agent;
+      return neverAgent;
+    }
+  }
+}
+
+export function commerceAgent(agent: AgentId): CommerceAgent | null {
+  switch (agent) {
+    case "shop":
+    case "food":
+    case "appointments":
+      return agent;
+    case "main":
+    case "event":
+    case "travel":
+    case "home":
       return null;
     default: {
-      const neverRoute: never = route;
-      return neverRoute;
+      const neverAgent: never = agent;
+      return neverAgent;
     }
   }
 }
