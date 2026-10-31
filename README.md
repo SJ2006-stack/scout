@@ -121,6 +121,7 @@ Never commit `.env`, keys, or publish profiles.
 - A zip deploy switches the apps back to the Node stack, which has no Chromium, so the browser worker cannot start. Do not zip deploy.
 - `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the container image is manual.
 - `deploy/browser-worker.Dockerfile` is the Chromium-only process. It refuses to start without `BROWSER_PROFILE_KEY` and `BROWSER_ALLOWED_HOSTS`.
+- The apps are pinned to a tag (now `ui-20261031`), not `latest`. After `az acr build`, import the image under a new tag, then `az webapp config container set -g ledger-rg -n <app> --container-image-name sjscoutacr.azurecr.io/scout-site:<tag>` on all six.
 - Always On and the `/api/health` check are set on the six apps.
 - Public page: `https://scout.shrianshjaiswal.me`.
 
