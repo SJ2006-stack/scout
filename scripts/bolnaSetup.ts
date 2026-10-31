@@ -23,13 +23,17 @@ const llmUrl = `${base}/api/bolna/v1`;
 const probe = await fetch(`${llmUrl}/models`, { headers: { authorization: `Bearer ${llmKey}` } }).catch(() => null);
 if (!probe?.ok) fail(`Scout did not answer at ${llmUrl}/models (${probe?.status ?? "unreachable"}). Start the server with BOLNA_LLM_KEY set.`);
 
+type CustomModel = { id?: string; model?: string; base_url?: string; custom_model_name?: string; custom_model_url?: string };
 const existing = (await bolna("GET", "/user/model/custom")) as unknown;
-const models = Array.isArray(existing) ? existing : ((existing as { data?: unknown[] } | null)?.data ?? []);
-for (const model of models as { id?: string; custom_model_name?: string; custom_model_url?: string }[]) {
-  if (model.custom_model_name !== MODEL || model.custom_model_url === llmUrl || !model.id) continue;
+const listed = existing as { models?: unknown[]; data?: unknown[] } | null;
+const models = (Array.isArray(existing) ? existing : (listed?.models ?? listed?.data ?? [])) as CustomModel[];
+const nameOf = (model: CustomModel) => model.model ?? model.custom_model_name;
+const urlOf = (model: CustomModel) => model.base_url ?? model.custom_model_url;
+for (const model of models) {
+  if (nameOf(model) !== MODEL || urlOf(model) === llmUrl || !model.id) continue;
   await bolna("DELETE", `/user/model/custom/${model.id}`, undefined, true);
 }
-if (!(models as { custom_model_name?: string; custom_model_url?: string }[]).some((model) => model.custom_model_name === MODEL && model.custom_model_url === llmUrl)) {
+if (!models.some((model) => nameOf(model) === MODEL && urlOf(model) === llmUrl)) {
   await bolna("POST", "/user/model/custom", {
     custom_model_name: MODEL,
     custom_model_url: llmUrl,
@@ -73,7 +77,14 @@ const agent = {
             enabled: true,
             active_language: "hi",
             languages: {
-              hi: {},
+              hi: {
+                transcriber: { language: "hi" },
+                synthesizer: {
+                  provider: "sarvam",
+                  provider_config: { voice: "Aparna", voice_id: "aparna_hi_customer", model: "bulbul:v4-flash", language: "hi", speed: 1.05 },
+                },
+                handoff_message: "Theek hai, Hindi mein baat karte hain.",
+              },
               en: {
                 transcriber: { language: "en" },
                 synthesizer: {
