@@ -61,6 +61,14 @@ export type ChatPayEvent = {
   pay: PayLink;
 };
 
+/** A live website task. The client polls the task for its state. */
+export type ChatTaskEvent = {
+  type: "task";
+  taskId: string;
+  skill: string;
+  title: string;
+};
+
 export type ChatDeviceEvent = {
   type: "device";
   action: DeviceAction;
@@ -93,4 +101,5 @@ export type ChatEvent =
   | ChatCartEvent
   | ChatQuoteEvent
   | ChatReceiptEvent
-  | ChatPayEvent;
+  | ChatPayEvent
+  | ChatTaskEvent;

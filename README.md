@@ -1,79 +1,134 @@
 # Scout
 
-Scout is a set of chat agents that find things and act on them for one person. Event Scout is the live one: it searches Luma, District, and BookMyShow, and can drive a real browser to register. Food, Shop, and Appointments run on a simulated commerce hub. Travel and Home are placeholders.
+A voice-first personal assistant for India. Ask in Hindi, English, or Hinglish, by typing, by mic, or on a live voice call, and Scout finds events, compares grocery prices, and drives a real browser to register or reach the pay screen. Payment always happens in your own UPI app.
 
-This folder is the server and the web app. The Android companion is in `../scout.apk`. See the workspace `../README.md` for the overview and the changelog.
+**Live:** [scout.shrianshjaiswal.me](https://scout.shrianshjaiswal.me)
+
+This repository is the server and the web app. The Android companion app (microphone, phone actions, UPI handoff, push) lives in a separate project, `scout.apk`.
+
+## What it does
+
+- **Events:** searches Luma, District, and BookMyShow, shows cards with date, price, and drive time, registers on Luma, and clicks through to the pay screen on the others.
+- **Shopping:** opens Blinkit, Zepto, and Instamart in the browser worker, reads live prices, picks the cheapest, and hands back a UPI link or QR.
+- **Voice:** a mic button for single clips and a phone button for a live call through [Bolna](https://www.bolna.ai), with Sarvam speech. Scout is the call's LLM, so cards appear in the chat while you talk.
+- **Memory:** remembers your name, city, diet, budget, and other preferences, and shares them with every agent. Refuses to store OTPs, PINs, passwords, and card numbers.
+- **Scout Watch:** recurring event checks that send only new matches to your inbox and phone.
+- **Phone actions:** alarms, timers, reminders, flashlight, volume, maps, sharing, and opening apps, carried out by the Android app.
 
 ## Agents
+
+One codebase serves every agent. `SCOUT_AGENT` pins a process to one, and each has its own host (`src/shared/hosts.ts`).
 
 | Agent | Status | What it does |
 | --- | --- | --- |
 | Main | Router | Points you to the right agent |
-| Event | Live | Luma, District, BookMyShow search; browser-assisted registration |
-| Travel | Not connected | Talks through a trip. No live fares |
-| Food | Simulated | Looks up dishes on a simulated menu and reviews an order |
-| Shop | Simulated | Compares Blinkit, Zepto, Instamart, then hands a pay link to the phone |
-| Home | Not connected | Plans with you. No service attached |
+| Event | Live | Luma, District, BookMyShow search; Luma registration; Book to the pay screen |
+| Shop | Live with the browser worker | Live prices on Blinkit, Zepto, Instamart. Real carts on Blinkit and Zepto up to your approval and the UPI handoff. Without the worker, only the simulated catalogue answers |
+| Food | Simulated | Dishes on a simulated menu and an order review |
 | Appointments | Simulated | Requests a simulated salon time |
+| Travel | Not connected | Talks through a trip. No live fares |
+| Home | Not connected | Plans with you. No service attached |
 
-One codebase serves every agent. `SCOUT_AGENT` pins a process to one agent. Each agent has its own Azure host (`src/shared/hosts.ts`), and `GET /api/health` returns `{ ok: true, agent }`.
+## How it works
 
-## How a chat turn works
+### A chat turn
 
 1. The web app posts to `POST /api/chat` and reads Server-Sent Events.
-2. With `ANTHROPIC_API_KEY` set, Claude Haiku 5.5 (`claude-haiku-5-5`) runs a tool loop of at most 4 rounds (`src/server/haikuChat.ts`). Event tools are Luma, District, and BookMyShow. Specialist agents use `compare_shops`, `shop_catalog`, `food_order`, and `salon_request` (`src/server/specialistChat.ts`). With no key, a keyword parser answers instead.
-3. The final text streams into the question bubble. The first sentence can start speech before the stream closes.
+2. Claude Haiku 5.5 (`claude-haiku-5-5`) runs a tool loop of at most 4 rounds (`src/server/haikuChat.ts`, `src/server/specialistChat.ts`). Without `ANTHROPIC_API_KEY`, a keyword parser answers instead.
+3. The reply streams into the chat. Speech can start on the first sentence.
 4. A source that fails leaves the other cards on screen. Failures are never cached.
 
 Event sources:
 
 - **Luma:** the public discovery feed.
 - **District:** the public events and movies pages.
-- **BookMyShow:** Pomerado's read-only "Search movies and events" tool, when `POMERADO_API_KEY` is set. The chat waits `CONNECTOR_TIMEOUT_MS` (8 s). A search takes 18 to 30 s, so the job keeps running for up to 60 s and caches a success for the next question.
-- Movie cards appear only when the page carries the movie's own link. Drive time appears only when `GOOGLE_MAPS_API_KEY` is set.
-- Successful listings are cached for `LISTING_CACHE_TTL_MS` (10 minutes). Price checks use `CACHE_TTL_MS` (60 s).
+- **BookMyShow:** Pomerado's read-only search tool (`POMERADO_API_KEY`). A search takes 18 to 30 s, so the chat waits 8 s (`CONNECTOR_TIMEOUT_MS`), the job keeps running for up to 60 s, and a success is cached for the next question.
+- Listings are cached for 10 minutes (`LISTING_CACHE_TTL_MS`). Drive time needs `GOOGLE_MAPS_API_KEY`.
 
-Cards open the listing. Scout does not pick seats or pay on Luma, District, or BookMyShow. See `docs/stage2-booking.md` for the booking limits.
+### Booking and payment
 
-## Voice
+Book opens the listing in the browser worker, fills Luma registration forms from your profile, clicks through to the pay screen, and returns a UPI deeplink, a QR code, or the pay page. The Android app opens your UPI app with it. If a site asks you to sign in first, Scout currently falls back to opening the page. Details and limits are in [`docs/booking.md`](docs/booking.md).
 
-The mic button records a clip and posts it to `POST /api/voice/stt`, which calls Sarvam (`saaras:v4`, `codemix` mode so English words stay in English letters) and returns text. `POST /api/voice/tts` speaks a reply with Sarvam (`bulbul:v3`). The old realtime WebSocket speech was removed on purpose. Live calls now go through Bolna (below), and `/api/voice/live` is only the event stream for an open call.
+### Quick commerce (Shop)
 
-- **Browser:** the web `MediaRecorder` posts the clip (`src/web/voice.ts`).
-- **Android app:** the web page calls `window.ScoutNative.request({ op: "microphone" })`. The app records with `MediaRecorder` and posts the clip to the same route.
-- With `SARVAM_API_KEY` empty, the mic stays quiet.
+- **Compare:** `compare_shops` opens Blinkit, Zepto, and Instamart at the same time in new-headless Chromium with an Indian desktop profile (en-IN, Asia/Kolkata). Only products whose names contain every query word count, and the summary gives the cheapest match per store. Measured locally on Oct 31, 2026: 6 to 8 s for all three. One comparison runs per chat message; extra calls share its result.
+- **Buy:** `buy_from_shop` (Blinkit or Zepto) starts a task: sign in with your phone and an SMS code if the store asks, open the search, type your pincode into the store's location box (or use the device location), add the item, open the cart, and read the bill. A card in the chat shows each step, a code box, the cart with fees and total, and Approve. Scout presses the store's pay control only after you approve that exact cart, then the UPI link goes to your phone. "I have paid" checks the store's orders page.
+- **Instamart** is compare only. Its product grid exposes no add button that the browser can find by name.
+- **Guest carts:** Blinkit shows the full bill to a guest; Zepto shows only the item total until you sign in. Scout never asks you to approve a total the store has not shown.
+- Live probes: `scripts/shopCompareProbe.ts` and `scripts/shopCartProbe.ts` (`HEADED=1` shows Chrome). The cart probe stops before sign-in.
 
-**Voice calls (Bolna).** The phone button in the composer starts a live call through the Bolna Web Call SDK (`src/web/voiceCall.ts`). Bolna handles the microphone, Sarvam `saaras:v4` speech recognition (Hindi, English, Hinglish; `bolna:setup` registers a Hindi plus English `multilingual_config` so Bolna switches to an English transcriber when the caller speaks English), the Sarvam `bulbul:v4-flash` voice, and interruptions. Bolna's LLM is Scout itself:
+### Voice
 
-- `POST /api/voice/bolna/session` (signed in) mints a single-use Bolna session and passes a signed 45-minute voice ticket as `{{scout_ticket}}` in the agent prompt. The `bn-` key never reaches the browser.
-- `POST /api/bolna/v1/chat/completions` is an OpenAI-compatible streaming endpoint that Bolna calls with `BOLNA_LLM_KEY`. It reads the ticket, picks the specialist with a keyword router (`src/server/voice/voiceRouter.ts`, sticky for 10 minutes), runs the normal Haiku turn with a short-spoken-reply prompt, and streams Haiku's words as they arrive. When the cards or a phone action are the answer, it speaks a short summary itself.
-- `GET /api/voice/live` streams the same turn's cards, phone actions, and watches to the open chat while the call runs.
-- `npm run bolna:setup -- <https origin> [--agent <id>] [--save]` registers that site's endpoint as a Bolna custom model and creates or updates its agent. Each site needs its own agent because memory and the live relay are per site.
-- Measured on a tunnel to this Mac: first spoken words in about 1 to 2 s; an event search takes about 11 s in total. Not yet measured on Azure.
+- **Mic button:** records a clip and posts it to `POST /api/voice/stt`, which calls Sarvam `saaras:v4` in `codemix` mode, so English words stay in English letters. `POST /api/voice/tts` speaks with Sarvam `bulbul:v3`. In the Android app, the page asks `window.ScoutNative` to record natively and posts to the same route.
+- **Live calls:** the phone button starts a Bolna web call (`src/web/voiceCall.ts`). Bolna handles the microphone, Sarvam speech recognition, the `bulbul:v4-flash` voice, and interruptions. Each agent is set up with Hindi and English, and Bolna switches when the caller changes language.
+  - `POST /api/voice/bolna/session` mints a single-use call and passes a signed 45-minute ticket in the prompt. The Bolna key never reaches the browser.
+  - `POST /api/bolna/v1/chat/completions` is an OpenAI-compatible streaming endpoint that Bolna calls for every turn. It picks the specialist (`src/server/voice/voiceRouter.ts`, sticky for 10 minutes), runs the normal Haiku turn with a short spoken reply, and streams the words.
+  - `GET /api/voice/live` streams that turn's cards and phone actions to the open chat.
+  - Measured on a tunnel: first words in about 1 to 2 s. Measured once on Azure: about 2 s for an alarm request.
 
-**Phone actions.** Any specialist can call `phone_action` (alarm, timer, reminder, list or cancel reminders, open an allowlisted app, maps, share, flashlight, volume, capabilities). The server validates the request (`src/shared/deviceActions.ts`) and emits a `device` event. The web page hands it to the Android app (`ScoutNative` op `action`) and posts the result to `/api/actions/result`. In a normal browser it says the phone app is needed. Opening an app, sharing, and muting the ringer ask for Allow on the phone first.
+### Phone actions
 
-## Browser worker
+Any agent can call `phone_action`. The server validates it (`src/shared/deviceActions.ts`), emits a `device` event, the page hands it to the Android app, and the result comes back on `/api/actions/result`. Opening apps, sharing, and muting ask for Allow on the phone first. In a normal browser, Scout says the phone app is needed.
 
-A Playwright Chromium worker opens public https pages for registration and RSVP flows. It is off until `BROWSER_WORKER_ENABLED=1`.
+### Browser worker
 
-- Private, loopback, link-local, and metadata hosts are blocked, including after DNS lookup. `BROWSER_ALLOWED_HOSTS` limits the worker to listed hosts.
-- A host check that does not answer in 4 seconds counts as not public and is remembered, so one stalled DNS lookup cannot freeze a navigation.
-- One operation is capped by `BROWSER_OP_TIMEOUT_MS`. A click or fill stops after 10 s, and a registration step after 30 s. A second register request for the same event joins the running one. A timeout closes that session, records it, and logs to `console.error`.
-- Sign-in is saved as AES-256-GCM encrypted browser state, bound to the owner. It needs `BROWSER_PROFILE_KEY`.
-- A visible window handoff needs `BROWSER_HEADED=1` on a machine with a display. The Azure container stays headless.
-- One-time codes are typed into the code field and never written to the task log.
+A Playwright Chromium worker, off until `BROWSER_WORKER_ENABLED=1`.
 
-Central browser (staging only, not deployed): `SCOUT_ROLE=browser` runs the one Chromium process. Site apps set `BROWSER_RUNTIME_URL` and `BROWSER_RUNTIME_KEY` and send each request with a short-lived signed ticket. Admission limits (`BROWSER_GLOBAL_LIMIT`, `BROWSER_USER_LIMIT`, `BROWSER_DOMAIN_LIMIT`, `BROWSER_RSS_CEILING_MB`) and `BROWSER_IDLE_MS` bound it. `GET /api/browser/budget` shows the planning estimate for six sites on one P1v3. These figures are estimates, not measurements. Full details are in `docs/browser-worker.md`.
+- Only public https hosts. Private, loopback, link-local, and metadata addresses are blocked, including after DNS lookup. A host check that takes longer than 4 s counts as not public. `BROWSER_ALLOWED_HOSTS` narrows the list further.
+- A click or fill stops after 10 s, a registration step after 30 s, and one operation after `BROWSER_OP_TIMEOUT_MS`. A second request for the same event joins the running one.
+- Saved sign-ins are AES-256-GCM encrypted browser state per user and per site (`BROWSER_PROFILE_KEY`), stored under `sites/`. A site's cookies are kept only after the page shows a signed-in state.
+- One-time codes go through an in-memory broker: each challenge has a single-use token bound to the user, task, site, and their Android devices, expires in 5 minutes, and is never written to disk or logs.
+- Checkouts are recorded with a fingerprint of the cart (`checkouts.json`). Pay is pressed only for the approved fingerprint, once per idempotency key, and never if the total changed. Autopay, mandate, and PIN controls are never pressed.
+- Headless runs use full Chromium's new headless mode (`channel: "chromium"`). Zepto renders a blank page and Swiggy a block page for the old headless shell. If full Chromium is missing, it falls back to the shell.
+- Pages nobody watches skip images, fonts, and media.
 
-## Accounts and storage
+A central-browser layout (one Chromium for all six sites, with admission limits and signed tickets) is written but staging only and unmeasured. See [`docs/browser-worker.md`](docs/browser-worker.md).
 
-- Sign-in is by email code, sent from an AgentMail inbox (`AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`).
-- Users and their browser sessions live in SQLite (`SCOUT_DB_PATH`, default `.data/scout.sqlite`, `/home/data/scout.sqlite` on Azure).
-- Browser session status is also kept in `sessions.json` under `BROWSER_STATE_DIR`.
-- Chat memory, the shared profile (`profile_entries`), Scout Watch (`event_watches`), the inbox, and push devices are in the same SQLite file. Secrets such as OTPs, PINs, passwords, and card numbers are refused by the profile store.
-- These are in memory and reset on restart: saved addresses, rate limits, the commerce hub, payment approvals, and pair tickets.
-- Payments run through a gate with approvals, idempotency keys, and quote expiry, backed by a sandbox adapter. No real money moves.
+### Accounts and storage
+
+- Sign-in is by email code from an AgentMail inbox.
+- Users, chat memory, the profile, Scout Watch, the inbox, push devices, and browser sessions live in SQLite (`SCOUT_DB_PATH`, default `.data/scout.sqlite`).
+- Saved addresses, rate limits, the simulated commerce hub, payment approvals, and pair tickets are in memory and reset on restart.
+
+## Run it locally
+
+Requires Node 22.6 or newer. TypeScript runs directly through Node's `--experimental-strip-types`, with no compile step for the server.
+
+```bash
+npm install
+cp .env.example .env                  # fill in the keys you want
+npx playwright-core install chromium  # only for the browser worker
+npm run dev                           # http://127.0.0.1:8787
+```
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Development server |
+| `npm test` | Node's test runner over `test/*.test.ts` |
+| `npm run build` | Vite build of the web app into `dist/` |
+| `npm start` | Production server (`src/server/prod.ts`) |
+| `npm run bolna:setup -- <https origin> [--agent <id>] [--save]` | Registers a site as a Bolna custom LLM and creates or updates its voice agent |
+
+## Configuration
+
+Every setting is listed with comments in [`.env.example`](.env.example). The main ones:
+
+| Variable | Meaning |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Haiku chat. Empty uses the keyword parser |
+| `SARVAM_API_KEY` | Speech in and out |
+| `BOLNA_API_KEY`, `BOLNA_LLM_KEY`, `BOLNA_AGENT_ID` | Live voice calls. All three are needed |
+| `POMERADO_API_KEY` | BookMyShow listings |
+| `GOOGLE_MAPS_API_KEY` | Drive time and addresses |
+| `SCOUT_AGENT` | Pins the process to one agent |
+| `SCOUT_ROLE` | `browser` runs the Chromium-only process |
+| `BROWSER_WORKER_ENABLED` | `1` starts the browser worker |
+| `BROWSER_PROFILE_KEY` | 64 hex characters for encrypted sign-in |
+| `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` | Email sign-in codes |
+| `FIREBASE_DISTRIBUTION_*` | Android install invite from the landing page |
+| `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` | Push for Scout Watch |
+
+Never commit `.env`, keys, or publish profiles.
 
 ## API
 
@@ -83,82 +138,65 @@ Central browser (staging only, not deployed): `SCOUT_ROLE=browser` runs the one 
 | `POST /api/chat` | Chat turn over SSE |
 | `POST /api/demo` | Replay the prepared sample |
 | `POST /api/search` | Grocery price search |
-| `POST /api/commerce`, `POST /api/pay` | Simulated food, shop, appointments, and payment |
+| `POST /api/commerce`, `POST /api/pay` | Food, shop, appointments, and the payment gate |
 | `POST /api/voice/stt`, `POST /api/voice/tts` | Sarvam speech in and out |
-| `POST /api/voice/bolna/session`, `GET /api/voice/live` | Start a Bolna voice call, stream its cards to the open chat |
+| `POST /api/voice/bolna/session`, `GET /api/voice/live` | Start a Bolna call and stream its cards to the chat |
 | `POST /api/bolna/v1/chat/completions`, `GET /api/bolna/v1/models` | Scout as Bolna's LLM (bearer `BOLNA_LLM_KEY`) |
-| `/api/profile`, `/api/watches`, `/api/inbox`, `/api/devices`, `/api/actions/result` | Shared memory, Scout Watch, notifications, push devices, phone action results |
+| `/api/profile`, `/api/watches`, `/api/inbox`, `/api/devices`, `/api/actions/result` | Memory, Scout Watch, notifications, push devices, phone action results |
 | `POST /api/ocr` | Read text from an attached image |
-| `/api/auth/*` | Email code sign-in and session |
-| `/api/onboarding/*` | Name and phone |
+| `/api/auth/*`, `/api/onboarding/*` | Email code sign-in, name and phone |
 | `/api/addresses`, `/api/location/reverse-geocode` | Saved addresses and address lookup |
-| `/api/browser/*` | Browser sessions, handoff, code, profile, budget |
+| `/api/browser/*` | Browser sessions, handoff, codes, profile, budget |
+| `/api/browser/scout/*` | Website tasks: `skills`, `sessions` (saved site sign-ins, revoke), `tasks` (`sign_in` or `shop` with `area`, `latitude`, `longitude`), `checkouts/:id/approve` and `/confirm`, `challenges/:id/code` |
+| `GET`, `PUT`, `DELETE /api/account/phone` | Your phone number, masked, with the date a site last verified it; edit or remove it |
 | `/api/desk`, `/api/pair` | Phone companion desk and pairing |
-| `/api/invite` | Sends the Android install invite through Firebase App Distribution |
-
-## Run it
-
-Requires Node 22.6 or newer.
-
-```bash
-cd scout
-npm install
-cp .env.example .env   # fill in the keys you want
-npm run dev            # http://127.0.0.1:8787
-npm test               # node's test runner over test/*.test.ts
-npm run build          # Vite build into dist/
-npm start              # production server (src/server/prod.ts)
-```
-
-For the browser worker, also run `npx playwright-core install chromium`.
-
-Settings are listed with comments in `.env.example`. The main ones:
-
-| Variable | Meaning |
-| --- | --- |
-| `ANTHROPIC_API_KEY` | Haiku chat. Empty uses the keyword parser |
-| `SARVAM_API_KEY` | Speech in and out |
-| `POMERADO_API_KEY` | BookMyShow listings |
-| `GOOGLE_MAPS_API_KEY` | Drive time and formatted addresses |
-| `SCOUT_AGENT` | Pins the process to one agent |
-| `SCOUT_ROLE` | `browser` runs the Chromium-only process |
-| `BROWSER_WORKER_ENABLED` | `1` starts the browser worker |
-| `BROWSER_PROFILE_KEY` | 64 hex characters for encrypted sign-in |
-| `AGENTMAIL_*` | Email sign-in codes |
-| `FIREBASE_DISTRIBUTION_*` | Android invite from the landing page |
-| `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` | Push for Scout Watch. Falls back to the distribution service account |
-| `BOLNA_API_KEY`, `BOLNA_LLM_KEY`, `BOLNA_AGENT_ID` | Bolna voice calls. All three are needed for the call button to work |
-
-Never commit `.env`, keys, or publish profiles.
+| `/api/invite` | Android install invite through Firebase App Distribution |
 
 ## Deploy
 
-- Azure runs the `scout-site` container image from `sjscoutacr.azurecr.io`, which includes Chromium (`deploy/site.Dockerfile`). Six App Service apps share one P1v3: `sj-scout`, `sj-event-scout`, `sj-travel-scout`, `sj-food-scout`, `sj-shop-scout`, `sj-home-scout`. Appointments has a host name in code but no Azure site.
-- A zip deploy switches the apps back to the Node stack, which has no Chromium, so the browser worker cannot start. Do not zip deploy.
-- `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the container image is manual.
-- `deploy/browser-worker.Dockerfile` is the Chromium-only process. It refuses to start without `BROWSER_PROFILE_KEY` and `BROWSER_ALLOWED_HOSTS`.
-- The apps are pinned to a tag (now `voice4-20261031`), not `latest`. After `az acr build`, import the image under a new tag, then `az webapp config container set -g ledger-rg -n <app> --container-image-name sjscoutacr.azurecr.io/scout-site:<tag>` on all six.
-- Always On and the `/api/health` check are set on the six apps.
-- Public page: `https://scout.shrianshjaiswal.me`.
+Azure App Service runs the `scout-site` container from `sjscoutacr.azurecr.io`, which includes Chromium. Six apps share one P1v3 Linux plan: `sj-scout`, `sj-event-scout`, `sj-shop-scout`, `sj-food-scout`, `sj-travel-scout`, `sj-home-scout`.
 
-## Layout
+```bash
+npm run build
+az acr build -r sjscoutacr -t scout-site:<tag> -f deploy/site.Dockerfile .
+az webapp config container set -g ledger-rg -n <app> \
+  --container-image-name sjscoutacr.azurecr.io/scout-site:<tag>   # repeat for all six apps
+```
+
+- The image copies the prebuilt `dist/`, so run `npm run build` first. Build from a clean checkout so uncommitted work stays out.
+- The apps are pinned to a tag (now `voice4-20261031`), not `latest`, so a restart alone keeps the old build.
+- Do not zip deploy. It switches the apps to the Node stack, which has no Chromium.
+- `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the image is manual.
+- `deploy/browser-worker.Dockerfile` is the Chromium-only process. It refuses to start without `BROWSER_PROFILE_KEY` and `BROWSER_ALLOWED_HOSTS`.
+- After changing the Bolna agent config, run `npm run bolna:setup` for each site with its `--agent` id.
+
+## Project layout
 
 ```
-src/server/        API, chat loops, tools, browser worker, commerce, payments, auth, voice
-src/server/browser/  Playwright driver, policy, worker, store, budget, runtime tickets
-src/shared/        Types and rules used by server and web
-src/web/           React 19 app: App.tsx (state and chat), Sidebar, Welcome, Composer, EventCard, CommerceCard, SettingsPanel, PairPanel, BrowserTasks, SignIn, app.css
-test/              Node test files
+src/
+  server/          HTTP API, chat loops, prompts, SSE, auth, payments gate, landing page
+    browser/       Playwright driver, host policy, worker, shop shelves, sign-in, budget
+    events/        Luma, District, and listing page parsers
+    tools/         Tools Haiku can call (Luma, District, BookMyShow)
+    voice/         Sarvam speech, Bolna session and LLM endpoint, voice router
+    memory/ profile/ watch/ notify/   SQLite memory, shared profile, Scout Watch, inbox and FCM push
+    commerce/ appointments/ payments/ Simulated hub, salon requests, payment gate and sandbox
+  shared/          Types and rules shared by server and web (events, hosts, device actions)
+  web/             React 19 app (chat, cards, composer, settings, voice call)
+test/              Node test files (node:test)
+scripts/           bolnaSetup.ts, live shop probes
 deploy/            Site and browser-worker Dockerfiles
-docs/              Browser worker and booking notes
-scout-landing/     Public landing page
+docs/              Booking and browser worker notes
+scout-landing/     Public landing page served by the server
 ```
 
 ## Known limits
 
-- Travel and Home are not connected. Food, Shop, and Appointments are simulated.
-- Scout does not book or pay on Luma, District, or BookMyShow.
-- State listed under "Accounts and storage" as in memory is lost on restart, and the server cannot run as more than one instance.
+- Sites that ask you to sign in before booking (BookMyShow, District) stop the Book flow, and Scout opens the page instead.
+- The Blinkit and Zepto sign-in, payment, and order-check steps are tested against a local fixture store, not yet against the live sites with a real phone. The live search, location, add-to-cart, and bill steps were checked on Oct 31, 2026.
+- Instamart is compare only.
+- Store pages change. A changed button label stops the task with a message instead of guessing.
+- Food and Appointments are simulated. Travel and Home are not connected.
+- State kept in memory is lost on restart, so the server cannot run as more than one instance.
 - Browser operations run one at a time per process.
-- The central browser layout is a design with planning estimates. It is not deployed or measured.
-- Shop price data is simulated. The only live grocery candidate (QuickCompare) returned HTTP 401 and was not retried. The record is in `src/shared/liveCheck.ts`.
+- The central browser layout is a design with estimates, not deployed or measured.

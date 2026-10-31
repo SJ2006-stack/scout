@@ -4,9 +4,16 @@ import { browserOwner } from "../session.ts";
 import type { UserDirectory } from "../db/userDirectory.ts";
 import { signRuntimeTicket, verifyRuntimeTicket, type BrowserRuntimeConfig } from "./runtimeTicket.ts";
 import type { BrowserWorker } from "./worker.ts";
+import { readJson, sendJson } from "./http.ts";
+import { routeScoutTasks } from "./taskRoutes.ts";
+import type { TaskRunner } from "./taskRunner.ts";
+import type { SessionVault } from "./sessionVault.ts";
+import { relayChallengeCode } from "./taskRoutes.ts";
 
 type BrowserDeps = {
   browser?: BrowserWorker;
+  scoutTasks?: TaskRunner;
+  sessionVault?: SessionVault | null;
   directory?: UserDirectory;
   now?: () => number;
   browserRuntime?: BrowserRuntimeConfig;
@@ -35,6 +42,7 @@ export async function routeBrowser(request: IncomingMessage, response: ServerRes
   const ownerId = owner.ownerId;
   deps.directory?.touch(ownerId, deps.now?.() ?? Date.now());
   const path = url.pathname;
+  if (await routeScoutTasks(request, response, path, ownerId, deps.scoutTasks, deps.sessionVault)) return;
   if (request.method === "GET" && path === "/api/browser/budget") {
     sendJson(response, 200, worker.budget());
     return;
@@ -94,6 +102,12 @@ export async function routeBrowser(request: IncomingMessage, response: ServerRes
       sendJson(response, 400, { error: "Send the numeric code from the message." });
       return;
     }
+    const open = deps.scoutTasks?.openChallenge(ownerId);
+    if (open && deps.scoutTasks) {
+      const result = deps.scoutTasks.submitOwnCode(ownerId, open, code.trim());
+      sendJson(response, result.ok ? 200 : 409, result.ok ? { accepted: true } : { error: "That code was not accepted." });
+      return;
+    }
     await reply(response, await worker.submitOwnerCode(ownerId, code));
     return;
   }
@@ -106,6 +120,11 @@ export async function routeBrowser(request: IncomingMessage, response: ServerRes
     const body = await readJson(request);
     if (!body.ok) {
       sendJson(response, 400, { error: body.error });
+      return;
+    }
+    if (deps.scoutTasks?.hasChallenge(taskCode[1] ?? "")) {
+      const relayed = relayChallengeCode(deps.scoutTasks, ownerId, taskCode[1] ?? "", body.value);
+      sendJson(response, relayed.status, relayed.body);
       return;
     }
     const parsed = parseCode(body.value);
@@ -285,23 +304,6 @@ async function reply(response: ServerResponse, result: Awaited<ReturnType<Browse
   });
 }
 
-async function readJson(request: IncomingMessage): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > 20_000) return { ok: false, error: "Request is too large." };
-    chunks.push(buffer);
-  }
-  const text = Buffer.concat(chunks).toString("utf8");
-  if (text.trim().length === 0) return { ok: false, error: "Send a JSON object." };
-  try {
-    return { ok: true, value: JSON.parse(text) as unknown };
-  } catch {
-    return { ok: false, error: "Request was not valid JSON." };
-  }
-}
 
 function runtimeOwner(
   request: IncomingMessage,
@@ -427,12 +429,4 @@ async function readRaw(request: IncomingMessage): Promise<{ ok: true; value: Buf
 function isLoopback(request: IncomingMessage): boolean {
   const address = request.socket.remoteAddress ?? "";
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
-}
-
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
-  });
-  response.end(JSON.stringify(body));
 }

@@ -17,6 +17,9 @@ import { runSearch } from "./search.ts";
 import { applyCors } from "./cors.ts";
 import { healthPayload } from "./health.ts";
 import { browserRuntimeMaySkipSignIn, routeBrowser } from "./browser/routes.ts";
+import type { SessionVault } from "./browser/sessionVault.ts";
+import type { TaskRunner } from "./browser/taskRunner.ts";
+import { isTerminalState } from "../shared/scoutTask.ts";
 import type { BrowserRuntimeConfig } from "./browser/runtimeTicket.ts";
 import type { BrowserWorker } from "./browser/worker.ts";
 import type { EmailAuth } from "./auth/emailAuth.ts";
@@ -63,6 +66,8 @@ export type ApiDeps = {
   commerce?: CommerceHub;
   pairTickets?: PairTickets;
   browser?: BrowserWorker;
+  scoutTasks?: TaskRunner;
+  sessionVault?: SessionVault | null;
   browserRuntime?: BrowserRuntimeConfig;
   desk?: DeskStore;
   directory?: UserDirectory;
@@ -130,6 +135,10 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
   }
   if (deps.auth && !browserRuntimeMaySkipSignIn(request, url.pathname, deps.browser) && !deps.auth.account(currentSessionId(request))) {
     sendJson(response, 401, { error: "Sign in with the code from your email." });
+    return;
+  }
+  if (url.pathname === "/api/account/phone") {
+    await routePhone(request, response, deps);
     return;
   }
   if (url.pathname === "/api/onboarding/phone" || url.pathname === "/api/onboarding/name") {
@@ -287,6 +296,7 @@ function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortS
     ...(deps.profile ? { profile: deps.profile } : {}),
     ...(deps.watches ? { watches: deps.watches } : {}),
     compareShop: browser ? (query, shopSignal, onStatus) => browser.compareShop(query, shopSignal, owner, onStatus) : undefined,
+    prepareCart: deps.scoutTasks ? cartPreparer(deps.scoutTasks, owner, input, signal) : undefined,
     readPage: browser ? (url) => browser.readHtml(url, signal, owner) : undefined,
     registerPage: browser
       ? (url, title) => {
@@ -373,6 +383,65 @@ async function routeSignIn(request: IncomingMessage, response: ServerResponse, u
     }
     setSessionCookie(response, result.userId);
     sendJson(response, 200, { signedIn: true, email: result.email, userId: result.userId });
+    return;
+  }
+  sendJson(response, 404, { error: "Not found" });
+}
+
+const CART_WAIT_MS = 120_000;
+const CART_POLL_MS = 500;
+
+function cartPreparer(
+  runner: TaskRunner,
+  owner: string,
+  where: { pincode: string; lat: number | null; lon: number | null },
+  signal: AbortSignal,
+): NonNullable<ChatTurn["prepareCart"]> {
+  return async (store, item, quantity, onStart, onStatus) => {
+    const geolocation = where.lat != null && where.lon != null ? { latitude: where.lat, longitude: where.lon } : undefined;
+    const started = runner.shop(owner, store, item, quantity, { area: where.pincode.trim() || null, ...(geolocation ? { geolocation } : {}) });
+    if (!started.ok) return { ok: false, error: started.error };
+    onStart(started.task.id);
+    let told = 0;
+    const deadline = Date.now() + CART_WAIT_MS;
+    while (!signal.aborted && Date.now() < deadline) {
+      const view = runner.view(owner, started.task.id);
+      if (!view) return { ok: false, error: "Scout lost track of the cart." };
+      for (const event of view.events.slice(told)) onStatus(event.message);
+      told = view.events.length;
+      if (view.state === "waiting_verification" || (isTerminalState(view.state) && view.state !== "authenticated")) return { ok: true, task: view };
+      await new Promise((resolve) => setTimeout(resolve, CART_POLL_MS));
+    }
+    const view = runner.view(owner, started.task.id);
+    return view ? { ok: true, task: view } : { ok: false, error: "Scout lost track of the cart." };
+  };
+}
+
+async function routePhone(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
+  const account = deps.auth?.account(currentSessionId(request));
+  const directory = deps.directory;
+  if (!account || !directory) {
+    sendJson(response, 401, { error: "Sign in with the code from your email." });
+    return;
+  }
+  if (request.method === "GET") {
+    sendJson(response, 200, directory.phoneProfile(account.id));
+    return;
+  }
+  if (request.method === "DELETE") {
+    directory.clearPhone(account.id, deps.now());
+    sendJson(response, 200, directory.phoneProfile(account.id));
+    return;
+  }
+  if (request.method === "PUT") {
+    const body = await readJson(request);
+    const record = body.ok && body.value && typeof body.value === "object" ? body.value as Record<string, unknown> : {};
+    const phone = indianMobile(typeof record.phone === "string" ? record.phone : "");
+    if (!phone || !directory.setPhone(account.id, phone, deps.now())) {
+      sendJson(response, 400, { error: "Enter an Indian mobile number." });
+      return;
+    }
+    sendJson(response, 200, directory.phoneProfile(account.id));
     return;
   }
   sendJson(response, 404, { error: "Not found" });

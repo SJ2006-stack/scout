@@ -8,7 +8,11 @@ import { idleMsFromEnv, limitsFromEnv } from "./browser/budget.ts";
 import { PlaywrightBrowserDriver } from "./browser/playwrightDriver.ts";
 import { browserConfigFromEnv, browserRoleError } from "./browser/policy.ts";
 import { browserRuntimeFromEnv } from "./browser/runtimeTicket.ts";
-import { ProfileVault } from "./browser/profileVault.ts";
+import { CheckoutLedger } from "./browser/checkoutLedger.ts";
+import { OtpBroker } from "./browser/otpBroker.ts";
+import { allowBrowserRequest, checkNavigationUrl } from "./browser/policy.ts";
+import { SessionVault } from "./browser/sessionVault.ts";
+import { TaskRunner } from "./browser/taskRunner.ts";
 import { BrowserStore } from "./browser/store.ts";
 import { BrowserWorker } from "./browser/worker.ts";
 import { PriceCache } from "./cache.ts";
@@ -87,7 +91,7 @@ export function createDeps(): ApiDeps {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() ?? "",
     sarvamApiKey: process.env.SARVAM_API_KEY?.trim() ?? "",
     commerce: createCommerceHub(Date.now),
-    browser: createBrowserWorker(directory),
+    ...createBrowserRuntime(directory, inbox, notifier),
     browserRuntime: browserRuntimeFromEnv(process.env),
     desk: new DeskStore(join(root, ".data", "desk", "conversations.json")),
     directory,
@@ -102,18 +106,47 @@ export function useLocalBrowserWorker(env: NodeJS.ProcessEnv, enabled: boolean):
   return enabled;
 }
 
-function createBrowserWorker(directory: UserDirectory): BrowserWorker | undefined {
+function createBrowserRuntime(directory: UserDirectory, inbox: InboxStore, notifier: Notifier): { browser?: BrowserWorker; scoutTasks?: TaskRunner; sessionVault?: SessionVault | null } {
   const config = browserConfigFromEnv(process.env, root);
   const roleError = browserRoleError(config);
   if (roleError) throw new Error(roleError);
-  if (!useLocalBrowserWorker(process.env, config.enabled)) return undefined;
+  if (!useLocalBrowserWorker(process.env, config.enabled)) return {};
   const vault = config.profileKey
-    ? new ProfileVault(join(config.stateDir, "profiles"), config.profileKey, config.profileTtlMs, Date.now)
+    ? new SessionVault(join(config.stateDir, "sites"), config.profileKey, config.profileTtlMs, Date.now)
     : null;
   if (config.profileKey == null) console.error("Browser profiles stay off until BROWSER_PROFILE_KEY is 64 hex characters.");
   const idleMs = idleMsFromEnv(process.env);
+  const driver = new PlaywrightBrowserDriver(config.operationTimeoutMs);
+  const scoutTasks = new TaskRunner({
+    driver,
+    vault,
+    broker: new OtpBroker(Date.now),
+    ledger: new CheckoutLedger(join(config.stateDir, "checkouts.json"), Date.now),
+    account: (userId) => {
+      const account = directory.account(userId);
+      return account ? { email: account.email, phone: account.phone, name: account.name } : null;
+    },
+    devices: (userId) => inbox.devices(userId).filter((device) => device.platform === "android").map((device) => device.deviceId),
+    allow: (url) => allowBrowserRequest(url, config.allowedHosts),
+    checkUrl: (url) => checkNavigationUrl(url, config.allowedHosts),
+    now: Date.now,
+    notify: (userId, title, body) => {
+      void notifier.notify(userId, { agent: "shop", kind: "browser-task", title, body, url: null }).catch(() => undefined);
+    },
+    onPhoneVerified: (userId) => directory.markPhoneVerified(userId, Date.now()),
+  });
+  return { browser: createBrowserWorker(directory, vault, driver, config, idleMs), scoutTasks, sessionVault: vault };
+}
+
+function createBrowserWorker(
+  directory: UserDirectory,
+  vault: SessionVault | null,
+  driver: PlaywrightBrowserDriver,
+  config: ReturnType<typeof browserConfigFromEnv>,
+  idleMs: number | undefined,
+): BrowserWorker {
   return new BrowserWorker({
-    driver: new PlaywrightBrowserDriver(config.operationTimeoutMs),
+    driver,
     store: new BrowserStore(join(config.stateDir, "sessions.json"), directory),
     vault,
     canShowWindow: false,

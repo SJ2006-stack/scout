@@ -13,6 +13,10 @@ export type IsolatedOpen = {
   allow: (url: string) => boolean;
   storageState?: unknown;
   headed?: boolean;
+  /** Skips images, fonts, and media. Only for pages no one watches. */
+  lean?: boolean;
+  /** The user's delivery point, for stores that read it from the browser. */
+  geolocation?: { latitude: number; longitude: number };
 };
 
 export interface IsolatedPage {

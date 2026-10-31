@@ -1,11 +1,12 @@
 import { paymentTarget } from "../../shared/payLink.ts";
 import { parseAriaSnapshot } from "./aria.ts";
-import { chromiumLaunchOptions } from "./chromiumLaunch.ts";
+import { chromiumContextProfile, chromiumLaunchOptions, type ChromiumContextProfile, type ChromiumLaunchOptions } from "./chromiumLaunch.ts";
 import type { BrowserDriver, ElementTarget, IsolatedOpen, IsolatedPage, PageElement } from "./driver.ts";
 import { isPageLocalUrl, rememberedPublicHost, type HostVerdictCache } from "./policy.ts";
 
 type LaunchedBrowser = {
-  newContext(options?: { storageState?: unknown }): Promise<LaunchedContext>;
+  newContext(options?: Partial<ChromiumContextProfile> & { storageState?: unknown; geolocation?: { latitude: number; longitude: number }; permissions?: string[] }): Promise<LaunchedContext>;
+  version(): string;
   close(): Promise<void>;
 };
 
@@ -19,7 +20,7 @@ type LaunchedContext = {
 };
 
 type LaunchedRoute = {
-  request(): { url(): string; isNavigationRequest(): boolean };
+  request(): { url(): string; isNavigationRequest(): boolean; resourceType(): string };
   continue(): Promise<void>;
   abort(errorCode?: string): Promise<void>;
 };
@@ -31,11 +32,14 @@ type LaunchedPage = {
   title(): Promise<string>;
   locator(selector: string): { ariaSnapshot(): Promise<string> };
   getByRole(role: AriaRole, options: { name: string; exact: true }): { nth(index: number): { click(options: { timeout: number }): Promise<void>; fill(value: string, options: { timeout: number }): Promise<void> } };
+  getByText(text: string): { nth(index: number): { click(options: { timeout: number }): Promise<void> } };
   screenshot(options: { type: "png" }): Promise<Buffer>;
 };
 
 type AriaRole = "button" | "link" | "checkbox" | "radio" | "tab" | "menuitem" | "option" | "switch" | "textbox" | "searchbox" | "combobox";
 
+const ACTION_TIMEOUT_MS = 10_000;
+const LEAN_SKIP = new Set(["image", "font", "media"]);
 const ROLES = new Set<string>(["button", "link", "checkbox", "radio", "tab", "menuitem", "option", "switch", "textbox", "searchbox", "combobox"]);
 
 export class PlaywrightBrowserDriver implements BrowserDriver {
@@ -44,14 +48,17 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
   private readonly hostCache: HostVerdictCache = new Map();
   private readonly hostLookups = new Map<string, Promise<boolean>>();
   private readonly operationTimeoutMs: number;
+  private readonly publicOnly: boolean;
 
-  constructor(operationTimeoutMs: number) {
+  /** publicOnly is false only in tests that drive a local fixture site. */
+  constructor(operationTimeoutMs: number, options: { publicOnly?: boolean } = {}) {
     this.operationTimeoutMs = operationTimeoutMs;
+    this.publicOnly = options.publicOnly !== false;
   }
 
   async warm(): Promise<void> {
     const browser = await this.launch(false);
-    const context = await browser.newContext();
+    const context = await browser.newContext(chromiumContextProfile(browser.version()));
     try {
       const page = await context.newPage();
       await page.goto("about:blank", { timeout: this.operationTimeoutMs, waitUntil: "domcontentloaded" });
@@ -63,12 +70,20 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
   async openIsolated(options: IsolatedOpen): Promise<IsolatedPage> {
     const headed = options.headed === true;
     const browser = await this.launch(headed);
-    const context = await browser.newContext(options.storageState === undefined ? {} : { storageState: options.storageState });
+    const context = await browser.newContext({
+      ...chromiumContextProfile(browser.version()),
+      ...(options.storageState === undefined ? {} : { storageState: options.storageState }),
+      ...(options.geolocation ? { geolocation: options.geolocation, permissions: ["geolocation"] } : {}),
+    });
     context.setDefaultTimeout(this.operationTimeoutMs);
     context.setDefaultNavigationTimeout(this.operationTimeoutMs);
     const payments: string[] = [];
     await context.route("**/*", async (route) => {
       const target = route.request().url();
+      if (options.lean === true && !headed && LEAN_SKIP.has(route.request().resourceType())) {
+        await route.abort("blockedbyclient");
+        return;
+      }
       const payment = paymentTarget(target);
       if (payment) {
         payments.push(payment);
@@ -86,7 +101,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
         await route.abort("blockedbyclient");
         return;
       }
-      if (!options.allow(target) || !(await rememberedPublicHost(hostname, this.hostCache, this.hostLookups, Date.now()))) {
+      if (!options.allow(target) || (this.publicOnly && !(await rememberedPublicHost(hostname, this.hostCache, this.hostLookups, Date.now())))) {
         await route.abort("blockedbyclient");
         return;
       }
@@ -161,15 +176,20 @@ class PlaywrightPage implements IsolatedPage {
   }
 
   async click(target: ElementTarget, signal: AbortSignal): Promise<void> {
+    if (target.role === "text") {
+      const lead = target.name.replace(/^(?:\S\s)+/, "").split(/\s+/).slice(0, 2).join(" ");
+      await raceSignal(this.page.getByText(lead).nth(target.nth).click({ timeout: Math.min(this.operationTimeoutMs, ACTION_TIMEOUT_MS) }), signal);
+      return;
+    }
     const role = asRole(target.role);
     const locator = this.page.getByRole(role, { name: target.name, exact: true }).nth(target.nth);
-    await raceSignal(locator.click({ timeout: this.operationTimeoutMs + 1_000 }), signal);
+    await raceSignal(locator.click({ timeout: Math.min(this.operationTimeoutMs, ACTION_TIMEOUT_MS) }), signal);
   }
 
   async fill(target: ElementTarget, value: string, signal: AbortSignal): Promise<void> {
     const role = asRole(target.role);
     const locator = this.page.getByRole(role, { name: target.name, exact: true }).nth(target.nth);
-    await raceSignal(locator.fill(value, { timeout: this.operationTimeoutMs + 1_000 }), signal);
+    await raceSignal(locator.fill(value, { timeout: Math.min(this.operationTimeoutMs, ACTION_TIMEOUT_MS) }), signal);
   }
 
   takePayment(): string | null {
@@ -199,8 +219,15 @@ async function loadChromium(headed: boolean): Promise<LaunchedBrowser> {
   try {
     // Loaded only when a session opens so Event Scout still starts when Chromium is not installed.
     const imported = await import("playwright-core");
-    const playwright = imported as unknown as { chromium: { launch(options: { headless: boolean; args?: string[] }): Promise<LaunchedBrowser> } };
-    return await playwright.chromium.launch(chromiumLaunchOptions(headed));
+    const playwright = imported as unknown as { chromium: { launch(options: ChromiumLaunchOptions): Promise<LaunchedBrowser> } };
+    const options = chromiumLaunchOptions(headed);
+    try {
+      return await playwright.chromium.launch(options);
+    } catch (error) {
+      if (!options.channel) throw error;
+      console.error("Full Chromium was not found. Falling back to the headless shell.");
+      return await playwright.chromium.launch({ headless: options.headless, args: options.args });
+    }
   } catch {
     console.error(headed ? "Browser worker could not open a visible Chromium window." : "Browser worker could not launch Chromium.");
     throw new Error(headed ? "The browser window could not be opened." : "The browser could not be started.");

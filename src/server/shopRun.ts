@@ -13,7 +13,7 @@ export async function runShopSearch(
   signal: AbortSignal,
   ownerId?: string,
 ): Promise<void> {
-  emit({ type: "status", message: "Opening Blinkit, then Zepto, then Instamart." });
+  emit({ type: "status", message: `Comparing ${query} on Blinkit, Zepto, and Instamart.` });
   const shop = await worker.compareShop(query, signal, ownerId, (message) => emit({ type: "status", message }));
   if (signal.aborted) return;
   if (shop.signIn) emit({ type: "text", message: withEmoji(shop.signIn) });

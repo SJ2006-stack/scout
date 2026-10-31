@@ -79,6 +79,7 @@ export class UserDirectory {
     this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email) WHERE email IS NOT NULL");
     addColumn(this.db, "users", "phone", "TEXT");
     addColumn(this.db, "users", "preferred_name", "TEXT");
+    addColumn(this.db, "users", "phone_verified_at", "INTEGER");
   }
 
   touch(userId: string, now: number): void {
@@ -171,9 +172,27 @@ export class UserDirectory {
   setPhone(userId: string, phone: string, now: number): boolean {
     if (!USER_ID.test(userId)) return false;
     const result = this.db.prepare(
-      "UPDATE users SET phone = ?, last_seen_at = ? WHERE id = ? AND email IS NOT NULL",
-    ).run(phone, now, userId);
+      "UPDATE users SET phone = ?, phone_verified_at = CASE WHEN phone = ? THEN phone_verified_at ELSE NULL END, last_seen_at = ? WHERE id = ? AND email IS NOT NULL",
+    ).run(phone, phone, now, userId);
     return result.changes > 0;
+  }
+
+  /** Removes the stored number. Website sign-ins that need a phone stop until a new one is added. */
+  clearPhone(userId: string, now: number): boolean {
+    if (!USER_ID.test(userId)) return false;
+    return this.db.prepare("UPDATE users SET phone = NULL, phone_verified_at = NULL, last_seen_at = ? WHERE id = ?").run(now, userId).changes > 0;
+  }
+
+  /** Set when a website accepted an SMS code sent to the stored number. */
+  markPhoneVerified(userId: string, now: number): void {
+    if (!USER_ID.test(userId)) return;
+    this.db.prepare("UPDATE users SET phone_verified_at = ? WHERE id = ? AND phone IS NOT NULL").run(now, userId);
+  }
+
+  phoneProfile(userId: string): { masked: string | null; verifiedAt: number | null } {
+    if (!USER_ID.test(userId)) return { masked: null, verifiedAt: null };
+    const row = this.db.prepare("SELECT phone, phone_verified_at FROM users WHERE id = ?").get(userId) as { phone: string | null; phone_verified_at: number | null } | undefined;
+    return { masked: row?.phone ? maskPhone(row.phone) : null, verifiedAt: row?.phone_verified_at ?? null };
   }
 
   setName(userId: string, name: string, now: number): boolean {
@@ -275,4 +294,9 @@ function profileState(value: string | null): ProfileState {
     default:
       return "absent";
   }
+}
+
+export function maskPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  return digits.length < 4 ? "••••" : `••••••${digits.slice(-4)}`;
 }

@@ -12,6 +12,7 @@ import { commerceAgent } from "./agentRoute.ts";
 import { agentById } from "./agents.ts";
 import { apiUrl, backendHeaders, forgetSignedInUser, rememberSignedInUser } from "./backend.ts";
 import { CartCard, PayCard, QuoteCard, ReceiptCard } from "./CommerceCard.tsx";
+import { ScoutTaskCard } from "./ScoutTaskCard.tsx";
 import { Composer } from "./Composer.tsx";
 import { deleteConversation } from "./conversationList.ts";
 import { conversationsFromStorage, emptyConversation, loadConversations, mergeConversations, saveConversations, type Conversation, type Turn } from "./conversations.ts";
@@ -1005,6 +1006,8 @@ function TurnView({
       return <ReceiptCard receipt={turn.receipt} />;
     case "pay":
       return <PayCard pay={turn.pay} />;
+    case "task":
+      return <ScoutTaskCard taskId={turn.taskId} title={turn.title} />;
     default: {
       const neverTurn: never = turn;
       return neverTurn;
@@ -1074,6 +1077,8 @@ function turnsFrom(event: ChatEvent): Turn[] {
       return [{ kind: "receipt", receipt: event.receipt }];
     case "pay":
       return [{ kind: "pay", pay: event.pay }];
+    case "task":
+      return [{ kind: "task", taskId: event.taskId, skill: event.skill, title: event.title }];
     case "drive":
     case "device":
     case "watch":
@@ -1199,6 +1204,7 @@ function activityFrom(event: ChatEvent): string | null {
     case "quote":
     case "receipt":
     case "pay":
+    case "task":
     case "drive":
     case "device":
     case "watch":

@@ -1,18 +1,21 @@
 import { randomBytes } from "node:crypto";
 import type { BrowserSessionView, BrowserTaskEvent } from "../../shared/browser.ts";
-import type { PayLink } from "../../shared/payLink.ts";
 import type { BrowserDriver, IsolatedPage } from "./driver.ts";
 import { admit, describeBudget, idleSessionIds, sessionHost, type AdmissionLimits, type BudgetReport } from "./budget.ts";
 import { allowBrowserRequest, checkNavigationUrl } from "./policy.ts";
-import { attendListing, checkoutShelf, cheapestOffer, readShelf, registerControl, shelfSummary, SHOP_SITES, type AttendResult, type ShopOffer, type ShopRun } from "./shelf.ts";
+import { attendListing, cheapestOffer, readShelf, registerControl, shelfSummary, SHOP_SITES, type AttendResult, type ShopRun } from "./shelf.ts";
 import { attemptSignIn, SIGN_IN_CODE_MESSAGE, type AccountLogin } from "./signIn.ts";
 import type { UserDirectory } from "../db/userDirectory.ts";
-import type { ProfileVault } from "./profileVault.ts";
+import { registrable, type SessionVault } from "./sessionVault.ts";
+import { skillForHost } from "./skills.ts";
 import { assignRefs, publicElements, type AssignedElement } from "./refs.ts";
 import { BrowserStore, type StoredSession } from "./store.ts";
 
 const CLICK_ROLES = new Set(["button", "link", "checkbox", "radio", "tab", "menuitem", "option", "switch"]);
 const FILL_ROLES = new Set(["textbox", "searchbox", "combobox"]);
+const REGISTER_STEP_MS = 30_000;
+const SHOP_STEP_MS = 25_000;
+const GENERIC_SIGNED_IN = /sign[\s-]?out|log[\s-]?out|my account|my orders/i;
 
 export type BrowserOutcome =
   | { kind: "json"; httpStatus: number; body: unknown }
@@ -34,7 +37,7 @@ type PendingCode = {
 type WorkerOptions = {
   driver: BrowserDriver;
   store: BrowserStore;
-  vault: ProfileVault | null;
+  vault: SessionVault | null;
   canShowWindow: boolean;
   operationTimeoutMs: number;
   sessionTtlMs: number;
@@ -64,6 +67,7 @@ export class BrowserWorker {
   private readonly options: WorkerOptions;
   private tail: Promise<void> = Promise.resolve();
   private readonly lanes = new Map<string, Promise<void>>();
+  private readonly attending = new Map<string, Promise<AttendResult | null>>();
   private readonly waiting: Array<() => void> = [];
   private active = 0;
   private opening = 0;
@@ -155,7 +159,13 @@ export class BrowserWorker {
   }
 
   collectPay(pageUrl: string, title: string, merchant: string, parent?: AbortSignal, ownerId?: string): Promise<AttendResult | null> {
-    return this.lane(ownerId, () => this.collectPayInner(pageUrl, title, merchant, parent, ownerId));
+    const key = `${ownerId ?? ""}\0${pageUrl}`;
+    const running = this.attending.get(key);
+    if (running) return running;
+    const started = this.lane(ownerId, () => this.collectPayInner(pageUrl, title, merchant, parent, ownerId))
+      .finally(() => this.attending.delete(key));
+    this.attending.set(key, started);
+    return started;
   }
 
   submitOwnerCode(ownerId: string, code: string): Promise<BrowserOutcome> {
@@ -249,7 +259,7 @@ export class BrowserWorker {
       const headed = this.options.canShowWindow;
       page = await this.options.driver.openIsolated({
         allow: (candidate) => this.permit(candidate),
-        storageState: this.options.vault?.load(ownerId) ?? undefined,
+        storageState: this.savedFor(ownerId, [checked.url]),
         headed,
       });
       const session = this.options.store.openSession({
@@ -302,14 +312,14 @@ export class BrowserWorker {
     if (this.stopped) return { ok: false, message: "Browser worker is not enabled on this server." };
     const checked = this.checkedUrl(rawUrl);
     if (!checked.ok) return { ok: false, message: checked.error };
-    const saved = ownerId ? this.options.vault?.load(ownerId) ?? null : null;
     let page: IsolatedPage | null = null;
     let held = false;
     try {
       page = await this.options.driver.openIsolated({
         allow: (candidate) => this.permit(candidate),
         headed: false,
-        storageState: saved ?? undefined,
+        lean: true,
+        storageState: this.savedFor(ownerId, [checked.url]),
       });
       const opened = page;
       const landed = await withTimeout(this.options.operationTimeoutMs, (signal) => opened.goto(checked.url, linkSignal(signal, parent)));
@@ -340,37 +350,25 @@ export class BrowserWorker {
     if (needle.length < 2) return { ...empty, summary: "Tell Scout an item to look up." };
     if (parent?.aborted || this.stopped) return { ...empty, summary: shelfSummary([]) };
     const note: Note = { text: null };
-    const run = await this.withPage(parent, ownerId, null, note, async (page, step) => {
-      const offers: ShopOffer[] = [];
-      let opened = 0;
-      let needsLocation = false;
-      for (const site of SHOP_SITES) {
-        if (parent?.aborted) break;
-        onStatus?.(`Opening ${site.merchant}.`);
-        try {
-          const shelf = await readShelf(page, needle, site.merchant, step);
-          opened += 1;
-          needsLocation = needsLocation || shelf.needsLocation;
-          offers.push(...shelf.offers);
-        } catch (error) {
-          note.text = pageFailure(error);
-        }
-      }
-      return { offers, opened, needsLocation };
-    }, 90_000, false);
+    onStatus?.("Opening Blinkit, Zepto, and Instamart together.");
+    const shelves = await Promise.all(SHOP_SITES.map(async (site) => {
+      const siteNote: Note = { text: null };
+      const shelf = await this.withPage(parent, ownerId, null, siteNote, async (page, step) => readShelf(page, needle, site.merchant, step), SHOP_STEP_MS, false);
+      if (siteNote.text) note.text = siteNote.text;
+      if (shelf) onStatus?.(shelf.offers.length > 0 ? `${site.merchant} showed ${shelf.offers.length} prices.` : `${site.merchant} showed no price.`);
+      return shelf;
+    }));
+    const opened = shelves.filter((shelf) => shelf != null);
+    const run = { offers: opened.flatMap((shelf) => shelf.offers), opened: opened.length, needsLocation: opened.some((shelf) => shelf.needsLocation) };
     if (!run || run.opened === 0) {
       return { ...empty, summary: note.text ?? empty.summary };
     }
     const cheapest = cheapestOffer(run.offers);
-    const pay = cheapest && note.text == null ? await this.oneCheckout(cheapest, note, parent, ownerId) : null;
+    const pay = null;
     const summary = run.offers.length === 0 && run.needsLocation
       ? "Blinkit, Zepto, and Instamart opened, but they need a delivery location before they show a price."
       : shelfSummary(run.offers);
     return { offers: run.offers, cheapest, pay, summary, signIn: note.text };
-  }
-
-  private async oneCheckout(offer: ShopOffer, note: Note, parent?: AbortSignal, ownerId?: string): Promise<PayLink | null> {
-    return this.withPage(parent, ownerId, offer.pageUrl, note, async (page, step) => checkoutShelf(page, offer, step));
   }
 
   private async collectPayInner(pageUrl: string, title: string, merchant: string, parent?: AbortSignal, ownerId?: string): Promise<AttendResult | null> {
@@ -378,7 +376,7 @@ export class BrowserWorker {
     const checked = this.checkedUrl(pageUrl);
     if (!checked.ok) return null;
     const note: Note = { text: null };
-    const result = await this.withPage(parent, ownerId, checked.url, note, async (page, step) => attendListing(page, checked.url, merchant, title, this.loginFor(ownerId), step), 90_000);
+    const result = await this.withPage(parent, ownerId, checked.url, note, async (page, step) => attendListing(page, checked.url, merchant, title, this.loginFor(ownerId), step), REGISTER_STEP_MS);
     if (result) return result;
     if (note.text) return { pay: null, message: note.text };
     return { pay: null, message: "The browser worker could not open the registration." };
@@ -389,11 +387,11 @@ export class BrowserWorker {
     let page: IsolatedPage | null = null;
     let held = false;
     try {
-      const saved = ownerId ? this.options.vault?.load(ownerId) ?? null : null;
       page = await this.options.driver.openIsolated({
         allow: (candidate) => this.permit(candidate),
         headed: false,
-        storageState: saved ?? undefined,
+        lean: true,
+        storageState: this.savedFor(ownerId, startUrl ? [startUrl] : SHOP_SITES.map((site) => site.home)),
       });
       const opened = page;
       const step = <R>(work: (signal: AbortSignal) => Promise<R>): Promise<R> =>
@@ -739,8 +737,13 @@ export class BrowserWorker {
     const vault = this.options.vault;
     if (!vault || this.revoked.has(ownerId)) return;
     try {
+      const where = await withTimeout(this.options.operationTimeoutMs, (signal) => page.location(signal));
+      const host = new URL(where.url).hostname;
+      const elements = await withTimeout(this.options.operationTimeoutMs, (signal) => page.elements(signal));
+      const signedIn = skillForHost(host)?.login.signedIn ?? GENERIC_SIGNED_IN;
+      const verified = elements.some((element) => signedIn.test(element.name));
       const state = await withTimeout(this.options.operationTimeoutMs, (signal) => page.storageState(signal));
-      vault.save(ownerId, state);
+      vault.save(ownerId, host, state, verified);
       this.rememberProfile(ownerId);
     } catch {
       // Keep the previous saved sign-in when the page cannot be read.
@@ -888,6 +891,18 @@ export class BrowserWorker {
 
   private now(): number {
     return this.options.now();
+  }
+
+  private savedFor(ownerId: string | undefined, urls: readonly string[]): unknown {
+    if (!ownerId || !this.options.vault) return undefined;
+    const domains = urls.flatMap((url) => {
+      try {
+        return [registrable(new URL(url).hostname)];
+      } catch {
+        return [];
+      }
+    });
+    return this.options.vault.loadFor(ownerId, domains) ?? undefined;
   }
 
   private rememberProfile(ownerId: string): void {

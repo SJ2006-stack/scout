@@ -13,36 +13,45 @@ import { calendarDates, dateRange } from "../src/shared/when.ts";
 const now = Date.parse("2026-10-25T00:00:00.000Z");
 
 describe("shorter waits", () => {
-  it("stops a pending BookMyShow job at the connector timeout and does not cache it", async () => {
-    const city = cityById("bengaluru");
+  it("answers at the connector timeout, keeps the BookMyShow job running, and caches only its success", async () => {
+    const city = cityById("hyderabad");
     assert.ok(city);
     const range = dateRange("today", now, "Asia/Kolkata");
+    const [date] = calendarDates(range.startMs, range.endMs, "Asia/Kolkata");
     const cache = new ListingCache(600_000, () => now);
-    const result = await bookMyShowTool.load({
+    const listing = { id: "ET00000001", kind: "movies", title: "Late Film", detail_url: "https://in.bookmyshow.com/movies/hyderabad/late-film/ET00000001", venues: [] };
+    const load = (fetchImpl: typeof fetch) => bookMyShowTool.load({
       city,
       range,
-      kind: null,
+      kind: "movie",
       timezone: "Asia/Kolkata",
       retrievedAt: "2026-10-25T00:00:00.000Z",
       timeoutMs: 40,
       signal: new AbortController().signal,
       cache,
       pomeradoApiKey: "test-key",
-      fetchImpl: (async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/runs/")) {
-          return new Response(JSON.stringify({ id: `job_${"a".repeat(32)}`, status: "queued" }), { status: 200 });
-        }
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-        return new Response(JSON.stringify({ status: "running" }), { status: 200 });
-      }) as typeof fetch,
+      fetchImpl,
     });
-    assert.equal(result.ok, false);
-    assert.match(result.message, /timed out/);
-    for (const date of calendarDates(range.startMs, range.endMs, "Asia/Kolkata")) {
-      assert.equal(cache.get(`bookmyshow|bengaluru|${date}|movies`), undefined);
-      assert.equal(cache.get(`bookmyshow|bengaluru|${date}|events`), undefined);
-    }
+    let runs = 0;
+    const slow = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("/runs/")) {
+        runs += 1;
+        return new Response(JSON.stringify({ id: `job_${"b".repeat(32)}`, status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "succeeded", result: { listings: [listing] } }), { status: 200 });
+    }) as typeof fetch;
+    const first = await load(slow);
+    assert.equal(first.ok, false);
+    assert.match(first.message, /still loading/);
+    assert.equal(cache.get(`bookmyshow|hyderabad|${date}|movies`), undefined);
+    const again = await load(slow);
+    assert.match(again.message, /still loading/);
+    assert.equal(runs, 1);
+    await new Promise((resolve) => setTimeout(resolve, 1_700));
+    assert.equal(cache.get(`bookmyshow|hyderabad|${date}|movies`)?.[0]?.title, "Late Film");
+    const later = await load(slow);
+    assert.equal(later.ok, true);
+    assert.equal(later.listings[0]?.title, "Late Film");
   });
 
   it("emits answer text as Haiku chunks arrive and drops a tool-round draft", async () => {

@@ -8,6 +8,7 @@ import type { ChatMemory } from "./chatMemory.ts";
 import { ChatMemoryStore } from "./chatMemory.ts";
 import type { ListingCache } from "./listingCache.ts";
 import type { CommerceHub } from "./commerce/hub.ts";
+import type { ScoutTaskView } from "../shared/scoutTask.ts";
 import type { ShopRun } from "./browser/shelf.ts";
 import { converseWithHaiku } from "./haikuChat.ts";
 import { converseSpecialist, fallbackSpecialist, type SpecialistAgent } from "./specialistChat.ts";
@@ -42,6 +43,14 @@ export type ChatTurn = {
   agent?: AgentId;
   commerce?: CommerceHub;
   compareShop?: (query: string, signal: AbortSignal, onStatus: (message: string) => void) => Promise<ShopRun>;
+  /** Starts a live cart task on one store and resolves when it needs the user or stops. */
+  prepareCart?: (
+    store: string,
+    item: string,
+    quantity: number,
+    onStart: (taskId: string) => void,
+    onStatus: (message: string) => void,
+  ) => Promise<{ ok: true; task: ScoutTaskView } | { ok: false; error: string }>;
   profile?: ProfileStore;
   watches?: WatchStore;
   /** Receives the reply so far while Haiku streams; an empty string means earlier text was superseded. */

@@ -349,7 +349,7 @@ function toolContent(source: ToolName, ok: boolean, cached: boolean, range: Date
     start,
     end,
     timezone,
-    note: message === SIGN_IN_CODE_MESSAGE ? message : undefined,
+    note: message === SIGN_IN_CODE_MESSAGE || !ok ? message : undefined,
     withheld: Math.max(0, total - listings.length),
     listings: listings.map((listing) => ({
       title: listing.title,
@@ -402,6 +402,8 @@ function instructions(nowMs: number, timeZoneName: string, remembered: WhenWindo
     `${WHEN_RULE} kind is any when they did not name a type. budgetRupees is 0 when they did not name a maximum.`,
     "A search result is JSON. Its fields are source, ok, cached, window, date, start, end, timezone, withheld, and listings. window is today, tomorrow, weekend, week, or YYYY-MM-DD. date is YYYY-MM-DD when window is a single day, and null otherwise. start and end are the first and last calendar dates in the window. listings items are title, kind, start, price, and url. withheld is how many other listings were held back. Each listing's start is the time to judge. open_event returns the full page text for one event.",
     "The reply may mention only listings inside the requested window. A named day means that day only. If listings is empty, say nothing matched that day.",
+    "A failed result has a note. If the note says a source is still loading, say that source is still loading and offer to check again in a moment. Do not say it found nothing.",
+    "If register_event already ran for an event in this chat, report that result when they ask whether it worked. Do not call register_event again unless they ask you to retry.",
     "Do not invent events, prices, or links. After the tools answer, talk about those results.",
     "Sign in with the Gmail address and phone number already on this account. The browser worker types that phone number or that Gmail address and asks the site to send a code. When the code comes back, the signed-in browser session is saved in the vault and reused. Do not say you have no login, no account, or no booking ability. If a tool says a sign-in code was sent, tell them to approve that code on their phone.",
     "Payment still opens in their UPI app. Never ask for a UPI PIN. If they are just chatting, answer without tools.",

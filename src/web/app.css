@@ -672,6 +672,22 @@ h1, h2, h3, p, dl, dd { margin: 0; }
   color: var(--muted);
 }
 
+.scout-task-code {
+  display: flex;
+  gap: 8px;
+}
+
+.scout-task-code input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 1rem;
+  letter-spacing: 0.2em;
+}
+
 .review-badge,
 .review p.review-note {
   color: var(--muted);

@@ -9,7 +9,7 @@ import type { BrowserDriver, ElementTarget, IsolatedPage, PageElement } from "..
 import { chromiumLaunchOptions } from "../src/server/browser/chromiumLaunch.ts";
 import { allowBrowserRequest, browserConfigFromEnv, browserHostIsPublic, browserRoleError, checkNavigationUrl, rememberedPublicHost } from "../src/server/browser/policy.ts";
 import { assignRefs } from "../src/server/browser/refs.ts";
-import { ProfileVault } from "../src/server/browser/profileVault.ts";
+import { SessionVault } from "../src/server/browser/sessionVault.ts";
 import { BrowserStore } from "../src/server/browser/store.ts";
 import { BrowserWorker } from "../src/server/browser/worker.ts";
 import { parseSse, withApi } from "./helpers.ts";
@@ -39,13 +39,15 @@ describe("browser worker", () => {
     assert.equal(refs[3]?.ref, "e4");
     assert.equal(refs[3]?.nth, 1);
     assert.equal(checkNavigationUrl("https://notexample.com/").ok, true);
-    assert.deepEqual(chromiumLaunchOptions(false, {}), { headless: true });
-    assert.deepEqual(chromiumLaunchOptions(true, { WEBSITE_SITE_NAME: "sj-event-scout" }), { headless: false });
+    const site = "--disable-blink-features=AutomationControlled";
+    assert.deepEqual(chromiumLaunchOptions(false, {}), { headless: true, channel: "chromium", args: [site] });
+    assert.deepEqual(chromiumLaunchOptions(true, { WEBSITE_SITE_NAME: "sj-event-scout" }), { headless: false, args: [site] });
     assert.deepEqual(chromiumLaunchOptions(false, { WEBSITE_SITE_NAME: "sj-event-scout" }), {
       headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+      channel: "chromium",
+      args: ["--no-sandbox", "--disable-dev-shm-usage", site],
     });
-    assert.deepEqual(chromiumLaunchOptions(false, { SCOUT_CONTAINER: "1" }).args, ["--no-sandbox", "--disable-dev-shm-usage"]);
+    assert.deepEqual(chromiumLaunchOptions(false, { SCOUT_CONTAINER: "1" }).args, ["--no-sandbox", "--disable-dev-shm-usage", site]);
     assert.equal(checkNavigationUrl("https://example.com.evil.com/").ok, true);
     assert.equal(checkNavigationUrl("javascript:alert(1)").ok, false);
     assert.equal(checkNavigationUrl("https://user:pass@example.com/").ok, false);
@@ -387,7 +389,7 @@ describe("browser worker", () => {
       assert.equal(saved.length, 1);
       const blob = readFileSync(join(profileDir, saved[0] ?? ""));
       assert.equal(blob.includes(SECRET_COOKIE), false);
-      assert.equal(readFileSync(join(profileDir, "index.json"), "utf8").includes(SECRET_COOKIE), false);
+      assert.equal(readFileSync(join(profileDir, "sites.json"), "utf8").includes(SECRET_COOKIE), false);
       assert.equal(readFileSync(file, "utf8").includes(SECRET_COOKIE), false);
       const listed = await fetch(`${base}/api/browser/profile`, { headers: { cookie } });
       const profile = (await listed.json()) as { profile: { state: string } };
@@ -516,8 +518,8 @@ describe("browser worker", () => {
       const blocked = await worker.readHtml("https://example.com/");
       assert.equal(blocked.ok, false);
       const owner = "a".repeat(32);
-      const vault = new ProfileVault(join(dir, "profiles"), PROFILE_KEY, 60_000, () => 1_000);
-      vault.save(owner, { cookies: [{ name: "session", value: "kept-sign-in" }], origins: [] });
+      const vault = new SessionVault(join(dir, "profiles"), PROFILE_KEY, 60_000, () => 1_000);
+      vault.save(owner, "district.in", { cookies: [{ name: "session", value: "kept-sign-in", domain: "www.district.in" }], origins: [] }, true);
       const signed = new BrowserWorker({
         driver,
         store: new BrowserStore(join(dir, "sessions.json")),
@@ -542,7 +544,7 @@ describe("browser worker", () => {
     }
   });
 
-  it("compares shop prices and returns the pay link without storing it", async () => {
+  it("compares shop prices without pressing checkout or pay", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scout-shop-"));
     const driver = new FakeDriver();
     const worker = new BrowserWorker({
@@ -557,12 +559,12 @@ describe("browser worker", () => {
       now: () => 1_000,
     });
     try {
-      const shop = await worker.compareShop("milk");
+      const shop = await worker.compareShop("amul");
       assert.equal(shop.cheapest?.merchant, "Zepto");
       assert.equal(shop.cheapest?.rupees, 70);
       assert.equal(shop.offers.length, 3);
-      assert.equal(shop.pay?.source, "deeplink");
-      assert.equal(shop.pay?.url.startsWith("upi://pay"), true);
+      assert.equal(shop.pay, null);
+      assert.equal(driver.pages.some((page) => page.clicks.includes("Checkout") || page.clicks.includes("Add")), false);
       const stored = existsSync(join(dir, "sessions.json")) ? readFileSync(join(dir, "sessions.json"), "utf8") : "";
       assert.equal(stored.includes("upi://"), false);
       assert.equal(driver.pages.every((page) => page.closed), true);
@@ -635,7 +637,7 @@ class FakePage implements IsolatedPage {
 
   async elements(signal: AbortSignal): Promise<PageElement[]> {
     if (signal.aborted) throw new Error("timed out");
-    const price = this.url.includes("zeptonow.com") ? 70 : this.url.includes("swiggy.com") ? 90 : this.url.includes("blinkit.com") ? 80 : 0;
+    const price = this.url.includes("zepto.com") ? 70 : this.url.includes("swiggy.com") ? 90 : this.url.includes("blinkit.com") ? 80 : 0;
     if (this.url.includes("district.in")) return [{ role: "button", name: "Book" }];
     if (price > 0) {
       if (this.fills.length === 0) return [{ role: "searchbox", name: "Search" }];
@@ -651,6 +653,7 @@ class FakePage implements IsolatedPage {
     return [
       { role: "button", name: "Continue" },
       { role: "textbox", name: "Notes" },
+      ...(this.url.includes("example.com") ? [{ role: "link", name: "Log out" }] : []),
     ];
   }
 
@@ -679,7 +682,8 @@ class FakePage implements IsolatedPage {
 
   async storageState(signal: AbortSignal): Promise<unknown> {
     if (signal.aborted) throw new Error("timed out");
-    return { cookies: [...this.cookies].map(([name, value]) => ({ name, value })), origins: [] };
+    const domain = this.url ? new URL(this.url).hostname : "";
+    return { cookies: [...this.cookies].map(([name, value]) => ({ name, value, domain })), origins: [] };
   }
 
   async close(): Promise<void> {
@@ -734,7 +738,7 @@ async function withWorker(
   const driver = new FakeDriver();
   const store = new BrowserStore(file);
   let now = options.nowStart ?? 1_000_000;
-  const vault = options.profileTtlMs == null ? null : new ProfileVault(profileDir, PROFILE_KEY, options.profileTtlMs, () => now);
+  const vault = options.profileTtlMs == null ? null : new SessionVault(profileDir, PROFILE_KEY, options.profileTtlMs, () => now);
   const worker = new BrowserWorker({
     driver,
     store,

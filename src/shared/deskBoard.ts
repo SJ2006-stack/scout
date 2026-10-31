@@ -14,6 +14,7 @@ export type DeskTurn =
   | { kind: "quote"; quote: QuoteSnapshot }
   | { kind: "receipt"; receipt: ReceiptSnapshot }
   | { kind: "pay"; pay: PayLink }
+  | { kind: "task"; taskId: string; skill: string; title: string }
   | { kind: "card"; listing: Listing };
 
 export type { ThinkingTurn };
@@ -61,7 +62,7 @@ function isDeskConversation(value: unknown): value is DeskConversation {
 
 function isDeskTurn(value: unknown): value is DeskTurn {
   if (!value || typeof value !== "object") return false;
-  const turn = value as { kind?: unknown; text?: unknown; listing?: unknown; cart?: unknown; quote?: unknown; receipt?: unknown; pay?: unknown };
+  const turn = value as { kind?: unknown; text?: unknown; listing?: unknown; cart?: unknown; quote?: unknown; receipt?: unknown; pay?: unknown; taskId?: unknown; skill?: unknown; title?: unknown };
   switch (turn.kind) {
     case "user":
     case "text":
@@ -79,6 +80,8 @@ function isDeskTurn(value: unknown): value is DeskTurn {
       return isReceiptSnapshot(turn.receipt);
     case "pay":
       return isPayLink(turn.pay);
+    case "task":
+      return typeof turn.taskId === "string" && /^[a-f0-9]{32}$/.test(turn.taskId) && typeof turn.skill === "string" && typeof turn.title === "string";
     default:
       return false;
   }

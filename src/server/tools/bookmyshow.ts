@@ -7,6 +7,9 @@ import type { EventTool, ToolContext, ToolResult } from "./types.ts";
 const TOOL_ID = "tool_1528e3718e37c1b0489614053d3b4080";
 const RUN_URL = "https://api.pomerado.ai/v1/runs/read-only";
 const PAGE_LIMIT = 8;
+const JOB_DEADLINE_MS = 60_000;
+export const STILL_LOADING = "BookMyShow is still loading. Ask again in about 20 seconds.";
+const running = new Map<string, Promise<RunResult>>();
 
 export const bookMyShowTool: EventTool = {
   name: "BookMyShow",
@@ -43,15 +46,40 @@ async function loadKind(context: ToolContext, kind: "movies" | "events", date: s
   const key = `bookmyshow|${context.city.id}|${date}|${kind}`;
   const cached = context.cache.get(key);
   if (cached) return { ok: true, listings: cached };
-  const ran = await runSearch(context, kind, date);
+  let job = running.get(key);
+  if (!job) {
+    job = runSearch(context, kind, date)
+      .then((ran) => {
+        if (ran.ok) context.cache.set(key, bookMyShowListings(ran.payload, context.retrievedAt, context.city.name));
+        return ran;
+      })
+      .finally(() => running.delete(key));
+    running.set(key, job);
+  }
+  const ran = await within(job, context.timeoutMs, context.signal);
+  if (ran === "stopped") return { ok: false, message: "Search stopped.", listings: [] };
+  if (ran === "waiting") return { ok: false, message: STILL_LOADING, listings: [] };
   if (!ran.ok) {
     const page = await loadBookMyShowPage(context, ran.message);
     if (page.ok) context.cache.set(key, page.listings);
     return page;
   }
-  const listings = bookMyShowListings(ran.payload, context.retrievedAt, context.city.name);
-  context.cache.set(key, listings);
-  return { ok: true, listings };
+  return { ok: true, listings: context.cache.get(key) ?? bookMyShowListings(ran.payload, context.retrievedAt, context.city.name) };
+}
+
+function within<T>(work: Promise<T>, ms: number, signal: AbortSignal): Promise<T | "waiting" | "stopped"> {
+  if (signal.aborted) return Promise.resolve("stopped");
+  return new Promise((resolve) => {
+    const done = (value: T | "waiting" | "stopped") => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(value);
+    };
+    const onAbort = () => done("stopped");
+    const timer = setTimeout(() => done("waiting"), ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(done, () => done("waiting"));
+  });
 }
 
 async function loadBookMyShowPage(context: ToolContext, failure: string): Promise<CallResult> {
@@ -67,9 +95,7 @@ async function loadBookMyShowPage(context: ToolContext, failure: string): Promis
 type RunResult = { ok: true; payload: unknown } | { ok: false; message: string };
 
 async function runSearch(context: ToolContext, kind: "movies" | "events", date: string): Promise<RunResult> {
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), context.timeoutMs);
-  const signal = AbortSignal.any([context.signal, timeout.signal]);
+  const signal = AbortSignal.timeout(JOB_DEADLINE_MS);
   try {
     const response = await context.fetchImpl(RUN_URL, {
       method: "POST",
@@ -91,18 +117,14 @@ async function runSearch(context: ToolContext, kind: "movies" | "events", date: 
     });
     if (!response.ok) return { ok: false, message: `BookMyShow is unavailable. HTTP ${response.status}` };
     let job = (await response.json()) as unknown;
-    const deadline = Date.now() + context.timeoutMs;
-    while (isPending(job) && Date.now() < deadline) {
-      await wait(2_000, signal);
+    while (isPending(job)) {
+      await wait(1_500, signal);
       job = await readJob(jobId(job), context, signal);
     }
     return readResult(job, context, signal);
   } catch {
-    if (context.signal.aborted) return { ok: false, message: "Search stopped." };
-    if (timeout.signal.aborted) return { ok: false, message: "BookMyShow is unavailable. The source timed out." };
+    if (signal.aborted) return { ok: false, message: "BookMyShow is unavailable. The source timed out." };
     return { ok: false, message: "BookMyShow could not be reached." };
-  } finally {
-    clearTimeout(timer);
   }
 }
 

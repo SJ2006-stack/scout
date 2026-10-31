@@ -14,7 +14,7 @@ const ROUND_LIMIT = 4;
 
 export type SpecialistAgent = Exclude<AgentId, "event">;
 
-type SpecialistTool = "compare_shops" | "shop_catalog" | "food_order" | "salon_request";
+type SpecialistTool = "compare_shops" | "buy_from_shop" | "shop_catalog" | "food_order" | "salon_request";
 type ToolName = SpecialistTool | AssistantToolName;
 
 type ToolSpec = {
@@ -42,6 +42,20 @@ const SHOP_TOOLS: readonly ToolSpec[] = [
     name: "compare_shops",
     description: "Open Blinkit, Zepto, and Instamart in the browser worker and compare prices for one item. Pass only the item words, such as chocolate ice cream. Use this when they ask you to find, check, or compare an item.",
     input_schema: QUERY_SCHEMA,
+  },
+  {
+    name: "buy_from_shop",
+    description: "Prepare a real cart on Blinkit or Zepto in Scout's browser: sign in with their phone and an SMS code if needed, set their delivery area, add the item, and read the bill. Returns when the cart waits for their approval or Scout needs them. A card on screen shows the code box, the cart, and the Approve button. Use this only when they ask to buy or order a specific item.",
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        store: { type: "string", enum: ["blinkit", "zepto"] },
+        item: { type: "string" },
+        quantity: { type: "integer", minimum: 1, maximum: 10 },
+      },
+      required: ["store", "item"],
+    },
   },
   {
     name: "shop_catalog",
@@ -151,6 +165,8 @@ async function runTool(
   switch (call.name) {
     case "compare_shops":
       return { id: call.id, ok: true, content: await shopComparison(turn, text, emit) };
+    case "buy_from_shop":
+      return { id: call.id, ...(await buyFromShop(turn, call.input, emit)) };
     case "shop_catalog":
       return catalog(turn, "shop", call.id, text, emit);
     case "food_order":
@@ -164,15 +180,24 @@ async function runTool(
   }
 }
 
+const comparing = new WeakMap<ChatTurn, { query: string; result: Promise<string> }>();
+
 async function shopComparison(turn: ChatTurn, query: string, emit: (event: ChatEvent) => void): Promise<string> {
   const needle = query.trim();
   if (needle.length < 2) return "Ask which item to compare before opening the shops.";
   if (!turn.compareShop) return "The browser worker is not enabled on this server.";
-  return speakShop(turn, needle, emit);
+  const running = comparing.get(turn);
+  if (running) {
+    const first = await running.result;
+    return `Only one shop comparison runs per message. Scout compared "${running.query}" instead of "${needle}". Use this result and offer to compare "${needle}" next.\n${first}`;
+  }
+  const result = speakShop(turn, needle, emit);
+  comparing.set(turn, { query: needle, result });
+  return result;
 }
 
 async function speakShop(turn: ChatTurn, query: string, emit: (event: ChatEvent) => void): Promise<string> {
-  emit({ type: "status", message: "Opening Blinkit, then Zepto, then Instamart." });
+  emit({ type: "status", message: `Comparing ${query} on Blinkit, Zepto, and Instamart.` });
   const shop = await turn.compareShop?.(query, turn.signal, (message) => emit({ type: "status", message }));
   if (!shop) return "The browser worker is not enabled on this server.";
   if (shop.pay) {
@@ -186,6 +211,46 @@ async function speakShop(turn: ChatTurn, query: string, emit: (event: ChatEvent)
     offers: shop.offers.map((offer) => ({ merchant: offer.merchant, title: offer.title, rupees: offer.rupees })),
     pay: shop.pay?.url ?? null,
   });
+}
+
+const STORE_NAMES: Readonly<Record<string, string>> = { blinkit: "Blinkit", zepto: "Zepto" };
+
+async function buyFromShop(turn: ChatTurn, input: unknown, emit: (event: ChatEvent) => void): Promise<{ ok: boolean; content: string }> {
+  const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const store = typeof record.store === "string" ? record.store.toLowerCase() : "";
+  const item = typeof record.item === "string" ? record.item.trim() : "";
+  const quantity = typeof record.quantity === "number" ? record.quantity : 1;
+  const name = STORE_NAMES[store];
+  if (!name) return { ok: false, content: "Scout can build a cart on Blinkit or Zepto. Instamart is compare only for now." };
+  if (item.length < 2) return { ok: false, content: "Ask which item to buy." };
+  if (!turn.prepareCart) return { ok: false, content: "Live carts are not enabled on this server." };
+  emit({ type: "status", message: `Preparing a ${name} cart for ${item}.` });
+  const result = await turn.prepareCart(
+    store,
+    item,
+    quantity,
+    (taskId) => emit({ type: "task", taskId, skill: store, title: `${name}: ${item}` }),
+    (message) => emit({ type: "status", message }),
+  );
+  if (!result.ok) return { ok: false, content: result.error };
+  const last = result.task.events.at(-1);
+  const approval = [...result.task.events].reverse().find((event) => event.approval)?.approval;
+  return {
+    ok: true,
+    content: JSON.stringify({
+      state: result.task.state,
+      message: last?.message ?? "",
+      cart: approval?.cart ?? null,
+      next: nextStep(result.task.state),
+    }),
+  };
+}
+
+function nextStep(state: string): string {
+  if (state === "approval_required") return "Tell them the total and that they approve it on the card. Scout presses pay only after they approve.";
+  if (state === "waiting_verification") return "Tell them the store sent an SMS code. On Android Scout can read it with their consent, or they type it in the card.";
+  if (state === "needs_user") return "Tell them what the store needs, in the message.";
+  return "Tell them the message.";
 }
 
 function catalog(
@@ -246,10 +311,12 @@ function instructions(agent: SpecialistAgent): string {
     case "shop":
       return [
         scoutPurpose("Shop Scout", "Compare groceries on Blinkit, Zepto, and Instamart, and keep a simulated cart."),
-        "Your tools are compare_shops and shop_catalog. The browser worker is available. Never say you have no browser worker.",
+        "Your tools are compare_shops, buy_from_shop, and shop_catalog. The browser worker is available. Never say you have no browser worker.",
         "If they have not named an item, ask what they want and wait. Do not call a tool for a greeting.",
         "When they name an item to find or compare, call compare_shops with the item words only. Tell them the summary the tool returns. Do not invent a price.",
-        "When they add, remove, show the cart, or check out, call shop_catalog with their words. Say that cart is simulated.",
+        "When they ask to buy or order an item, call buy_from_shop once with the cheaper of Blinkit and Zepto from the comparison, or the store they name. Instamart is compare only.",
+        "Never claim an order is placed. Scout stops at the cart for their approval, then hands payment to their UPI app.",
+        "Use shop_catalog only when they ask for the simulated practice cart.",
         "A pay link from compare_shops is already on the screen. Tell them they can open it in their UPI app. Never ask for a UPI PIN.",
       ].join(" ");
     case "food":
@@ -352,6 +419,6 @@ function isToolUse(agent: SpecialistAgent, block: Record<string, unknown>): bloc
 }
 
 function isToolName(value: unknown): value is SpecialistTool {
-  return value === "compare_shops" || value === "shop_catalog" || value === "food_order" || value === "salon_request";
+  return value === "compare_shops" || value === "buy_from_shop" || value === "shop_catalog" || value === "food_order" || value === "salon_request";
 }
 

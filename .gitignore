@@ -1,7 +1,16 @@
+# Dependencies and build output
 node_modules
 dist
-.DS_Store
-.env
-*.log
-.vercel
+publish
+
+# Local data and secrets
 .data/
+.env
+.vercel
+
+# Root-level scratch probes (.cartProbe.ts and similar)
+/.*.ts
+
+# OS and logs
+.DS_Store
+*.log

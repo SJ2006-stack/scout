@@ -24,7 +24,7 @@ type Step = <T>(run: (signal: AbortSignal) => Promise<T>) => Promise<T>;
 
 export const SHOP_SITES: readonly { merchant: ShopMerchant; home: string }[] = [
   { merchant: "Blinkit", home: "https://blinkit.com/" },
-  { merchant: "Zepto", home: "https://www.zeptonow.com/" },
+  { merchant: "Zepto", home: "https://www.zepto.com/" },
   { merchant: "Instamart", home: "https://www.swiggy.com/instamart" },
 ];
 
@@ -39,19 +39,38 @@ export function isLiveShopQuery(text: string): boolean {
   return true;
 }
 
+/**
+ * Reads "title ₹price" pairs from accessible names. One name can hold a whole
+ * grid of products, as on Instamart, so every pair in it counts.
+ */
 export function pricedTitles(elements: readonly PageElement[]): { title: string; rupees: number }[] {
   const found: { title: string; rupees: number }[] = [];
   for (const element of elements) {
     if (element.role !== "link" && element.role !== "button" && element.role !== "text") continue;
-    const match = element.name.match(PRICE);
-    if (!match?.[1]) continue;
-    const rupees = Number(match[1].replace(/,/g, ""));
-    if (!Number.isFinite(rupees) || rupees <= 0) continue;
-    const title = element.name.replace(/₹\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?/g, " ").replace(/\s+/g, " ").trim();
-    if (title.length < 2 || /fee|tax|charge/i.test(title)) continue;
-    found.push({ title, rupees });
+    if (!PRICE.test(element.name)) continue;
+    let start = 0;
+    for (const match of element.name.matchAll(/₹\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/g)) {
+      const before = element.name.slice(start, match.index);
+      start = (match.index ?? 0) + match[0].length;
+      const rupees = Number((match[1] ?? "").replace(/,/g, ""));
+      if (!Number.isFinite(rupees) || rupees <= 0) continue;
+      const title = cleanTitle(before);
+      if (title.length < 2 || /^(?:fee|tax|charge|mrp)\b/i.test(title) || /delivery fee|handling|platform fee/i.test(title)) continue;
+      found.push({ title, rupees });
+    }
   }
   return found;
+}
+
+function cleanTitle(text: string): string {
+  return text
+    .replace(/^.*\b(?:Customer Ratings|Sort By|Quick filters)\b/i, " ")
+    .replace(/\b\d{1,3}% OFF\b/gi, " ")
+    .replace(/\b(?:Ad|ADD|\d+ MINS?|\d+ mins)\b|\S+\.(?:png|jpe?g|webp|svg)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(-90)
+    .trim();
 }
 
 export function cheapestOffer(offers: readonly ShopOffer[]): ShopOffer | null {
@@ -60,12 +79,16 @@ export function cheapestOffer(offers: readonly ShopOffer[]): ShopOffer | null {
 
 export function shelfSummary(offers: readonly ShopOffer[]): string {
   const cheapest = cheapestOffer(offers);
-  if (!cheapest) return "Scout opened Blinkit, Zepto, and Instamart. None of them showed a price.";
-  const rest = offers
-    .filter((offer) => offer !== cheapest)
-    .map((offer) => `${offer.merchant} was ₹${offer.rupees}`);
+  if (!cheapest) return "Scout opened Blinkit, Zepto, and Instamart. None of them showed a matching price.";
+  const others = SHOP_SITES
+    .map((site) => cheapestOffer(offers.filter((offer) => offer.merchant === site.merchant)))
+    .filter((offer): offer is ShopOffer => offer != null && offer.merchant !== cheapest.merchant)
+    .map((offer) => `${offer.merchant} from ₹${offer.rupees} (${offer.title})`);
+  const missing = SHOP_SITES.filter((site) => !offers.some((offer) => offer.merchant === site.merchant)).map((site) => site.merchant);
   const lead = `${cheapest.merchant} is cheapest: ${cheapest.title} at ₹${cheapest.rupees}.`;
-  return rest.length === 0 ? lead : `${lead} ${rest.join(". ")}.`;
+  const rest = others.length > 0 ? ` ${others.join(". ")}.` : "";
+  const gap = missing.length > 0 ? ` ${missing.join(" and ")} showed no match.` : "";
+  return `${lead}${rest}${gap}`;
 }
 
 export function searchUrl(merchant: ShopMerchant, query: string): string {
@@ -74,7 +97,7 @@ export function searchUrl(merchant: ShopMerchant, query: string): string {
     case "Blinkit":
       return `https://blinkit.com/s/?q=${q}`;
     case "Zepto":
-      return `https://www.zeptonow.com/search?query=${q}`;
+      return `https://www.zepto.com/search?query=${q}`;
     case "Instamart":
       return `https://www.swiggy.com/instamart/search?query=${q}`;
     default: {
@@ -113,14 +136,15 @@ export async function readShelf(page: IsolatedPage, query: string, merchant: Sho
   let offers: ShopOffer[] = [];
   let needsLocation = false;
   let searched = false;
-  for (let attempt = 0; attempt < 4 && offers.length === 0; attempt += 1) {
-    if (attempt > 0) await pause(700);
+  for (let attempt = 0; attempt < 8 && offers.length === 0; attempt += 1) {
+    if (attempt > 0) await pause(1_000);
     let elements = await step((signal) => page.elements(signal));
     const html = await step((signal) => page.html(signal));
     const landed = await step((signal) => page.location(signal));
     needsLocation = needsLocation || asksForLocation(html);
-    offers = offersFrom(merchant, landed.url, [...pricedTitles(elements), ...pricedText(html)]);
+    offers = matching(offersFrom(merchant, landed.url, [...pricedTitles(elements), ...pricedText(html)]), query);
     if (offers.length > 0) break;
+    if (attempt < 5) continue;
     const box = elements.find((element) => element.role === "searchbox" || element.role === "combobox" || (element.role === "textbox" && /search/i.test(element.name)));
     if (box && !searched) {
       await step((signal) => page.fill({ role: box.role, name: box.name, nth: 0 }, query, signal));
@@ -128,10 +152,7 @@ export async function readShelf(page: IsolatedPage, query: string, merchant: Sho
       elements = await step((signal) => page.elements(signal));
     }
     const search = elements.find((element) => element.role === "button" && /search/i.test(element.name));
-    if (!search) {
-      if (attempt >= 2) break;
-      continue;
-    }
+    if (!search) continue;
     await step((signal) => page.click({ role: search.role, name: search.name, nth: 0 }, signal));
   }
   return { offers, needsLocation };
@@ -147,6 +168,15 @@ function offersFrom(merchant: ShopMerchant, pageUrl: string, items: readonly { t
     offers.push({ merchant, title: item.title, rupees: item.rupees, pageUrl });
   }
   return offers;
+}
+
+/** Keeps offers whose title names every query word. Store pages mix in ads and suggestions. */
+export function matching(offers: readonly ShopOffer[], query: string): ShopOffer[] {
+  const words = query.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 1);
+  return offers.filter((offer) => {
+    const title = offer.title.toLowerCase();
+    return words.every((word) => title.includes(word) || (word.endsWith("s") && title.includes(word.slice(0, -1))));
+  });
 }
 
 function pause(ms: number): Promise<void> {
@@ -226,7 +256,8 @@ async function completeRegistration(page: IsolatedPage, title: string, account: 
     const button = elements.find((element) => (element.role === "button" || element.role === "link") && isRegisterSubmit(element.name));
     if (!button || clicks >= 3) break;
     clicks += 1;
-    await step((signal) => page.click({ role: button.role, name: button.name, nth: 0 }, signal));
+    const nth = elements.filter((element) => element.role === button.role && element.name === button.name).length - 1;
+    await step((signal) => page.click({ role: button.role, name: button.name, nth }, signal));
     submitted = true;
   }
   const html = await step((signal) => page.html(signal));
@@ -311,7 +342,7 @@ function payOutcome(merchant: string, pay: PayLink): string {
   }
 }
 
-async function payFromPage(page: IsolatedPage, merchant: string, title: string, amount: string | null, step: Step): Promise<PayLink | null> {
+export async function payFromPage(page: IsolatedPage, merchant: string, title: string, amount: string | null, step: Step): Promise<PayLink | null> {
   const requested = paymentTarget(page.takePayment() ?? "");
   if (requested) return { url: requested, source: "deeplink", merchant, title, amount };
   const html = await step((signal) => page.html(signal));
