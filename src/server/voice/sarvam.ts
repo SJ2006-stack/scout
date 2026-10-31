@@ -4,6 +4,8 @@ import { spokenLanguage } from "../../shared/spoken.ts";
 const STT_URL = "https://api.sarvam.ai/speech-to-text";
 const TTS_URL = "https://api.sarvam.ai/text-to-speech";
 const STT_MODEL = "saaras:v4";
+// "transcribe" writes English words in Devanagari when it detects Hindi, which flips replies to Hindi.
+const STT_MODE = "codemix";
 const TTS_MODEL = "bulbul:v3";
 const TTS_SPEAKER = "shubh";
 const MAX_SPEECH = 2_500;
@@ -43,7 +45,7 @@ async function transcribe(
   const form = new FormData();
   form.set("file", new Blob([new Uint8Array(raw)], { type: mime }), fileName(mime));
   form.set("model", STT_MODEL);
-  form.set("mode", "transcribe");
+  form.set("mode", STT_MODE);
   form.set("language_code", "unknown");
   let response: Response;
   try {

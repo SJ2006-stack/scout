@@ -37,13 +37,13 @@ Cards open the listing. Scout does not pick seats or pay on Luma, District, or B
 
 ## Voice
 
-The mic button records a clip and posts it to `POST /api/voice/stt`, which calls Sarvam (`saaras:v4`) and returns text. `POST /api/voice/tts` speaks a reply with Sarvam (`bulbul:v3`). The old realtime WebSocket speech was removed on purpose. Live calls now go through Bolna (below), and `/api/voice/live` is only the event stream for an open call.
+The mic button records a clip and posts it to `POST /api/voice/stt`, which calls Sarvam (`saaras:v4`, `codemix` mode so English words stay in English letters) and returns text. `POST /api/voice/tts` speaks a reply with Sarvam (`bulbul:v3`). The old realtime WebSocket speech was removed on purpose. Live calls now go through Bolna (below), and `/api/voice/live` is only the event stream for an open call.
 
 - **Browser:** the web `MediaRecorder` posts the clip (`src/web/voice.ts`).
 - **Android app:** the web page calls `window.ScoutNative.request({ op: "microphone" })`. The app records with `MediaRecorder` and posts the clip to the same route.
 - With `SARVAM_API_KEY` empty, the mic stays quiet.
 
-**Voice calls (Bolna).** The phone button in the composer starts a live call through the Bolna Web Call SDK (`src/web/voiceCall.ts`). Bolna handles the microphone, Sarvam `saaras:v4` speech recognition (Hindi, English, Hinglish), the Sarvam `bulbul:v4-flash` voice, and interruptions. Bolna's LLM is Scout itself:
+**Voice calls (Bolna).** The phone button in the composer starts a live call through the Bolna Web Call SDK (`src/web/voiceCall.ts`). Bolna handles the microphone, Sarvam `saaras:v4` speech recognition (Hindi, English, Hinglish; `bolna:setup` registers a Hindi plus English `multilingual_config` so Bolna switches to an English transcriber when the caller speaks English), the Sarvam `bulbul:v4-flash` voice, and interruptions. Bolna's LLM is Scout itself:
 
 - `POST /api/voice/bolna/session` (signed in) mints a single-use Bolna session and passes a signed 45-minute voice ticket as `{{scout_ticket}}` in the agent prompt. The `bn-` key never reaches the browser.
 - `POST /api/bolna/v1/chat/completions` is an OpenAI-compatible streaming endpoint that Bolna calls with `BOLNA_LLM_KEY`. It reads the ticket, picks the specialist with a keyword router (`src/server/voice/voiceRouter.ts`, sticky for 10 minutes), runs the normal Haiku turn with a short-spoken-reply prompt, and streams Haiku's words as they arrive. When the cards or a phone action are the answer, it speaks a short summary itself.

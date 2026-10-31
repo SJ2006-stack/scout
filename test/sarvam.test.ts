@@ -29,7 +29,12 @@ describe("sarvam voice", () => {
       const url = String(input);
       seen.push(url);
       assert.equal(new Headers(init?.headers).get("api-subscription-key"), "test-key");
-      if (url.endsWith("/speech-to-text")) return Response.json({ transcript: "events in Delhi" });
+      if (url.endsWith("/speech-to-text")) {
+        const form = init?.body as FormData;
+        assert.equal(form.get("mode"), "codemix");
+        assert.equal(form.get("model"), "saaras:v4");
+        return Response.json({ transcript: "events in Delhi" });
+      }
       const body = JSON.parse(String(init?.body)) as { language_code: string; model: string; speaker: string };
       assert.equal(body.language_code, "hi-IN");
       assert.equal(body.model, "bulbul:v3");

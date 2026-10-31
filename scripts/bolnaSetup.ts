@@ -68,6 +68,22 @@ const agent = {
             buffer_size: 150,
             audio_format: "wav",
           },
+          // Bolna's Sarvam transcriber has no codemix mode; a Hindi-only transcriber writes English speech in Devanagari.
+          multilingual_config: {
+            enabled: true,
+            active_language: "hi",
+            languages: {
+              hi: {},
+              en: {
+                transcriber: { language: "en" },
+                synthesizer: {
+                  provider: "sarvam",
+                  provider_config: { voice: "Aparna", voice_id: "aparna_hi_customer", model: "bulbul:v4-flash", language: "en", speed: 1.05 },
+                },
+                handoff_message: "Sure, I'll speak in English.",
+              },
+            },
+          },
           input: { provider: "plivo", format: "wav" },
           output: { provider: "plivo", format: "wav" },
         },
