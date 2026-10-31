@@ -1,6 +1,5 @@
-import type { ChatEvent } from "../../shared/chatEvents.ts";
+import type { LiveEvent } from "../../shared/liveEvents.ts";
 
-export type LiveEvent = ChatEvent | { type: "voice-user"; text: string } | { type: "voice-turn-done" };
 type Listener = (event: LiveEvent) => void;
 
 const LISTENER_LIMIT = 4;

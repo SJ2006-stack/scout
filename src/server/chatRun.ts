@@ -44,6 +44,8 @@ export type ChatTurn = {
   compareShop?: (query: string, signal: AbortSignal, onStatus: (message: string) => void) => Promise<ShopRun>;
   profile?: ProfileStore;
   watches?: WatchStore;
+  /** Receives the reply so far while Haiku streams; an empty string means earlier text was superseded. */
+  onSpeech?: (text: string) => void;
 };
 
 export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {

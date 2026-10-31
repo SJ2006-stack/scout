@@ -1,15 +1,19 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 
-// Usage: node --experimental-strip-types scripts/bolnaSetup.ts https://scout.example.com
-// Registers Scout's /api/bolna/v1 endpoint as a Bolna custom LLM and creates or updates the Scout voice agent.
+// Usage: npm run bolna:setup -- https://scout.example.com [--agent <id>] [--save]
+// Registers that site's /api/bolna/v1 endpoint as a Bolna custom LLM and creates or updates its voice agent.
+// Each site gets its own agent because profile memory and the live relay live on that site.
+// --save writes BOLNA_AGENT_ID to the local .env; without it the id is printed for the site's app settings.
 
 const BOLNA = "https://api.bolna.ai";
-const MODEL = "scout";
 const envPath = new URL("../.env", import.meta.url).pathname;
 if (existsSync(envPath)) loadEnvFile(envPath);
 
 const base = (process.argv[2] ?? "").replace(/\/+$/, "");
+const save = process.argv.includes("--save");
+const agentFlag = process.argv.indexOf("--agent");
+const MODEL = `scout-${(base.match(/^https:\/\/([^./]+)/)?.[1] ?? "site").toLowerCase()}`;
 const apiKey = process.env.BOLNA_API_KEY ?? "";
 const llmKey = process.env.BOLNA_LLM_KEY ?? "";
 if (!/^https:\/\/[^/]+/.test(base)) fail("Pass the public https origin that serves Scout, for example https://scout.example.com.");
@@ -36,7 +40,7 @@ if (!(models as { custom_model_name?: string; custom_model_url?: string }[]).som
 
 const agent = {
   agent_config: {
-    agent_name: "Scout",
+    agent_name: `Scout (${base.replace(/^https:\/\//, "")})`,
     agent_welcome_message: "Namaste {{name}}! Main Scout hoon. Events, shopping, khaana, ya phone pe kuch set karna ho, bas boliye.",
     tasks: [
       {
@@ -82,7 +86,7 @@ const agent = {
   },
 };
 
-let agentId = process.env.BOLNA_AGENT_ID ?? "";
+let agentId = agentFlag > 0 ? (process.argv[agentFlag + 1] ?? "") : save ? (process.env.BOLNA_AGENT_ID ?? "") : "";
 if (agentId) {
   await bolna("PUT", `/v2/agent/${agentId}`, agent);
   console.log(`Updated Bolna agent ${agentId}.`);
@@ -90,9 +94,15 @@ if (agentId) {
   const created = (await bolna("POST", "/v2/agent", agent)) as { agent_id?: string };
   agentId = created.agent_id ?? "";
   if (!agentId) fail("Bolna did not return an agent id.");
+  console.log(`Created Bolna agent ${agentId}.`);
+}
+if (save) {
   const text = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-  writeFileSync(envPath, `${text.replace(/\n?$/, "\n")}BOLNA_AGENT_ID=${agentId}\n`);
-  console.log(`Created Bolna agent ${agentId} and saved BOLNA_AGENT_ID to .env.`);
+  const line = `BOLNA_AGENT_ID=${agentId}`;
+  writeFileSync(envPath, /^BOLNA_AGENT_ID=.*$/m.test(text) ? text.replace(/^BOLNA_AGENT_ID=.*$/m, line) : `${text.replace(/\n?$/, "\n")}${line}\n`);
+  console.log("Saved BOLNA_AGENT_ID to .env.");
+} else {
+  console.log(`Set BOLNA_AGENT_ID=${agentId} on this site.`);
 }
 console.log(`Bolna now sends every turn to ${llmUrl}/chat/completions.`);
 

@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, Mic, Plus, Square, Volume2, VolumeX } from "lucide-react";
+import { ArrowUp, Mic, Phone, PhoneOff, Plus, Square, Volume2, VolumeX } from "lucide-react";
 import { readNativeSpeech, requestNativeMicrophone } from "../shared/nativeSpeech.ts";
 import { attachOcrText } from "../shared/ocr.ts";
 import { readAttachment } from "./ocr.ts";
 import { recordingMime, transcribeSpeech } from "./voice.ts";
+import type { VoiceCallState } from "./voiceCall.ts";
 
 const MAX_HEIGHT = 140;
 
@@ -18,6 +19,7 @@ type ComposerProps = {
   onVoiceReplies: (enabled: boolean) => void;
   onStop: () => void;
   onToast: (message: string) => void;
+  call?: { state: VoiceCallState; level: number; onToggle: () => void };
 };
 
 export function Composer({
@@ -31,7 +33,9 @@ export function Composer({
   onVoiceReplies,
   onStop,
   onToast,
+  call,
 }: ComposerProps) {
+  const onCall = call != null && call.state !== "idle" && call.state !== "ended";
   const empty = value.trim().length === 0;
   const [listening, setListening] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -152,7 +156,11 @@ export function Composer({
     if (!busy && !empty) onSend();
   }
 
-  const hint = listening
+  const hint = onCall
+    ? call.state === "active"
+      ? "On a voice call with Scout. Just talk."
+      : "Connecting the voice call…"
+    : listening
     ? "Listening… tap the mic when you're done"
     : transcribing
       ? "Turning your voice into text…"
@@ -221,6 +229,19 @@ export function Composer({
         >
           <Mic size={18} />
         </button>
+        {call ? (
+          <button
+            className={onCall ? "icon-button call live" : "icon-button call"}
+            type="button"
+            aria-label={onCall ? "End voice call" : "Start a voice call"}
+            aria-pressed={onCall}
+            title={onCall ? "End the voice call" : "Talk with Scout in Hindi, English, or both"}
+            style={onCall ? { boxShadow: `0 0 0 ${2 + Math.round(call.level * 8)}px rgba(34, 197, 94, 0.35)` } : undefined}
+            onClick={call.onToggle}
+          >
+            {onCall ? <PhoneOff size={18} /> : <Phone size={18} />}
+          </button>
+        ) : null}
         {busy ? (
           <button className="send" type="button" aria-label="Stop" title="Stop" onClick={onStop}>
             <Square size={14} fill="currentColor" />

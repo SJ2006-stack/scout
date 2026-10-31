@@ -91,7 +91,7 @@ export async function converseWithHaiku(turn: ChatTurn, emit: (event: ChatEvent)
   const seen = new Set<string>();
   const announced = new Set<string>();
   const spoken: string[] = [];
-  let shown = 0;
+  const shown: string[] = [];
   let patch: Partial<ChatMemory> = {};
   let started = false;
   for (let round = 0; round < ROUND_LIMIT; round += 1) {
@@ -124,7 +124,7 @@ export async function converseWithHaiku(turn: ChatTurn, emit: (event: ChatEvent)
       seen.add(listing.url);
       emit({ type: "card", listing });
     }
-    shown += preview.length;
+    shown.push(...preview.map((listing) => listing.title));
     messages.push({
       role: "user",
       content: results.map((ran) => ({
@@ -142,17 +142,18 @@ function finish(
   turn: ChatTurn,
   reply: string,
   patch: Partial<ChatMemory>,
-  shown: number,
+  shown: string[],
   emit: (event: ChatEvent) => void,
 ): boolean {
-  const asked = browseFollowUp(reply.trim(), shown, turn.text);
+  const asked = browseFollowUp(reply.trim(), shown.length, turn.text);
   const spoken = asked.length > 0 ? withEmoji(asked) : "";
   if (spoken.length > 0) emit({ type: "question", message: spoken });
   const previous = turn.memory.get(turn.sessionId);
-  const remembered = spoken.length > 0 ? spoken : "I checked the listings.";
+  const titles = shown.slice(0, 6).map((title, index) => `${index + 1}. ${title}`).join("; ");
+  const remembered = `${spoken.length > 0 ? spoken : "I checked the listings."}${titles ? `\n[Shown on screen in order: ${titles}]` : ""}`;
   const lines = [...previous.lines, { role: "user" as const, text: turn.text }, { role: "assistant" as const, text: remembered }].slice(-12);
   turn.memory.save(turn.sessionId, { ...previous, ...patch, found: patch.found ?? previous.found ?? [], lines });
-  emit({ type: "done", count: shown });
+  emit({ type: "done", count: shown.length });
   return true;
 }
 
@@ -161,10 +162,16 @@ async function complete(turn: ChatTurn, messages: ApiMessage[]): Promise<{ stop_
     apiKey: turn.anthropicApiKey,
     fetchImpl: turn.fetchImpl,
     signal: turn.signal,
-    system: `${instructions(turn.now(), timeZone(turn), turn.memory.get(turn.sessionId).date)} ${assistantPrompt(assistantContext(turn))}`,
+    system: `${instructions(turn.now(), timeZone(turn), turn.memory.get(turn.sessionId).date)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}`,
     tools: [...TOOLS, ...assistantTools(assistantContext(turn))],
     messages,
+    ...(turn.onSpeech ? { onText: turn.onSpeech } : {}),
   });
+}
+
+export function voicePrompt(turn: ChatTurn): string {
+  if (!turn.onSpeech) return "";
+  return " This reply is spoken aloud on a voice call. Answer in the language they used, including Hinglish, in at most two short sentences. Before a tool call, say one short line like 'Ek second, dekh raha hoon.' Never read links, emoji, prices with symbols, or lists longer than three items; say the rest is on screen.";
 }
 
 export function assistantContext(turn: ChatTurn): AssistantContext {

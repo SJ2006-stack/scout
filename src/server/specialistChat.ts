@@ -8,7 +8,7 @@ import { isLiveShopQuery, payResultLine } from "./browser/shelf.ts";
 import { postHaiku, type HaikuMessage } from "./haikuClient.ts";
 import { scoutPurpose, talkDuty } from "./scoutPrompt.ts";
 import { assistantPrompt, assistantTools, isAssistantTool, runAssistantTool, type AssistantToolName } from "./assistantTools.ts";
-import { assistantContext } from "./haikuChat.ts";
+import { assistantContext, voicePrompt } from "./haikuChat.ts";
 
 const ROUND_LIMIT = 4;
 
@@ -79,9 +79,10 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
       apiKey: turn.anthropicApiKey,
       fetchImpl: turn.fetchImpl,
       signal: turn.signal,
-      system: `${instructions(agent)} ${assistantPrompt(assistantContext(turn))}`,
+      system: `${instructions(agent)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}`,
       tools: [...toolsFor(agent), ...assistantTools(assistantContext(turn))],
       messages,
+      ...(turn.onSpeech ? { onText: turn.onSpeech } : {}),
     });
     if (body == null) {
       if (!started) return false;

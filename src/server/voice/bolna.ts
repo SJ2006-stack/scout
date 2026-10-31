@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { Listing } from "../../shared/event.ts";
 import type { AgentId } from "../../shared/hosts.ts";
 import { isAgentId } from "../../shared/hosts.ts";
 
@@ -97,13 +98,28 @@ export async function mintWebCall(
 }
 
 export function spokenText(text: string): string {
+  return speakable(text).trim();
+}
+
+/** Like spokenText but keeps edge spaces, so streamed pieces join into words correctly. */
+export function speakable(text: string): string {
   return text
     .replace(EMOJI, "")
-    .replace(/\*\*?|__|`/g, "")
+    .replace(/\*\*?|__|`|^#+\s/gm, "")
     .replace(/https?:\/\/\S+/g, "the link on screen")
     .replace(/₹\s?(\d)/g, "rupees $1")
-    .replace(/[ \t]+/g, " ")
-    .trim();
+    .replace(/[ \t]+/g, " ");
+}
+
+export function spokenListings(listings: readonly Listing[]): string {
+  if (listings.length === 0) return "";
+  const lines = listings.slice(0, 3).map((listing) => {
+    const day = listing.start ? new Date(listing.start).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", timeZone: listing.timezone || "Asia/Kolkata" }) : null;
+    const price = listing.price.min === 0 ? "free" : listing.price.min != null ? `rupees ${Math.round(listing.price.min)}` : null;
+    return [listing.title, day, price].filter(Boolean).join(", ");
+  });
+  const count = listings.length === 1 ? "Ek option mila" : `${listings.length} options mile`;
+  return `${count}. ${lines.join(". ")}. Baaki details screen pe hain.`;
 }
 
 export function completionChunk(id: string, created: number, content: string | null, finish: "stop" | null): string {

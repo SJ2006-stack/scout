@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ChatEvent } from "../../shared/chatEvents.ts";
+import type { Listing } from "../../shared/event.ts";
 import { isAgentId, type AgentId } from "../../shared/hosts.ts";
 import { runChat, type ChatTurn } from "../chatRun.ts";
 import { postHaiku } from "../haikuClient.ts";
@@ -12,10 +13,13 @@ import {
   mintWebCall,
   readCompletion,
   signVoiceTicket,
+  speakable,
+  spokenListings,
   spokenText,
   type BolnaConfig,
 } from "./bolna.ts";
 import type { LiveRelay } from "./liveRelay.ts";
+import { VoiceRouter } from "./voiceRouter.ts";
 
 export type BolnaRouteDeps = {
   bolna?: BolnaConfig | null;
@@ -31,6 +35,7 @@ export type TurnBuilder = (userId: string, agent: AgentId, text: string, signal:
 const LLM_PREFIX = "/api/bolna/v1";
 const BODY_LIMIT = 200_000;
 const KEEPALIVE_MS = 10_000;
+const router = new VoiceRouter();
 
 export function isBolnaLlmRoute(pathname: string): boolean {
   return pathname === `${LLM_PREFIX}/chat/completions` || pathname === `${LLM_PREFIX}/models`;
@@ -59,7 +64,8 @@ export async function routeBolnaLlm(request: IncomingMessage, response: ServerRe
     return reply == null ? send(response, 502, { error: { message: "Scout could not answer." } }) : writeCompletion(response, parsed.stream, id, created, [reply]);
   }
 
-  const { userId, agent } = parsed.ticket;
+  const { userId } = parsed.ticket;
+  const agent = router.pick(userId, parsed.text, parsed.ticket.agent, deps.now());
   const relay = deps.liveRelay;
   if (parsed.text.length === 0) return writeCompletion(response, parsed.stream, id, created, ["Haan, boliye?"]);
   relay?.publish(userId, { type: "voice-user", text: parsed.text });
@@ -70,24 +76,47 @@ export async function routeBolnaLlm(request: IncomingMessage, response: ServerRe
   }
   const pieces: string[] = [];
   let spokeFiller = false;
+  let streamed = false;
+  let heard = 0;
   const keepalive = parsed.stream ? setInterval(() => response.write(": keepalive\n\n"), KEEPALIVE_MS) : null;
+  let pendingAction: string | null = null;
+  let unspokenCards: Listing[] = [];
+  const write = (text: string) => {
+    pendingAction = null;
+    unspokenCards = [];
+    pieces.push(text);
+    if (parsed.stream && !response.writableEnded) response.write(completionChunk(id, created, text, null));
+  };
   const say = (text: string) => {
     const spoken = spokenText(text);
-    if (spoken.length === 0) return;
-    pieces.push(spoken);
-    if (parsed.stream && !response.writableEnded) response.write(completionChunk(id, created, `${spoken} `, null));
+    if (spoken.length > 0) write(`${spoken} `);
+  };
+  const onSpeech = (soFar: string) => {
+    if (soFar.length < heard) heard = 0;
+    if (soFar.length === 0) {
+      if (streamed) write(" ");
+      return;
+    }
+    const fresh = speakable(soFar.slice(heard));
+    heard = soFar.length;
+    if (fresh.trim().length === 0) return;
+    streamed = true;
+    write(fresh);
   };
   const emit = (event: ChatEvent) => {
     relay?.publish(userId, event);
+    if (event.type === "device") pendingAction = event.action.confirm ? `Phone pe approval ke liye bheja hai: ${event.action.summary}.` : `Aapke phone pe bhej diya: ${event.action.summary}.`;
+    if (event.type === "card") unspokenCards = [...unspokenCards, event.listing];
+    if (event.type === "watch") pendingAction = "Watch laga diya. Naye shows milte hi phone pe bataunga.";
     if (event.type === "status" && !spokeFiller && pieces.length === 0) {
       spokeFiller = true;
       say(event.message);
       return;
     }
-    if (event.type === "question" && event.message.trim().length > 0) say(event.message);
+    if (event.type === "question" && !streamed && event.message.trim().length > 0) say(event.message);
   };
   try {
-    await runChat(buildTurn(userId, agent, parsed.text, controller.signal), emit);
+    await runChat({ ...buildTurn(userId, agent, parsed.text, controller.signal), onSpeech }, emit);
   } catch (error) {
     console.error(error);
     say("Sorry, kuch gadbad ho gayi. Ek baar phir boliye.");
@@ -95,6 +124,9 @@ export async function routeBolnaLlm(request: IncomingMessage, response: ServerRe
     if (keepalive) clearInterval(keepalive);
     relay?.publish(userId, { type: "voice-turn-done" });
   }
+  const cardsLeft = unspokenCards as Listing[];
+  if (cardsLeft.length > 0) say(` ${spokenListings(cardsLeft)}`);
+  if (pendingAction) say(` ${pendingAction}`);
   if (pieces.length === 0) say("Main ne check kiya, par kuch nahi mila.");
   if (parsed.stream) {
     if (!response.writableEnded) {

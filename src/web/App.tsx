@@ -36,6 +36,9 @@ import { rememberVoiceReplies, speakReply, stopSpeech, voiceRepliesEnabled } fro
 import { Thinking } from "./Thinking.tsx";
 import { appendThought, finishThought } from "../shared/thinking.ts";
 import { withEmoji } from "../shared/emoji.ts";
+import type { LiveEvent } from "../shared/liveEvents.ts";
+import { runDeviceAction, watchDeviceResults } from "./deviceRunner.ts";
+import { useVoiceCall } from "./voiceCall.ts";
 
 type Place = { lat: number; lon: number };
 
@@ -228,6 +231,13 @@ export function App() {
   });
 
   const active = screen.kind === "chat" ? conversations.find((item) => item.id === screen.conversationId) ?? null : null;
+  const voiceChatRef = useRef<string | null>(null);
+  const voiceCall = useVoiceCall({ agent: siteAgent, sessionId: active?.sessionId, onLive: onVoiceLive, onToast: showToast });
+  useEffect(() => watchDeviceResults((line) => setToast({ text: line })), []);
+  useEffect(() => {
+    if (voiceCall.state === "idle" || voiceCall.state === "ended") voiceChatRef.current = null;
+    else if (voiceCall.state === "connecting") stopSpeech();
+  }, [voiceCall.state]);
 
   function showToast(text: string): void {
     setToast({ text });
@@ -282,6 +292,47 @@ export function App() {
 
   function patch(id: string, update: (conversation: Conversation) => Conversation): void {
     setConversations((current) => current.map((item) => (item.id === id ? update(item) : item)));
+  }
+
+  function onVoiceLive(event: LiveEvent): void {
+    if (siteAgent === "main") return;
+    let target = conversations.find((item) => item.id === voiceChatRef.current) ?? active;
+    if (!target) {
+      if (event.type !== "voice-user") return;
+      target = startConversation();
+    }
+    voiceChatRef.current = target.id;
+    stickToEnd.current = true;
+    if (event.type === "voice-user") {
+      patch(target.id, (current) => ({
+        ...current,
+        title: current.title === "New chat" ? event.text.slice(0, 72) : current.title,
+        turns: beginThinking([...sealThinking(current.turns), { kind: "user", text: event.text }], ["Heard you on the call."]),
+        updatedAt: Date.now(),
+      }));
+      return;
+    }
+    if (event.type === "voice-turn-done") {
+      patch(target.id, (current) => ({ ...current, turns: sealThinking(current.turns) }));
+      return;
+    }
+    if (event.type === "question") {
+      patch(target.id, (current) => ({ ...current, turns: applyQuestion(current.turns, event.message), updatedAt: Date.now() }));
+      return;
+    }
+    if (event.type === "drive") {
+      patch(target.id, (current) => ({ ...current, turns: applyDrive(current.turns, event.url, event.minutes) }));
+      return;
+    }
+    const sessionId = target.sessionId;
+    const nextTurns = [...turnsFrom(event), ...deviceTurns(event, sessionId)];
+    const activityLine = activityFrom(event);
+    patch(target.id, (current) => ({
+      ...current,
+      turns: traceTurns(current.turns, nextTurns, activityLine, event.type === "done"),
+      activity: activityLine ? [...current.activity, activityLine] : current.activity,
+      updatedAt: Date.now(),
+    }));
   }
 
   async function submit(conversation: Conversation, text: string): Promise<void> {
@@ -533,7 +584,7 @@ export function App() {
           }));
           return;
         }
-        const nextTurns = turnsFrom(event);
+        const nextTurns = [...turnsFrom(event), ...deviceTurns(event, conversation.sessionId)];
         const activityLine = activityFrom(event);
         patch(conversation.id, (current) => ({
           ...current,
@@ -796,6 +847,7 @@ export function App() {
             onVoiceReplies={allowVoice}
             onStop={stop}
             onToast={showToast}
+            call={{ state: voiceCall.state, level: voiceCall.level, onToggle: voiceCall.toggle }}
           />
         ) : null}
       </main>
@@ -993,6 +1045,13 @@ function applyDrive(turns: Turn[], url: string, minutes: number): Turn[] {
     if (turn.kind !== "card" || turn.listing.url !== url) return turn;
     return { ...turn, listing: { ...turn.listing, driveMinutes: minutes } };
   });
+}
+
+function deviceTurns(event: ChatEvent, sessionId: string | undefined): Turn[] {
+  if (event.type === "watch") return [{ kind: "note", text: `Scout Watch is on. You'll get a phone alert when new ${event.watch.kind ?? "events"} show up.` }];
+  if (event.type !== "device") return [];
+  const line = runDeviceAction(event.action, sessionId);
+  return line ? [{ kind: "note", text: line }] : [];
 }
 
 function turnsFrom(event: ChatEvent): Turn[] {

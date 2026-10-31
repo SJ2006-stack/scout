@@ -37,11 +37,21 @@ Cards open the listing. Scout does not pick seats or pay on Luma, District, or B
 
 ## Voice
 
-The mic button records a clip and posts it to `POST /api/voice/stt`, which calls Sarvam (`saaras:v4`) and returns text. `POST /api/voice/tts` speaks a reply with Sarvam (`bulbul:v3`). There is no realtime or WebSocket speech. It was removed on purpose, so `/api/voice/live` does not exist.
+The mic button records a clip and posts it to `POST /api/voice/stt`, which calls Sarvam (`saaras:v4`) and returns text. `POST /api/voice/tts` speaks a reply with Sarvam (`bulbul:v3`). The old realtime WebSocket speech was removed on purpose. Live calls now go through Bolna (below), and `/api/voice/live` is only the event stream for an open call.
 
 - **Browser:** the web `MediaRecorder` posts the clip (`src/web/voice.ts`).
 - **Android app:** the web page calls `window.ScoutNative.request({ op: "microphone" })`. The app records with `MediaRecorder` and posts the clip to the same route.
 - With `SARVAM_API_KEY` empty, the mic stays quiet.
+
+**Voice calls (Bolna).** The phone button in the composer starts a live call through the Bolna Web Call SDK (`src/web/voiceCall.ts`). Bolna handles the microphone, Sarvam `saaras:v4` speech recognition (Hindi, English, Hinglish), the Sarvam `bulbul:v4-flash` voice, and interruptions. Bolna's LLM is Scout itself:
+
+- `POST /api/voice/bolna/session` (signed in) mints a single-use Bolna session and passes a signed 45-minute voice ticket as `{{scout_ticket}}` in the agent prompt. The `bn-` key never reaches the browser.
+- `POST /api/bolna/v1/chat/completions` is an OpenAI-compatible streaming endpoint that Bolna calls with `BOLNA_LLM_KEY`. It reads the ticket, picks the specialist with a keyword router (`src/server/voice/voiceRouter.ts`, sticky for 10 minutes), runs the normal Haiku turn with a short-spoken-reply prompt, and streams Haiku's words as they arrive. When the cards or a phone action are the answer, it speaks a short summary itself.
+- `GET /api/voice/live` streams the same turn's cards, phone actions, and watches to the open chat while the call runs.
+- `npm run bolna:setup -- <https origin> [--agent <id>] [--save]` registers that site's endpoint as a Bolna custom model and creates or updates its agent. Each site needs its own agent because memory and the live relay are per site.
+- Measured on a tunnel to this Mac: first spoken words in about 1 to 2 s; an event search takes about 11 s in total. Not yet measured on Azure.
+
+**Phone actions.** Any specialist can call `phone_action` (alarm, timer, reminder, list or cancel reminders, open an allowlisted app, maps, share, flashlight, volume, capabilities). The server validates the request (`src/shared/deviceActions.ts`) and emits a `device` event. The web page hands it to the Android app (`ScoutNative` op `action`) and posts the result to `/api/actions/result`. In a normal browser it says the phone app is needed. Opening an app, sharing, and muting the ringer ask for Allow on the phone first.
 
 ## Browser worker
 
@@ -61,7 +71,8 @@ Central browser (staging only, not deployed): `SCOUT_ROLE=browser` runs the one 
 - Sign-in is by email code, sent from an AgentMail inbox (`AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`).
 - Users and their browser sessions live in SQLite (`SCOUT_DB_PATH`, default `.data/scout.sqlite`, `/home/data/scout.sqlite` on Azure).
 - Browser session status is also kept in `sessions.json` under `BROWSER_STATE_DIR`.
-- These are in memory and reset on restart: chat memory, saved addresses, rate limits, the commerce hub, payment approvals, and pair tickets.
+- Chat memory, the shared profile (`profile_entries`), Scout Watch (`event_watches`), the inbox, and push devices are in the same SQLite file. Secrets such as OTPs, PINs, passwords, and card numbers are refused by the profile store.
+- These are in memory and reset on restart: saved addresses, rate limits, the commerce hub, payment approvals, and pair tickets.
 - Payments run through a gate with approvals, idempotency keys, and quote expiry, backed by a sandbox adapter. No real money moves.
 
 ## API
@@ -74,6 +85,9 @@ Central browser (staging only, not deployed): `SCOUT_ROLE=browser` runs the one 
 | `POST /api/search` | Grocery price search |
 | `POST /api/commerce`, `POST /api/pay` | Simulated food, shop, appointments, and payment |
 | `POST /api/voice/stt`, `POST /api/voice/tts` | Sarvam speech in and out |
+| `POST /api/voice/bolna/session`, `GET /api/voice/live` | Start a Bolna voice call, stream its cards to the open chat |
+| `POST /api/bolna/v1/chat/completions`, `GET /api/bolna/v1/models` | Scout as Bolna's LLM (bearer `BOLNA_LLM_KEY`) |
+| `/api/profile`, `/api/watches`, `/api/inbox`, `/api/devices`, `/api/actions/result` | Shared memory, Scout Watch, notifications, push devices, phone action results |
 | `POST /api/ocr` | Read text from an attached image |
 | `/api/auth/*` | Email code sign-in and session |
 | `/api/onboarding/*` | Name and phone |
@@ -112,6 +126,8 @@ Settings are listed with comments in `.env.example`. The main ones:
 | `BROWSER_PROFILE_KEY` | 64 hex characters for encrypted sign-in |
 | `AGENTMAIL_*` | Email sign-in codes |
 | `FIREBASE_DISTRIBUTION_*` | Android invite from the landing page |
+| `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` | Push for Scout Watch. Falls back to the distribution service account |
+| `BOLNA_API_KEY`, `BOLNA_LLM_KEY`, `BOLNA_AGENT_ID` | Bolna voice calls. All three are needed for the call button to work |
 
 Never commit `.env`, keys, or publish profiles.
 
