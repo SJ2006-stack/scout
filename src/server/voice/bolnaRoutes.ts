@@ -137,7 +137,7 @@ export async function routeBolnaLlm(request: IncomingMessage, response: ServerRe
     }
     return;
   }
-  send(response, 200, completionBody(id, created, pieces.join(" ")));
+  send(response, 200, completionBody(id, created, pieces.join("").replace(/\s+/g, " ").trim()));
 }
 
 export async function routeBolnaSession(request: IncomingMessage, response: ServerResponse, userId: string, deps: BolnaRouteDeps): Promise<void> {
