@@ -29,7 +29,7 @@ Event sources:
 
 - **Luma:** the public discovery feed.
 - **District:** the public events and movies pages.
-- **BookMyShow:** Pomerado's read-only "Search movies and events" tool, when `POMERADO_API_KEY` is set. It is capped by `CONNECTOR_TIMEOUT_MS` (8 s).
+- **BookMyShow:** Pomerado's read-only "Search movies and events" tool, when `POMERADO_API_KEY` is set. The chat waits `CONNECTOR_TIMEOUT_MS` (8 s). A search takes 18 to 30 s, so the job keeps running for up to 60 s and caches a success for the next question.
 - Movie cards appear only when the page carries the movie's own link. Drive time appears only when `GOOGLE_MAPS_API_KEY` is set.
 - Successful listings are cached for `LISTING_CACHE_TTL_MS` (10 minutes). Price checks use `CACHE_TTL_MS` (60 s).
 
@@ -59,7 +59,7 @@ A Playwright Chromium worker opens public https pages for registration and RSVP 
 
 - Private, loopback, link-local, and metadata hosts are blocked, including after DNS lookup. `BROWSER_ALLOWED_HOSTS` limits the worker to listed hosts.
 - A host check that does not answer in 4 seconds counts as not public and is remembered, so one stalled DNS lookup cannot freeze a navigation.
-- One operation is capped by `BROWSER_OP_TIMEOUT_MS`. A timeout closes that session, records it, and logs to `console.error`.
+- One operation is capped by `BROWSER_OP_TIMEOUT_MS`. A click or fill stops after 10 s, and a registration step after 30 s. A second register request for the same event joins the running one. A timeout closes that session, records it, and logs to `console.error`.
 - Sign-in is saved as AES-256-GCM encrypted browser state, bound to the owner. It needs `BROWSER_PROFILE_KEY`.
 - A visible window handoff needs `BROWSER_HEADED=1` on a machine with a display. The Azure container stays headless.
 - One-time codes are typed into the code field and never written to the task log.
@@ -137,7 +137,7 @@ Never commit `.env`, keys, or publish profiles.
 - A zip deploy switches the apps back to the Node stack, which has no Chromium, so the browser worker cannot start. Do not zip deploy.
 - `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the container image is manual.
 - `deploy/browser-worker.Dockerfile` is the Chromium-only process. It refuses to start without `BROWSER_PROFILE_KEY` and `BROWSER_ALLOWED_HOSTS`.
-- The apps are pinned to a tag (now `ui-20261031`), not `latest`. After `az acr build`, import the image under a new tag, then `az webapp config container set -g ledger-rg -n <app> --container-image-name sjscoutacr.azurecr.io/scout-site:<tag>` on all six.
+- The apps are pinned to a tag (now `voice3-20261031`), not `latest`. After `az acr build`, import the image under a new tag, then `az webapp config container set -g ledger-rg -n <app> --container-image-name sjscoutacr.azurecr.io/scout-site:<tag>` on all six.
 - Always On and the `/api/health` check are set on the six apps.
 - Public page: `https://scout.shrianshjaiswal.me`.
 
