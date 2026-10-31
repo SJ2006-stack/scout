@@ -7,7 +7,8 @@
     "dev": "node --experimental-strip-types src/server/index.ts",
     "build": "vite build",
     "start": "node --experimental-strip-types src/server/prod.ts",
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "bolna:setup": "node --experimental-strip-types scripts/bolnaSetup.ts"
   },
   "dependencies": {
     "html5-qrcode": "^2.3.8",
