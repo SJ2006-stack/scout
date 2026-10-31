@@ -46,7 +46,9 @@ export async function routeBolnaLlm(request: IncomingMessage, response: ServerRe
   if (!config) return send(response, 503, { error: { message: "Bolna is not configured." } });
   if (!bearerMatches(request.headers.authorization, config.llmKey)) return send(response, 401, { error: { message: "Access denied." } });
   if (request.method === "GET" && url.pathname === `${LLM_PREFIX}/models`) {
-    return send(response, 200, { object: "list", data: [{ id: "scout", object: "model", owned_by: "scout" }] });
+    const label = (request.headers["x-forwarded-host"] ?? request.headers.host ?? "").toString().split(/[.:,]/)[0]?.toLowerCase() ?? "";
+    const ids = ["scout", ...(/^[a-z0-9-]+$/.test(label) ? [`scout-${label}`] : [])];
+    return send(response, 200, { object: "list", data: ids.map((id) => ({ id, object: "model", owned_by: "scout" })) });
   }
   if (request.method !== "POST") return send(response, 405, { error: { message: "POST only." } });
   const raw = await readBody(request);
