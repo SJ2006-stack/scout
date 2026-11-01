@@ -172,7 +172,7 @@ az webapp config container set -g ledger-rg -n <app> \
 ```
 
 - The image copies the prebuilt `dist/`, so run `npm run build` first. Build from a clean checkout so uncommitted work stays out.
-- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `vault1-20261101`.
+- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `connectors3-20261101`.
 - The relay needs WebSockets on: `az webapp config set -g ledger-rg -n <app> --web-sockets-enabled true` (on for all six apps).
 - Do not zip deploy. It switches the apps to the Node stack, which has no Chromium.
 - `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the image is manual.
