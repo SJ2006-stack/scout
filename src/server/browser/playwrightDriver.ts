@@ -5,7 +5,7 @@ import type { BrowserDriver, ElementTarget, IsolatedOpen, IsolatedPage, PageElem
 import { isPageLocalUrl, rememberedPublicHost, type HostVerdictCache } from "./policy.ts";
 
 type LaunchedBrowser = {
-  newContext(options?: Partial<ChromiumContextProfile> & { storageState?: unknown; geolocation?: { latitude: number; longitude: number }; permissions?: string[] }): Promise<LaunchedContext>;
+  newContext(options?: Partial<ChromiumContextProfile> & { storageState?: unknown; geolocation?: { latitude: number; longitude: number }; permissions?: string[]; proxy?: { server: string; username: string; password: string } }): Promise<LaunchedContext>;
   version(): string;
   close(): Promise<void>;
 };
@@ -34,6 +34,7 @@ type LaunchedPage = {
   getByRole(role: AriaRole, options: { name: string; exact: true }): { nth(index: number): { click(options: { timeout: number }): Promise<void>; fill(value: string, options: { timeout: number }): Promise<void> } };
   getByText(text: string): { nth(index: number): { click(options: { timeout: number }): Promise<void> } };
   screenshot(options: { type: "png" }): Promise<Buffer>;
+  evaluate(run: () => void): Promise<void>;
 };
 
 type AriaRole = "button" | "link" | "checkbox" | "radio" | "tab" | "menuitem" | "option" | "switch" | "textbox" | "searchbox" | "combobox";
@@ -74,6 +75,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       ...chromiumContextProfile(browser.version()),
       ...(options.storageState === undefined ? {} : { storageState: options.storageState }),
       ...(options.geolocation ? { geolocation: options.geolocation, permissions: ["geolocation"] } : {}),
+      ...(options.proxy ? { proxy: options.proxy } : {}),
     });
     context.setDefaultTimeout(this.operationTimeoutMs);
     context.setDefaultNavigationTimeout(this.operationTimeoutMs);
@@ -171,6 +173,7 @@ class PlaywrightPage implements IsolatedPage {
   }
 
   async elements(signal: AbortSignal): Promise<PageElement[]> {
+    await raceSignal(this.page.evaluate(unhideModalBody), signal).catch(() => undefined);
     const snapshot = await raceSignal(this.page.locator("body").ariaSnapshot(), signal);
     return parseAriaSnapshot(snapshot);
   }
@@ -250,4 +253,13 @@ function raceSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
       },
     );
   });
+}
+
+/**
+ * React Modal marks the whole body aria-hidden when its app element is unset, as on
+ * Blinkit's login dialog. That hides the dialog's own phone box from the snapshot.
+ */
+function unhideModalBody(): void {
+  const body = document.body;
+  if (body.getAttribute("aria-hidden") === "true") body.removeAttribute("aria-hidden");
 }

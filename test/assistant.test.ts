@@ -97,7 +97,6 @@ describe("scout watch", () => {
       tools: [fakeTool(() => listings)],
       cache: new ListingCache(1, () => NOW),
       fetchImpl: fetch,
-      pomeradoApiKey: "",
       timeoutMs: 1000,
       now: () => NOW,
     });
@@ -202,7 +201,6 @@ async function speak(options: { agent: ChatTurn["agent"]; text: string; replies:
     cache: new ListingCache(60_000, () => NOW),
     fetchImpl: haikuFetch(options.replies),
     mapsApiKey: "",
-    pomeradoApiKey: "",
     anthropicApiKey: "test-key",
     agent: options.agent,
     ...(options.profile ? { profile: options.profile } : {}),

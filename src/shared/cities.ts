@@ -2,16 +2,17 @@ export type City = {
   id: string;
   name: string;
   lumaSlug: string;
-  bookMyShowCity: string;
+  /** The city part of BookMyShow explore URLs, e.g. /explore/movies-bengaluru. */
+  bookMyShowSlug: string;
   aliases: string[];
   pincodePrefix: string;
 };
 
 export const CITIES: City[] = [
-  { id: "bengaluru", name: "Bengaluru", lumaSlug: "bengaluru", bookMyShowCity: "Bengaluru", aliases: ["bengaluru", "bangalore", "बेंगलुरु", "बेंगलूरू"], pincodePrefix: "560" },
-  { id: "mumbai", name: "Mumbai", lumaSlug: "mumbai", bookMyShowCity: "Mumbai", aliases: ["mumbai", "मुंबई", "मुम्बई"], pincodePrefix: "400" },
-  { id: "delhi", name: "Delhi", lumaSlug: "new-delhi", bookMyShowCity: "Delhi-NCR", aliases: ["delhi", "new delhi", "दिल्ली"], pincodePrefix: "110" },
-  { id: "hyderabad", name: "Hyderabad", lumaSlug: "hyderabad", bookMyShowCity: "Hyderabad", aliases: ["hyderabad", "हैदराबाद"], pincodePrefix: "500" },
+  { id: "bengaluru", name: "Bengaluru", lumaSlug: "bengaluru", bookMyShowSlug: "bengaluru", aliases: ["bengaluru", "bangalore", "बेंगलुरु", "बेंगलूरू"], pincodePrefix: "560" },
+  { id: "mumbai", name: "Mumbai", lumaSlug: "mumbai", bookMyShowSlug: "mumbai", aliases: ["mumbai", "मुंबई", "मुम्बई"], pincodePrefix: "400" },
+  { id: "delhi", name: "Delhi", lumaSlug: "new-delhi", bookMyShowSlug: "national-capital-region-ncr", aliases: ["delhi", "new delhi", "दिल्ली"], pincodePrefix: "110" },
+  { id: "hyderabad", name: "Hyderabad", lumaSlug: "hyderabad", bookMyShowSlug: "hyderabad", aliases: ["hyderabad", "हैदराबाद"], pincodePrefix: "500" },
 ];
 
 export function cityById(id: string | null): City | null {

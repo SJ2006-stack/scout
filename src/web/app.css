@@ -875,6 +875,10 @@ textarea:focus { outline: none; }
 }
 
 .setting-row p { color: var(--muted); font-size: 0.88rem; line-height: 1.35; }
+.connectors { display: grid; gap: 14px; }
+.connectors-note { color: var(--muted); font-size: 0.88rem; line-height: 1.4; }
+.connector-group { display: grid; gap: 6px; }
+.connector-group h4 { font-size: 0.92rem; font-weight: 600; }
 .setting-row.action:hover { background: var(--hover); }
 .setting-row.action svg { color: var(--muted); }
 

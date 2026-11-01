@@ -16,6 +16,8 @@ const TEXT_ROLES = new Set(["textbox", "searchbox", "combobox"]);
 const PRESS_ROLES = new Set(["button", "link"]);
 const PASSWORD = /password/i;
 const RUPEES = /₹\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/;
+/** Store pages draw their login controls after load, later still through the phone relay. */
+const SIGN_IN_SETTLE_ROUNDS = 8;
 
 export async function readPage(page: IsolatedPage, step: Step): Promise<PageRead> {
   const elements = await step((signal) => page.elements(signal));
@@ -34,12 +36,13 @@ export async function checkStage(page: IsolatedPage, skill: WebsiteSkill, stage:
  * When a code field appears it asks for an authorised code and waits.
  * Passwords, passkeys, QR codes, and CAPTCHAs are left to the user.
  */
-export async function signInWithSkill(page: IsolatedPage, skill: WebsiteSkill, account: AccountLogin, step: Step, requestCode: CodeRequest): Promise<SignInOutcome> {
+export async function signInWithSkill(page: IsolatedPage, skill: WebsiteSkill, account: AccountLogin, step: Step, requestCode: CodeRequest, settleMs = 1_000): Promise<SignInOutcome> {
   const filled = new Set<string>();
   const pressed = new Set<string>();
   let usedCode = false;
   let channel: "sms" | "email" = "sms";
-  for (let round = 0; round < 10; round += 1) {
+  let settles = 0;
+  for (let round = 0; round < 10 + SIGN_IN_SETTLE_ROUNDS; round += 1) {
     const read = await readPage(page, step);
     if (validateStage(skill, "signed_in", read).ok) return { kind: "signed_in" };
     if (skill.failure.captcha.test(read.text)) return { kind: "needs_user", detail: `${skill.name} is showing a CAPTCHA. Solve it on the site, then try again.` };
@@ -98,7 +101,8 @@ export async function signInWithSkill(page: IsolatedPage, skill: WebsiteSkill, a
         continue;
       }
     }
-    const open = buttons.find((element) => skill.login.openLogin.test(element.name.trim()) && !pressed.has(key(element)));
+    const open = buttons.find((element) => skill.login.openLogin.test(element.name.trim()) && !pressed.has(key(element)))
+      ?? read.elements.find((element) => element.role === "text" && skill.login.openLogin.test(element.name.trim()) && !pressed.has(key(element)));
     if (open) {
       pressed.add(key(open));
       await press(page, read.elements, open, step);
@@ -106,6 +110,11 @@ export async function signInWithSkill(page: IsolatedPage, skill: WebsiteSkill, a
     }
     if (filled.size === 0 && !account.phone && skill.login.methods.every((method) => method === "phone")) {
       return { kind: "needs_user", detail: `${skill.name} signs in with a phone number. Add one in Settings.` };
+    }
+    if (settles < SIGN_IN_SETTLE_ROUNDS) {
+      settles += 1;
+      await new Promise((resolve) => setTimeout(resolve, settleMs));
+      continue;
     }
     return { kind: "failed", detail: `${skill.name} showed no sign-in step Scout recognises.` };
   }

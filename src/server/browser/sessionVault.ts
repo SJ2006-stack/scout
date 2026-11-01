@@ -28,6 +28,13 @@ type SiteRecord = {
 
 type VaultIndex = { version: 2; sites: SiteRecord[] };
 
+/** A verified record exactly as stored: the encrypted file plus its dates. */
+export type SealedSite = { domain: string; updatedAt: number; expiresAt: number; lastValidatedAt: number; blob: Buffer };
+
+export type RestoreResult = "restored" | "kept" | "revoked" | "rejected";
+
+export type VaultChange = { ownerId: string; domain: string; kind: "put" | "drop"; at: number };
+
 type StorageState = { cookies: Array<Record<string, unknown>>; origins: Array<Record<string, unknown>> };
 
 const MAGIC = Buffer.from("SCV2");
@@ -45,6 +52,7 @@ export class SessionVault {
   private readonly key: Buffer;
   private readonly ttlMs: number;
   private readonly now: () => number;
+  private readonly listeners = new Set<(change: VaultChange) => void>();
 
   constructor(dir: string, key: Buffer, ttlMs: number, now: () => number) {
     this.dir = dir;
@@ -83,6 +91,82 @@ export class SessionVault {
       }
       index.sites.push({ ownerId: owner, domain: site, profileRef, createdAt: now, updatedAt: now, expiresAt: now + this.ttlMs, lastValidatedAt: validated ? now : null, revokedAt: null });
     });
+    this.emit({ ownerId: owner, domain: site, kind: "put", at: now });
+  }
+
+  /** Called after every save, validation, and revoke, so copies elsewhere can follow. */
+  onChange(listener: (change: VaultChange) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** The sealed file for one verified, unexpired, unrevoked site. */
+  sealed(ownerId: string, domain: string): SealedSite | null {
+    const record = this.record(checkedOwner(ownerId), checkedDomain(domain));
+    if (!record || record.revokedAt != null || record.lastValidatedAt == null || this.now() >= record.expiresAt) return null;
+    const file = join(this.dir, `${record.profileRef}.bin`);
+    if (!existsSync(file)) return null;
+    return { domain: record.domain, updatedAt: record.updatedAt, expiresAt: record.expiresAt, lastValidatedAt: record.lastValidatedAt, blob: readFileSync(file) };
+  }
+
+  sealedAll(ownerId: string): SealedSite[] {
+    const owner = checkedOwner(ownerId);
+    return this.read().sites
+      .filter((item) => item.ownerId === owner)
+      .map((item) => this.sealed(owner, item.domain))
+      .filter((item): item is SealedSite => item != null);
+  }
+
+  /**
+   * Takes back a sealed copy, as after this disk was lost. It must open with this
+   * key for this user and site, be newer than what is here, and postdate any revoke.
+   */
+  restore(ownerId: string, site: SealedSite): RestoreResult {
+    const owner = checkedOwner(ownerId);
+    const domain = registrable(site.domain);
+    if (domain !== site.domain || !DOMAIN.test(domain)) return "rejected";
+    const now = this.now();
+    if (now >= site.expiresAt || site.updatedAt > now + 60_000 || site.lastValidatedAt > site.updatedAt + 60_000) return "rejected";
+    const record = this.record(owner, domain);
+    if (record?.revokedAt != null && record.revokedAt >= site.updatedAt) return "revoked";
+    if (record && record.revokedAt == null && record.updatedAt >= site.updatedAt && existsSync(join(this.dir, `${record.profileRef}.bin`))) return "kept";
+    if (!this.open(site.blob, owner, domain)) return "rejected";
+    const profileRef = refFor(owner, domain);
+    mkdirSync(this.dir, { recursive: true });
+    const file = join(this.dir, `${profileRef}.bin`);
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, site.blob, { mode: 0o600 });
+    renameSync(tmp, file);
+    this.mutate((index) => {
+      const rest = index.sites.filter((item) => !(item.ownerId === owner && item.domain === domain));
+      rest.push({
+        ownerId: owner,
+        domain,
+        profileRef,
+        createdAt: record?.createdAt ?? site.updatedAt,
+        updatedAt: site.updatedAt,
+        expiresAt: site.expiresAt,
+        lastValidatedAt: site.lastValidatedAt,
+        revokedAt: null,
+      });
+      index.sites = rest;
+    });
+    return "restored";
+  }
+
+  /** Revoke time for a site, so a stale copy offered later can be told to drop. */
+  revokedAt(ownerId: string, domain: string): number | null {
+    return this.record(checkedOwner(ownerId), registrable(domain))?.revokedAt ?? null;
+  }
+
+  private emit(change: VaultChange): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(change);
+      } catch {
+        // A failing mirror must not undo a saved sign-in.
+      }
+    }
   }
 
   /** Marks a stored sign-in as verified after the site showed a signed-in page. */
@@ -90,10 +174,15 @@ export class SessionVault {
     const owner = checkedOwner(ownerId);
     const site = checkedDomain(domain);
     const now = this.now();
+    let changed = false;
     this.mutate((index) => {
       const record = index.sites.find((item) => item.ownerId === owner && item.domain === site);
-      if (record && record.revokedAt == null && now < record.expiresAt) record.lastValidatedAt = now;
+      if (record && record.revokedAt == null && now < record.expiresAt) {
+        record.lastValidatedAt = now;
+        changed = true;
+      }
     });
+    if (changed) this.emit({ ownerId: owner, domain: site, kind: "put", at: now });
   }
 
   /** Returns a site's decrypted state. Only verified, unexpired, unrevoked records load. */
@@ -133,6 +222,7 @@ export class SessionVault {
     const owner = checkedOwner(ownerId);
     const site = domain == null ? null : checkedDomain(domain);
     const now = this.now();
+    const dropped: string[] = [];
     this.mutate((index) => {
       for (const record of index.sites) {
         if (record.ownerId !== owner || (site != null && record.domain !== site)) continue;
@@ -140,8 +230,10 @@ export class SessionVault {
         record.revokedAt = now;
         record.updatedAt = now;
         record.lastValidatedAt = null;
+        dropped.push(record.domain);
       }
     });
+    for (const domain of dropped) this.emit({ ownerId: owner, domain, kind: "drop", at: now });
   }
 
   /** Overall status for the web app badge: saved when any site is verified. */
@@ -164,11 +256,14 @@ export class SessionVault {
   private decrypt(record: SiteRecord): StorageState | null {
     const file = join(this.dir, `${record.profileRef}.bin`);
     if (!existsSync(file)) return null;
+    return this.open(readFileSync(file), record.ownerId, record.domain);
+  }
+
+  private open(body: Buffer, owner: string, domain: string): StorageState | null {
     try {
-      const body = readFileSync(file);
       if (body.length < MAGIC.length + 28 || !body.subarray(0, 4).equals(MAGIC)) return null;
       const decipher = createDecipheriv("aes-256-gcm", this.key, body.subarray(4, 16));
-      decipher.setAAD(aad(record.ownerId, record.domain));
+      decipher.setAAD(aad(owner, domain));
       decipher.setAuthTag(body.subarray(16, 32));
       const json = Buffer.concat([decipher.update(body.subarray(32)), decipher.final()]).toString("utf8");
       return asState(JSON.parse(json) as unknown);

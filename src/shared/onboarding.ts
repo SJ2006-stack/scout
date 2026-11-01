@@ -1,15 +1,30 @@
 export type OnboardingStep = "email" | "phone" | "name" | "ready";
 
-export type ConnectApp = {
-  id: "bookmyshow" | "district" | "luma";
+/** A site Scout signs in to for the user. id is the browser skill, domain the vault key. */
+export type Connector = {
+  id: "blinkit" | "zepto" | "instamart" | "bookmyshow" | "district" | "luma";
   name: string;
-  url: string;
+  domain: string;
+  uses: "phone" | "email" | "phone or email";
 };
 
-export const CONNECT_APPS: readonly ConnectApp[] = [
-  { id: "bookmyshow", name: "BookMyShow", url: "https://in.bookmyshow.com/" },
-  { id: "district", name: "District", url: "https://www.district.in/" },
-  { id: "luma", name: "Luma", url: "https://lu.ma/" },
+export const CONNECTOR_GROUPS: readonly { scout: string; connectors: readonly Connector[] }[] = [
+  {
+    scout: "Shop Scout",
+    connectors: [
+      { id: "blinkit", name: "Blinkit", domain: "blinkit.com", uses: "phone" },
+      { id: "zepto", name: "Zepto", domain: "zepto.com", uses: "phone" },
+      { id: "instamart", name: "Instamart", domain: "swiggy.com", uses: "phone" },
+    ],
+  },
+  {
+    scout: "Event Scout",
+    connectors: [
+      { id: "bookmyshow", name: "BookMyShow", domain: "bookmyshow.com", uses: "phone or email" },
+      { id: "district", name: "District", domain: "district.in", uses: "phone" },
+      { id: "luma", name: "Luma", domain: "luma.com", uses: "email" },
+    ],
+  },
 ];
 
 export const PLAN_PROMPT = "What's the plan?";

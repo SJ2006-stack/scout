@@ -146,7 +146,7 @@ export function withinDates(listing: Listing, range: { startMs: number; endMs: n
 export function listingInWindow(listing: Listing, range: DateRange): boolean {
   const singleDay = isSingleDay(range.phrase);
   if (listing.start == null) {
-    if (listing.platform === "BookMyShow") return true;
+    if (listing.platform === "BookMyShow" || listing.kind === "movie") return true;
     if (singleDay) return false;
     return withinDates(listing, range);
   }

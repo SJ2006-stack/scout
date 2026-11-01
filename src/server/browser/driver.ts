@@ -17,6 +17,8 @@ export type IsolatedOpen = {
   lean?: boolean;
   /** The user's delivery point, for stores that read it from the browser. */
   geolocation?: { latitude: number; longitude: number };
+  /** Sends the context's traffic through this HTTP proxy, such as the owner's phone relay. */
+  proxy?: { server: string; username: string; password: string };
 };
 
 export interface IsolatedPage {

@@ -1,7 +1,7 @@
 import { createServer, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
-import { handleApi } from "./api.ts";
+import { handleApi, handleUpgrade } from "./api.ts";
 import { startBrowserWarm } from "./browser/worker.ts";
 import { appRoot, createDeps, loadLocalEnv } from "./deps.ts";
 import { healthPayload } from "./health.ts";
@@ -44,6 +44,10 @@ const server = createServer((request, response) => {
     return;
   }
   serveFile(url.pathname, request.headers.host, response);
+});
+
+server.on("upgrade", (request, socket, head) => {
+  if ((request.url ?? "").startsWith("/api/relay")) handleUpgrade(request, socket, head, deps);
 });
 
 const stopBrowser = deps.browser?.startCleanup(30_000);

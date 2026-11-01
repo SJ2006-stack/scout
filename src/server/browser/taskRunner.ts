@@ -4,6 +4,7 @@ import { isTerminalState, type CartView, type ScoutTaskEvent, type ScoutTaskKind
 import type { CartReview, CheckoutLedger, CheckoutRecord } from "./checkoutLedger.ts";
 import type { BrowserDriver, IsolatedPage } from "./driver.ts";
 import { ChallengeClosed, type OtpBroker, type SubmitRejection } from "./otpBroker.ts";
+import type { Egress } from "../relay/phoneEgress.ts";
 import type { SessionVault } from "./sessionVault.ts";
 import { payFromPage } from "./shelf.ts";
 import type { AccountLogin } from "./signIn.ts";
@@ -11,6 +12,8 @@ import { addToCart, checkoutControl, checkStage, confirmationId, ensureLocation,
 import { skillById, type WebsiteSkill } from "./skills.ts";
 
 export type RunnerOptions = {
+  /** The proxy for a user's store pages, such as their phone relay. */
+  egress?: Egress;
   driver: BrowserDriver;
   vault: SessionVault | null;
   broker: OtpBroker;
@@ -185,7 +188,7 @@ export class TaskRunner {
     const page = await this.openPage(task, skill, where.geolocation);
     let keep = false;
     try {
-      if (!(await this.authenticate(task, skill, page))) return;
+      if (!(await this.authenticate(task, skill, page, where.area ?? null))) return;
       const step = this.stepper(task);
       this.emit(task, "searching", `Searching ${skill.name} for ${query}.`);
       await step((signal) => page.goto(this.checked(skill.search.url(query)), signal));
@@ -293,7 +296,7 @@ export class TaskRunner {
   }
 
   /** Signs in or reuses a verified saved session. Returns false when the user has to act. */
-  private async authenticate(task: Task, skill: WebsiteSkill, page: IsolatedPage): Promise<boolean> {
+  private async authenticate(task: Task, skill: WebsiteSkill, page: IsolatedPage, area: string | null = null): Promise<boolean> {
     const step = this.stepper(task);
     this.emit(task, "opening", `Opening ${skill.name}.`);
     await step((signal) => page.goto(this.checked(skill.home), signal));
@@ -310,6 +313,7 @@ export class TaskRunner {
     }
     const account = this.options.account(task.userId);
     if (!account) throw new Failure("Finish Scout sign-in first.");
+    if (skill.kind === "shop") await ensureLocation(page, skill, step, area);
     this.emit(task, "signing_in", `Signing in to ${skill.name}.`);
     let usedChannel: "sms" | "email" | null = null;
     const outcome = await signInWithSkill(page, skill, account, step, async (channel) => {
@@ -395,7 +399,8 @@ export class TaskRunner {
   private async openPage(task: Task, skill: WebsiteSkill, geolocation?: DeliveryPoint["geolocation"]): Promise<IsolatedPage> {
     this.emit(task, "opening", `Opening ${skill.name}.`);
     const saved = this.options.vault?.loadFor(task.userId, skill.domains) ?? null;
-    return this.options.driver.openIsolated({ allow: this.options.allow, headed: false, lean: true, storageState: saved ?? undefined, geolocation });
+    const proxy = await this.options.egress?.(task.userId);
+    return this.options.driver.openIsolated({ allow: this.options.allow, headed: false, lean: true, storageState: saved ?? undefined, geolocation, ...(proxy ? { proxy } : {}) });
   }
 
   private stepper(task: Task): Step {

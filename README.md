@@ -42,7 +42,9 @@ Event sources:
 
 - **Luma:** the public discovery feed.
 - **District:** the public events and movies pages.
-- **BookMyShow:** Pomerado's read-only search tool (`POMERADO_API_KEY`). A search takes 18 to 30 s, so the chat waits 8 s (`CONNECTOR_TIMEOUT_MS`), the job keeps running for up to 60 s, and a success is cached for the next question.
+- **BookMyShow:** the browser worker reads `in.bookmyshow.com/explore/movies-<city>` and `/explore/events-<city>` and parses the JSON-LD lists in them (10 movies and 10 events per page). BookMyShow blocks datacenter addresses and the stripped headless shell, so these reads use full Chromium and go through the user's phone relay when it is connected. Without the browser worker there is no BookMyShow source.
+- **District:** if the plain request gets a 403, the same browser-worker read is used.
+- Movies have no showtime in either source, so they count as now showing on any day, including single-day searches like "tomorrow".
 - Listings are cached for 10 minutes (`LISTING_CACHE_TTL_MS`). Drive time needs `GOOGLE_MAPS_API_KEY`.
 
 ### Booking and payment
@@ -52,8 +54,11 @@ Book opens the listing in the browser worker, fills Luma registration forms from
 ### Quick commerce (Shop)
 
 - **Compare:** `compare_shops` opens Blinkit, Zepto, and Instamart at the same time in new-headless Chromium with an Indian desktop profile (en-IN, Asia/Kolkata). Only products whose names contain every query word count, and the summary gives the cheapest match per store. Measured locally on Oct 31, 2026: 6 to 8 s for all three. One comparison runs per chat message; extra calls share its result.
-- **Buy:** `buy_from_shop` (Blinkit or Zepto) starts a task: sign in with your phone and an SMS code if the store asks, open the search, type your pincode into the store's location box (or use the device location), add the item, open the cart, and read the bill. A card in the chat shows each step, a code box, the cart with fees and total, and Approve. Scout presses the store's pay control only after you approve that exact cart, then the UPI link goes to your phone. "I have paid" checks the store's orders page.
-- **Instamart** is compare only. Its product grid exposes no add button that the browser can find by name.
+- **Buy:** `buy_from_shop` (Blinkit, Zepto, or Instamart) starts a task: sign in with your phone and an SMS code if the store asks, open the search, type your pincode into the store's location box (or use the device location), add the item, open the cart, and read the bill. A card in the chat shows each step, a code box, the cart with fees and total, and Approve. Scout presses the store's pay control only after you approve that exact cart, then the UPI link goes to your phone. "I have paid" checks the store's orders page.
+- **Instamart** carts are enabled but untested past sign-in. Instamart shows search results only to a signed-in Swiggy account, so the task signs in first (the account button, then "Log in with phone number"). Earlier its product grid exposed no add button by name; that may still stop the add step.
+- **Blinkit sign-in:** Blinkit's "Login" is plain text and its login dialog marks the page body `aria-hidden`. The page reader keeps short "Login"/"Sign in" labels as `text` controls and removes `aria-hidden` from the body before each read. Shop tasks set the delivery location before signing in.
+- **Sign-in waits:** stores draw their login controls after the page loads, later still through the relay, so sign-in waits up to 8 s for a control it recognises before giving up.
+- **Connectors:** Settings lists the sites each Scout signs in to (Shop: Blinkit, Zepto, Instamart. Event: BookMyShow, District, Luma) from `GET /api/browser/scout/sessions`. Connect starts `POST /api/browser/scout/tasks` with `action: "sign_in"`, using the account's phone number or Gmail. The task card shows the code box; the Android app fills it from the SMS notification. Disconnect calls `POST /api/browser/scout/sessions/revoke`.
 - **Guest carts:** Blinkit shows the full bill to a guest; Zepto shows only the item total until you sign in. Scout never asks you to approve a total the store has not shown.
 - Live probes: `scripts/shopCompareProbe.ts` and `scripts/shopCartProbe.ts` (`HEADED=1` shows Chrome). The cart probe stops before sign-in.
 
@@ -108,6 +113,7 @@ npm run dev                           # http://127.0.0.1:8787
 | `npm run build` | Vite build of the web app into `dist/` |
 | `npm start` | Production server (`src/server/prod.ts`) |
 | `npm run bolna:setup -- <https origin> [--agent <id>] [--save]` | Registers a site as a Bolna custom LLM and creates or updates its voice agent |
+| `SCOUT_SESSION=<scout_session> node --experimental-strip-types scripts/relayDevice.ts <origin>` | Stands in for the phone relay: store traffic from that server's Chromium leaves from this machine. Reconnects on drop. Keeps sealed sign-in copies in `SCOUT_DEVICE_VAULT` (default `~/.scout-test/vault`) |
 
 ## Configuration
 
@@ -118,7 +124,6 @@ Every setting is listed with comments in [`.env.example`](.env.example). The mai
 | `ANTHROPIC_API_KEY` | Haiku chat. Empty uses the keyword parser |
 | `SARVAM_API_KEY` | Speech in and out |
 | `BOLNA_API_KEY`, `BOLNA_LLM_KEY`, `BOLNA_AGENT_ID` | Live voice calls. All three are needed |
-| `POMERADO_API_KEY` | BookMyShow listings |
 | `GOOGLE_MAPS_API_KEY` | Drive time and addresses |
 | `SCOUT_AGENT` | Pins the process to one agent |
 | `SCOUT_ROLE` | `browser` runs the Chromium-only process |
@@ -127,6 +132,8 @@ Every setting is listed with comments in [`.env.example`](.env.example). The mai
 | `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` | Email sign-in codes |
 | `FIREBASE_DISTRIBUTION_*` | Android install invite from the landing page |
 | `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` | Push for Scout Watch |
+| `RELAY_CAP_MB` | Bytes one phone relay connection may carry. Default 300 |
+| `SCOUT_DEVICE_VAULT` | `scripts/relayDevice.ts` only: folder for sealed sign-in copies |
 
 Never commit `.env`, keys, or publish profiles.
 
@@ -148,6 +155,7 @@ Never commit `.env`, keys, or publish profiles.
 | `/api/addresses`, `/api/location/reverse-geocode` | Saved addresses and address lookup |
 | `/api/browser/*` | Browser sessions, handoff, codes, profile, budget |
 | `/api/browser/scout/*` | Website tasks: `skills`, `sessions` (saved site sign-ins, revoke), `tasks` (`sign_in` or `shop` with `area`, `latitude`, `longitude`), `checkouts/:id/approve` and `/confirm`, `challenges/:id/code` |
+| `GET /api/relay` (WebSocket), `GET /api/relay/status` | Your device's relay for store traffic (Blinkit, Zepto, Swiggy hosts, port 443), and whether it is connected. The same socket copies sealed site sign-ins to the device and takes them back after a server wipe (`src/server/relay/vaultMirror.ts`) |
 | `GET`, `PUT`, `DELETE /api/account/phone` | Your phone number, masked, with the date a site last verified it; edit or remove it |
 | `/api/desk`, `/api/pair` | Phone companion desk and pairing |
 | `/api/invite` | Android install invite through Firebase App Distribution |
@@ -164,7 +172,8 @@ az webapp config container set -g ledger-rg -n <app> \
 ```
 
 - The image copies the prebuilt `dist/`, so run `npm run build` first. Build from a clean checkout so uncommitted work stays out.
-- The apps are pinned to a tag (now `voice4-20261031`), not `latest`, so a restart alone keeps the old build.
+- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `vault1-20261101`.
+- The relay needs WebSockets on: `az webapp config set -g ledger-rg -n <app> --web-sockets-enabled true` (on for all six apps).
 - Do not zip deploy. It switches the apps to the Node stack, which has no Chromium.
 - `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the image is manual.
 - `deploy/browser-worker.Dockerfile` is the Chromium-only process. It refuses to start without `BROWSER_PROFILE_KEY` and `BROWSER_ALLOWED_HOSTS`.
@@ -194,7 +203,8 @@ scout-landing/     Public landing page served by the server
 
 - Sites that ask you to sign in before booking (BookMyShow, District) stop the Book flow, and Scout opens the page instead.
 - The Blinkit and Zepto sign-in, payment, and order-check steps are tested against a local fixture store, not yet against the live sites with a real phone. The live search, location, add-to-cart, and bill steps were checked on Oct 31, 2026.
-- Instamart is compare only.
+- Instamart carts are untested past sign-in.
+- On Azure, store pages only load while your relay is connected. The Android app does not run the relay yet, so today a Mac running `scripts/relayDevice.ts` has to stay on.
 - Store pages change. A changed button label stops the task with a message instead of guessing.
 - Food and Appointments are simulated. Travel and Home are not connected.
 - State kept in memory is lost on restart, so the server cannot run as more than one instance.

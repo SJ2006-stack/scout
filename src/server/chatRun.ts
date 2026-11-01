@@ -36,9 +36,10 @@ export type ChatTurn = {
   cache: ListingCache;
   fetchImpl: typeof fetch;
   mapsApiKey: string;
-  pomeradoApiKey: string;
   anthropicApiKey: string;
   readPage?: (url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>;
+  /** Reads a listings page for an event source without trying to sign in on it. */
+  readListings?: (url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>;
   registerPage?: (url: string, title: string) => Promise<{ pay: { url: string } | null; message: string } | null>;
   agent?: AgentId;
   commerce?: CommerceHub;
@@ -118,8 +119,7 @@ export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void):
     signal: turn.signal,
     fetchImpl: turn.fetchImpl,
     cache: turn.cache,
-    pomeradoApiKey: turn.pomeradoApiKey,
-    readPage: turn.readPage,
+    readPage: turn.readListings ?? turn.readPage,
   })));
   const collected: Listing[] = [];
   for (const result of loaded) {

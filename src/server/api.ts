@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseAddressDraft } from "../shared/address.ts";
@@ -19,6 +20,8 @@ import { healthPayload } from "./health.ts";
 import { browserRuntimeMaySkipSignIn, routeBrowser } from "./browser/routes.ts";
 import type { SessionVault } from "./browser/sessionVault.ts";
 import type { TaskRunner } from "./browser/taskRunner.ts";
+import type { RelayHub } from "./relay/relayHub.ts";
+import { RELAY_PATH } from "../shared/relay.ts";
 import { isTerminalState } from "../shared/scoutTask.ts";
 import type { BrowserRuntimeConfig } from "./browser/runtimeTicket.ts";
 import type { BrowserWorker } from "./browser/worker.ts";
@@ -61,13 +64,13 @@ export type ApiDeps = {
   listingCache?: ListingCache;
   fetchImpl?: typeof fetch;
   mapsApiKey?: string;
-  pomeradoApiKey?: string;
   anthropicApiKey?: string;
   commerce?: CommerceHub;
   pairTickets?: PairTickets;
   browser?: BrowserWorker;
   scoutTasks?: TaskRunner;
   sessionVault?: SessionVault | null;
+  relay?: RelayHub;
   browserRuntime?: BrowserRuntimeConfig;
   desk?: DeskStore;
   directory?: UserDirectory;
@@ -91,13 +94,23 @@ export function createApiServer(deps: ApiDeps): Server {
     listingCache: deps.listingCache ?? new ListingCache(60_000, deps.now),
     fetchImpl: deps.fetchImpl ?? fetch,
     mapsApiKey: deps.mapsApiKey ?? "",
-    pomeradoApiKey: deps.pomeradoApiKey ?? "",
     anthropicApiKey: deps.anthropicApiKey ?? "",
     commerce: deps.commerce ?? createCommerceHub(deps.now),
   };
   return createServer((request, response) => {
     void handleApi(request, response, resolved);
   });
+}
+
+/** Phone relay WebSocket upgrades on RELAY_PATH. Only signed-in users can attach a phone. */
+export function handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, deps: ApiDeps): void {
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (url.pathname !== RELAY_PATH || !deps.relay) {
+    socket.destroy();
+    return;
+  }
+  const account = deps.auth?.account(currentSessionId(request)) ?? null;
+  deps.relay.handleUpgrade(request, socket, head, account?.id ?? null);
 }
 
 export async function handleApi(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
@@ -135,6 +148,15 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
   }
   if (deps.auth && !browserRuntimeMaySkipSignIn(request, url.pathname, deps.browser) && !deps.auth.account(currentSessionId(request))) {
     sendJson(response, 401, { error: "Sign in with the code from your email." });
+    return;
+  }
+  if (url.pathname === "/api/relay/status" && request.method === "GET") {
+    const account = deps.auth?.account(currentSessionId(request));
+    if (!account) {
+      sendJson(response, 401, { error: "Sign in with the code from your email." });
+      return;
+    }
+    sendJson(response, 200, deps.relay ? deps.relay.status(account.id) : { connected: false, since: null, bytes: 0, streams: 0 });
     return;
   }
   if (url.pathname === "/api/account/phone") {
@@ -289,7 +311,6 @@ function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortS
     cache: deps.listingCache ?? new ListingCache(60_000, deps.now),
     fetchImpl: deps.fetchImpl ?? fetch,
     mapsApiKey: deps.mapsApiKey ?? "",
-    pomeradoApiKey: deps.pomeradoApiKey ?? "",
     anthropicApiKey: deps.anthropicApiKey ?? "",
     agent: input.agent,
     commerce: deps.commerce,
@@ -298,6 +319,7 @@ function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortS
     compareShop: browser ? (query, shopSignal, onStatus) => browser.compareShop(query, shopSignal, owner, onStatus) : undefined,
     prepareCart: deps.scoutTasks ? cartPreparer(deps.scoutTasks, owner, input, signal) : undefined,
     readPage: browser ? (url) => browser.readHtml(url, signal, owner) : undefined,
+    readListings: browser ? (url) => browser.readHtml(url, signal, owner, { signIn: false }) : undefined,
     registerPage: browser
       ? (url, title) => {
           const merchant = listingPlatform(url);

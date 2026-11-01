@@ -14,6 +14,9 @@ const INTERACTIVE = new Set([
   "combobox",
 ]);
 
+/** A sign-in label drawn as plain text, such as Blinkit's "Login" beside "My Cart". */
+const TEXT_LOGIN = /(?:^|\s)(log\s?in|sign\s?in)(?=\s|$)/i;
+
 export function parseAriaSnapshot(snapshot: string): PageElement[] {
   const elements: PageElement[] = [];
   for (const line of snapshot.split("\n")) {
@@ -28,6 +31,10 @@ export function parseAriaSnapshot(snapshot: string): PageElement[] {
     const bare = /^\s*-\s+text:\s+(.+)$/.exec(line);
     const text = quoted?.[1] ?? bare?.[1]?.trim();
     if (text && /₹|\b\d/.test(text)) elements.push({ role: "text", name: text });
+    else if (text && text.length <= 40) {
+      const login = TEXT_LOGIN.exec(text)?.[1];
+      if (login) elements.push({ role: "text", name: login });
+    }
   }
   return elements;
 }

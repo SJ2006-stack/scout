@@ -25,6 +25,17 @@ describe("shop shelf", () => {
     assert.equal(matching(offers, "chocolates").length, 2);
   });
 
+  it("matches a sized query however the store spells the size", () => {
+    const offers = ["Amul Butter 500 g", "Amul Butter 500 gm", "Amul Butter (500g)", "Amul Butter 100 g"].map((title) => ({
+      merchant: "Blinkit" as const,
+      title,
+      rupees: 1,
+      pageUrl: "https://blinkit.com/",
+    }));
+    assert.deepEqual(matching(offers, "amul butter 500g").map((offer) => offer.title), offers.slice(0, 3).map((offer) => offer.title));
+    assert.equal(matching(offers, "Amul butter 500 grams").length, 3);
+  });
+
   it("summarises one cheapest match per store and names stores with none", () => {
     const summary = shelfSummary([
       { merchant: "Blinkit", title: "Dairy Milk 25 g", rupees: 25, pageUrl: "https://blinkit.com/" },

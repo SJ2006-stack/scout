@@ -45,12 +45,12 @@ const SHOP_TOOLS: readonly ToolSpec[] = [
   },
   {
     name: "buy_from_shop",
-    description: "Prepare a real cart on Blinkit or Zepto in Scout's browser: sign in with their phone and an SMS code if needed, set their delivery area, add the item, and read the bill. Returns when the cart waits for their approval or Scout needs them. A card on screen shows the code box, the cart, and the Approve button. Use this only when they ask to buy or order a specific item.",
+    description: "Prepare a real cart on Blinkit, Zepto, or Instamart in Scout's browser: sign in with their phone and an SMS code if needed, set their delivery area, add the item, and read the bill. Returns when the cart waits for their approval or Scout needs them. A card on screen shows the code box, the cart, and the Approve button. Use this only when they ask to buy or order a specific item.",
     input_schema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        store: { type: "string", enum: ["blinkit", "zepto"] },
+        store: { type: "string", enum: ["blinkit", "zepto", "instamart"] },
         item: { type: "string" },
         quantity: { type: "integer", minimum: 1, maximum: 10 },
       },
@@ -213,7 +213,7 @@ async function speakShop(turn: ChatTurn, query: string, emit: (event: ChatEvent)
   });
 }
 
-const STORE_NAMES: Readonly<Record<string, string>> = { blinkit: "Blinkit", zepto: "Zepto" };
+const STORE_NAMES: Readonly<Record<string, string>> = { blinkit: "Blinkit", zepto: "Zepto", instamart: "Instamart" };
 
 async function buyFromShop(turn: ChatTurn, input: unknown, emit: (event: ChatEvent) => void): Promise<{ ok: boolean; content: string }> {
   const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
@@ -221,7 +221,7 @@ async function buyFromShop(turn: ChatTurn, input: unknown, emit: (event: ChatEve
   const item = typeof record.item === "string" ? record.item.trim() : "";
   const quantity = typeof record.quantity === "number" ? record.quantity : 1;
   const name = STORE_NAMES[store];
-  if (!name) return { ok: false, content: "Scout can build a cart on Blinkit or Zepto. Instamart is compare only for now." };
+  if (!name) return { ok: false, content: "Scout can build a cart on Blinkit, Zepto, or Instamart." };
   if (item.length < 2) return { ok: false, content: "Ask which item to buy." };
   if (!turn.prepareCart) return { ok: false, content: "Live carts are not enabled on this server." };
   emit({ type: "status", message: `Preparing a ${name} cart for ${item}.` });
@@ -310,11 +310,11 @@ function instructions(agent: SpecialistAgent): string {
   switch (agent) {
     case "shop":
       return [
-        scoutPurpose("Shop Scout", "Compare groceries on Blinkit, Zepto, and Instamart, and keep a simulated cart."),
+        scoutPurpose("Shop Scout", "Compare groceries on Blinkit, Zepto, and Instamart, build the real cart, and hand payment to their UPI app."),
         "Your tools are compare_shops, buy_from_shop, and shop_catalog. The browser worker is available. Never say you have no browser worker.",
         "If they have not named an item, ask what they want and wait. Do not call a tool for a greeting.",
         "When they name an item to find or compare, call compare_shops with the item words only. Tell them the summary the tool returns. Do not invent a price.",
-        "When they ask to buy or order an item, call buy_from_shop once with the cheaper of Blinkit and Zepto from the comparison, or the store they name. Instamart is compare only.",
+        "When they ask to buy or order an item, call buy_from_shop once with the cheapest store from the comparison, or the store they name.",
         "Never claim an order is placed. Scout stops at the cart for their approval, then hands payment to their UPI app.",
         "Use shop_catalog only when they ask for the simulated practice cart.",
         "A pay link from compare_shops is already on the screen. Tell them they can open it in their UPI app. Never ask for a UPI PIN.",

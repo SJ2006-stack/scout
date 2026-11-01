@@ -36,28 +36,32 @@ async function loadEvents(context: ToolContext): Promise<Part> {
   const key = `district-events|${context.city.id}`;
   const cached = context.cache.get(key);
   if (cached) return { ok: true, message: "Cached District events.", listings: cached };
-  const page = await districtPage(context, "https://www.district.in/events/");
-  if (!page.ok) return { ok: false, message: `District events are unavailable. ${page.message}`, listings: [] };
-  const listings = districtEvents(page.body, context.city, context.retrievedAt);
-  context.cache.set(key, listings);
-  return { ok: true, message: "District events loaded.", listings };
+  const read = await districtRead(context, "https://www.district.in/events/", (html) => districtEvents(html, context.city, context.retrievedAt));
+  if (!read.ok) return { ok: false, message: `District events are unavailable. ${read.message}`, listings: [] };
+  if (read.listings.length > 0) context.cache.set(key, read.listings);
+  return { ok: true, message: "District events loaded.", listings: read.listings };
 }
 
 async function loadMovies(context: ToolContext): Promise<Part> {
   const key = "district-movies";
   const cached = context.cache.get(key);
   if (cached) return { ok: true, message: "Cached District movies.", listings: cached };
-  const page = await districtPage(context, "https://www.district.in/movies/");
-  if (!page.ok) return { ok: false, message: `District movies are unavailable. ${page.message}`, listings: [] };
-  const listings = districtMovies(page.body, context.retrievedAt);
-  context.cache.set(key, listings);
-  return { ok: true, message: "District movies loaded.", listings };
+  const read = await districtRead(context, "https://www.district.in/movies/", (html) => districtMovies(html, context.retrievedAt));
+  if (!read.ok) return { ok: false, message: `District movies are unavailable. ${read.message}`, listings: [] };
+  if (read.listings.length > 0) context.cache.set(key, read.listings);
+  return { ok: true, message: "District movies loaded.", listings: read.listings };
 }
 
-async function districtPage(context: ToolContext, url: string): Promise<{ ok: true; body: string } | { ok: false; message: string }> {
+/**
+ * The plain request first. District answers datacenter addresses with a 403 or a
+ * page without listings, so either falls back to the browser worker, which goes
+ * through the user's phone when it is connected.
+ */
+async function districtRead(context: ToolContext, url: string, parse: (html: string) => Listing[]): Promise<{ ok: true; listings: Listing[] } | { ok: false; message: string }> {
   const response = await plainGet(url, "text/html", context.timeoutMs, context.signal, context.fetchImpl);
-  if (response.ok || response.message !== "HTTP 403" || !context.readPage) return response;
+  const plain = response.ok ? parse(response.body) : [];
+  if (plain.length > 0 || !context.readPage) return response.ok ? { ok: true, listings: plain } : { ok: false, message: response.message };
   const read = await context.readPage(url);
-  if (!read.ok) return { ok: false, message: read.message };
-  return { ok: true, body: read.html };
+  if (!read.ok) return response.ok ? { ok: true, listings: [] } : { ok: false, message: read.message };
+  return { ok: true, listings: parse(read.html) };
 }

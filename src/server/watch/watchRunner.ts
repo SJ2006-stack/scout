@@ -12,7 +12,6 @@ export type WatchRunnerOptions = {
   tools: readonly EventTool[];
   cache: ListingCache;
   fetchImpl: typeof fetch;
-  pomeradoApiKey: string;
   timeoutMs: number;
   now: () => number;
   timezone?: string;
@@ -70,7 +69,6 @@ export class WatchRunner {
       signal: AbortSignal.timeout(this.options.timeoutMs * 2),
       fetchImpl: this.options.fetchImpl,
       cache: this.options.cache,
-      pomeradoApiKey: this.options.pomeradoApiKey,
     }).catch(() => ({ name: tool.name, ok: false, message: "failed", listings: [] as Listing[], warnings: [] }))));
     const answered = results.filter((result) => result.ok);
     if (answered.length === 0) {

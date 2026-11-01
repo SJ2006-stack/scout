@@ -9,6 +9,10 @@ import { PlaywrightBrowserDriver } from "./browser/playwrightDriver.ts";
 import { browserConfigFromEnv, browserRoleError } from "./browser/policy.ts";
 import { browserRuntimeFromEnv } from "./browser/runtimeTicket.ts";
 import { CheckoutLedger } from "./browser/checkoutLedger.ts";
+import { EgressProxy } from "./relay/egressProxy.ts";
+import { phoneEgress, type Egress } from "./relay/phoneEgress.ts";
+import { RelayHub } from "./relay/relayHub.ts";
+import { mirrorVault } from "./relay/vaultMirror.ts";
 import { OtpBroker } from "./browser/otpBroker.ts";
 import { allowBrowserRequest, checkNavigationUrl } from "./browser/policy.ts";
 import { SessionVault } from "./browser/sessionVault.ts";
@@ -64,7 +68,6 @@ export function createDeps(): ApiDeps {
     tools: eventTools,
     cache: listingCache,
     fetchImpl: fetch,
-    pomeradoApiKey: process.env.POMERADO_API_KEY?.trim() ?? "",
     timeoutMs: connectorTimeoutMs,
     now: Date.now,
   });
@@ -87,7 +90,6 @@ export function createDeps(): ApiDeps {
     chatMemory: new ChatMemoryStore(dbPath),
     listingCache,
     mapsApiKey: process.env.GOOGLE_MAPS_API_KEY?.trim() ?? "",
-    pomeradoApiKey: process.env.POMERADO_API_KEY?.trim() ?? "",
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() ?? "",
     sarvamApiKey: process.env.SARVAM_API_KEY?.trim() ?? "",
     commerce: createCommerceHub(Date.now),
@@ -106,7 +108,7 @@ export function useLocalBrowserWorker(env: NodeJS.ProcessEnv, enabled: boolean):
   return enabled;
 }
 
-function createBrowserRuntime(directory: UserDirectory, inbox: InboxStore, notifier: Notifier): { browser?: BrowserWorker; scoutTasks?: TaskRunner; sessionVault?: SessionVault | null } {
+function createBrowserRuntime(directory: UserDirectory, inbox: InboxStore, notifier: Notifier): { browser?: BrowserWorker; scoutTasks?: TaskRunner; sessionVault?: SessionVault | null; relay?: RelayHub } {
   const config = browserConfigFromEnv(process.env, root);
   const roleError = browserRoleError(config);
   if (roleError) throw new Error(roleError);
@@ -117,8 +119,12 @@ function createBrowserRuntime(directory: UserDirectory, inbox: InboxStore, notif
   if (config.profileKey == null) console.error("Browser profiles stay off until BROWSER_PROFILE_KEY is 64 hex characters.");
   const idleMs = idleMsFromEnv(process.env);
   const driver = new PlaywrightBrowserDriver(config.operationTimeoutMs);
+  const relay = new RelayHub({ capBytes: relayCapBytes(process.env), now: Date.now });
+  if (vault) mirrorVault(vault, relay, (line) => console.log(line));
+  const egress = phoneEgress(relay, new EgressProxy(relay), { waitMs: relayWakeMs(process.env) });
   const scoutTasks = new TaskRunner({
     driver,
+    egress,
     vault,
     broker: new OtpBroker(Date.now),
     ledger: new CheckoutLedger(join(config.stateDir, "checkouts.json"), Date.now),
@@ -135,7 +141,19 @@ function createBrowserRuntime(directory: UserDirectory, inbox: InboxStore, notif
     },
     onPhoneVerified: (userId) => directory.markPhoneVerified(userId, Date.now()),
   });
-  return { browser: createBrowserWorker(directory, vault, driver, config, idleMs), scoutTasks, sessionVault: vault };
+  return { browser: createBrowserWorker(directory, vault, driver, config, idleMs, egress), scoutTasks, sessionVault: vault, relay };
+}
+
+/** RELAY_CAP_MB bounds one phone connection's relayed bytes. Default 300 MB. */
+function relayCapBytes(env: NodeJS.ProcessEnv): number {
+  const mb = Number(env.RELAY_CAP_MB ?? "");
+  return (Number.isFinite(mb) && mb > 0 ? mb : 300) * 1024 * 1024;
+}
+
+/** RELAY_WAKE_MS is how long a store task waits for the phone to connect. 0 skips waiting. */
+function relayWakeMs(env: NodeJS.ProcessEnv): number {
+  const ms = Number(env.RELAY_WAKE_MS ?? "");
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 15_000) : 0;
 }
 
 function createBrowserWorker(
@@ -144,9 +162,11 @@ function createBrowserWorker(
   driver: PlaywrightBrowserDriver,
   config: ReturnType<typeof browserConfigFromEnv>,
   idleMs: number | undefined,
+  egress: Egress,
 ): BrowserWorker {
   return new BrowserWorker({
     driver,
+    egress,
     store: new BrowserStore(join(config.stateDir, "sessions.json"), directory),
     vault,
     canShowWindow: false,

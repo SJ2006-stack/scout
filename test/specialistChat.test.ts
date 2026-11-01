@@ -119,7 +119,6 @@ async function speak(options: {
     cache: new ListingCache(60_000, () => NOW),
     fetchImpl: options.fetchImpl ?? (async () => Response.json({ stop_reason: "end_turn", content: [] })),
     mapsApiKey: "",
-    pomeradoApiKey: "",
     anthropicApiKey: options.anthropicApiKey ?? "test-key",
     agent: options.agent,
     commerce: options.commerce,

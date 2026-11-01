@@ -14,7 +14,7 @@ export type WebsiteSkill = {
   home: string;
   login: {
     /** When the site asks for a sign-in. */
-    requiredFor: "checkout" | "register" | "booking";
+    requiredFor: "search" | "checkout" | "register" | "booking";
     methods: readonly LoginMethod[];
     openLogin: RegExp;
     phoneField: RegExp;
@@ -114,7 +114,12 @@ export const SKILLS: Readonly<Record<SkillId, WebsiteSkill>> = {
     kind: "shop",
     domains: ["swiggy.com"],
     home: "https://www.swiggy.com/instamart",
-    login: { ...COMMON_LOGIN, requiredFor: "checkout", methods: ["phone"] },
+    login: {
+      ...COMMON_LOGIN,
+      openLogin: /^(?:log\s?in|sign\s?in|login|sign up|log in with phone number|double tap to go to user account)$/i,
+      requiredFor: "search",
+      methods: ["phone"],
+    },
     search: { url: (q) => `https://www.swiggy.com/instamart/search?query=${encodeURIComponent(q)}`, box: /search/i },
     cart: { add: /^add$/i, increase: /^(?:\+|increase)$/i, decrease: /^(?:-|−|decrease)$/i, open: /^(?:view cart|cart|go to cart)/i, url: "https://www.swiggy.com/instamart/cart", summary: /item total|to pay|bill details/i },
     checkout: { proceed: /^(?:proceed to pay|checkout|make payment)$/i, payInitiation: /^(?:pay|proceed to pay|pay ₹)/i, forbidden: COMMON_FORBIDDEN },

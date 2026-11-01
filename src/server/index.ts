@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createViteServer } from "vite";
-import { handleApi } from "./api.ts";
+import { handleApi, handleUpgrade } from "./api.ts";
 import { startBrowserWarm } from "./browser/worker.ts";
 import { appRoot, createDeps, loadLocalEnv } from "./deps.ts";
 
@@ -31,6 +31,10 @@ server.on("request", (request: IncomingMessage, response: ServerResponse) => {
       response.end(html);
     });
   });
+});
+
+server.on("upgrade", (request, socket, head) => {
+  if ((request.url ?? "").startsWith("/api/relay")) handleUpgrade(request, socket, head, deps);
 });
 
 const stopBrowser = deps.browser?.startCleanup(30_000);

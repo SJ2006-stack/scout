@@ -1,4 +1,5 @@
 import { ChevronRight, LogOut } from "lucide-react";
+import { Connectors } from "./Connectors.tsx";
 import { insideNativeApp, openNativePermissions } from "./nativeApp.ts";
 import { PairPanel } from "./PairPanel.tsx";
 import type { Account } from "./screen.ts";
@@ -62,6 +63,11 @@ export function SettingsPanel({ account, voiceReplies, onVoiceReplies, onSignOut
             <ChevronRight size={18} aria-hidden="true" />
           </button>
         ) : null}
+      </section>
+
+      <section className="panel">
+        <h3>Connectors</h3>
+        <Connectors />
       </section>
 
       <section className="panel">

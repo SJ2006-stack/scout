@@ -8,19 +8,19 @@ import { bookMyShowTool } from "../src/server/tools/bookmyshow.ts";
 import { cityById } from "../src/shared/cities.ts";
 import type { ChatEvent } from "../src/shared/chatEvents.ts";
 import { speechCue } from "../src/shared/speech.ts";
-import { calendarDates, dateRange } from "../src/shared/when.ts";
+import { dateRange } from "../src/shared/when.ts";
 
 const now = Date.parse("2026-10-25T00:00:00.000Z");
 
 describe("shorter waits", () => {
-  it("answers at the connector timeout, keeps the BookMyShow job running, and caches only its success", async () => {
+  it("reads BookMyShow once per city and kind and serves the cache after", async () => {
     const city = cityById("hyderabad");
     assert.ok(city);
     const range = dateRange("today", now, "Asia/Kolkata");
-    const [date] = calendarDates(range.startMs, range.endMs, "Asia/Kolkata");
     const cache = new ListingCache(600_000, () => now);
-    const listing = { id: "ET00000001", kind: "movies", title: "Late Film", detail_url: "https://in.bookmyshow.com/movies/hyderabad/late-film/ET00000001", venues: [] };
-    const load = (fetchImpl: typeof fetch) => bookMyShowTool.load({
+    const html = `<script type="application/ld+json">${JSON.stringify({ "@type": "ItemList", itemListElement: [{ "@type": "ListItem", name: "Late Film", url: "https://in.bookmyshow.com/hyderabad/movies/late-film/ET00000001" }] })}</script>`;
+    let reads = 0;
+    const load = (readPage: (url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>) => bookMyShowTool.load({
       city,
       range,
       kind: "movie",
@@ -29,29 +29,25 @@ describe("shorter waits", () => {
       timeoutMs: 40,
       signal: new AbortController().signal,
       cache,
-      pomeradoApiKey: "test-key",
-      fetchImpl,
+      fetchImpl: fetch,
+      readPage,
     });
-    let runs = 0;
-    const slow = (async (input: RequestInfo | URL) => {
-      if (String(input).includes("/runs/")) {
-        runs += 1;
-        return new Response(JSON.stringify({ id: `job_${"b".repeat(32)}`, status: "queued" }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ status: "succeeded", result: { listings: [listing] } }), { status: 200 });
-    }) as typeof fetch;
-    const first = await load(slow);
-    assert.equal(first.ok, false);
-    assert.match(first.message, /still loading/);
-    assert.equal(cache.get(`bookmyshow|hyderabad|${date}|movies`), undefined);
-    const again = await load(slow);
-    assert.match(again.message, /still loading/);
-    assert.equal(runs, 1);
-    await new Promise((resolve) => setTimeout(resolve, 1_700));
-    assert.equal(cache.get(`bookmyshow|hyderabad|${date}|movies`)?.[0]?.title, "Late Film");
-    const later = await load(slow);
-    assert.equal(later.ok, true);
-    assert.equal(later.listings[0]?.title, "Late Film");
+    const blocked = await load(async () => ({ ok: true, html: "<title>Attention Required! | Cloudflare</title>" }));
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.message, /blocked/);
+    const first = await load(async (url) => {
+      reads += 1;
+      assert.equal(url, "https://in.bookmyshow.com/explore/movies-hyderabad");
+      return { ok: true, html };
+    });
+    assert.equal(first.listings[0]?.title, "Late Film");
+    assert.equal(first.listings[0]?.kind, "movie");
+    const again = await load(async () => {
+      reads += 1;
+      return { ok: false, message: "should not read" };
+    });
+    assert.equal(again.listings[0]?.title, "Late Film");
+    assert.equal(reads, 1);
   });
 
   it("emits answer text as Haiku chunks arrive and drops a tool-round draft", async () => {
@@ -112,7 +108,6 @@ describe("shorter waits", () => {
         memory: new ChatMemoryStore(),
         cache: new ListingCache(60_000, () => now),
         mapsApiKey: "maps-key",
-        pomeradoApiKey: "",
         anthropicApiKey: "",
         fetchImpl: (async (input: RequestInfo | URL) => {
           const url = String(input);

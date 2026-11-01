@@ -9,6 +9,7 @@ import type { UserDirectory } from "../db/userDirectory.ts";
 import { registrable, type SessionVault } from "./sessionVault.ts";
 import { skillForHost } from "./skills.ts";
 import { assignRefs, publicElements, type AssignedElement } from "./refs.ts";
+import type { Egress } from "../relay/phoneEgress.ts";
 import { BrowserStore, type StoredSession } from "./store.ts";
 
 const CLICK_ROLES = new Set(["button", "link", "checkbox", "radio", "tab", "menuitem", "option", "switch"]);
@@ -49,6 +50,8 @@ type WorkerOptions = {
   limits?: AdmissionLimits;
   rssMb?: () => number;
   idleMs?: number;
+  /** The proxy for an owner's background pages, such as their phone relay. */
+  egress?: Egress;
 };
 
 type Note = { text: string | null };
@@ -150,8 +153,8 @@ export class BrowserWorker {
     return this.exclusive(() => this.openFromPhoneInner(rawUrl));
   }
 
-  readHtml(rawUrl: string, parent?: AbortSignal, ownerId?: string): Promise<{ ok: true; html: string } | { ok: false; message: string }> {
-    return this.slot(() => this.readHtmlInner(rawUrl, parent, ownerId));
+  readHtml(rawUrl: string, parent?: AbortSignal, ownerId?: string, options: { signIn?: boolean } = {}): Promise<{ ok: true; html: string } | { ok: false; message: string }> {
+    return this.slot(() => this.readHtmlInner(rawUrl, parent, ownerId, options.signIn ?? true));
   }
 
   compareShop(query: string, parent?: AbortSignal, ownerId?: string, onStatus?: (message: string) => void): Promise<ShopRun> {
@@ -307,7 +310,7 @@ export class BrowserWorker {
     return { kind: "events", events };
   }
 
-  private async readHtmlInner(rawUrl: string, parent?: AbortSignal, ownerId?: string): Promise<{ ok: true; html: string } | { ok: false; message: string }> {
+  private async readHtmlInner(rawUrl: string, parent: AbortSignal | undefined, ownerId: string | undefined, signIn: boolean): Promise<{ ok: true; html: string } | { ok: false; message: string }> {
     if (parent?.aborted) return { ok: false, message: "Search stopped." };
     if (this.stopped) return { ok: false, message: "Browser worker is not enabled on this server." };
     const checked = this.checkedUrl(rawUrl);
@@ -315,17 +318,19 @@ export class BrowserWorker {
     let page: IsolatedPage | null = null;
     let held = false;
     try {
+      const proxy = await this.options.egress?.(ownerId, { wait: false });
       page = await this.options.driver.openIsolated({
         allow: (candidate) => this.permit(candidate),
         headed: false,
         lean: true,
         storageState: this.savedFor(ownerId, [checked.url]),
+        ...(proxy ? { proxy } : {}),
       });
       const opened = page;
       const landed = await withTimeout(this.options.operationTimeoutMs, (signal) => opened.goto(checked.url, linkSignal(signal, parent)));
       const finalCheck = this.checkedUrl(landed.url);
       if (!finalCheck.ok) return { ok: false, message: "Navigation did not stay on an https page." };
-      const account = this.loginFor(ownerId);
+      const account = signIn ? this.loginFor(ownerId) : null;
       if (account) {
         const signed = await attemptSignIn(opened, account, (run) => withTimeout(this.options.operationTimeoutMs, (signal) => run(linkSignal(signal, parent))));
         if (signed === "code") {
@@ -387,11 +392,13 @@ export class BrowserWorker {
     let page: IsolatedPage | null = null;
     let held = false;
     try {
+      const proxy = await this.options.egress?.(ownerId);
       page = await this.options.driver.openIsolated({
         allow: (candidate) => this.permit(candidate),
         headed: false,
         lean: true,
         storageState: this.savedFor(ownerId, startUrl ? [startUrl] : SHOP_SITES.map((site) => site.home)),
+        ...(proxy ? { proxy } : {}),
       });
       const opened = page;
       const step = <R>(work: (signal: AbortSignal) => Promise<R>): Promise<R> =>

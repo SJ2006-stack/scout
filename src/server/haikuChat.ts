@@ -240,8 +240,7 @@ async function runTool(
       signal: turn.signal,
       fetchImpl: turn.fetchImpl,
       cache: turn.cache,
-      pomeradoApiKey: turn.pomeradoApiKey,
-      readPage: turn.readPage,
+      readPage: turn.readListings ?? turn.readPage,
     });
     ok = result.ok;
     message = result.message;

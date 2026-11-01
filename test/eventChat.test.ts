@@ -17,7 +17,7 @@ const city: City = {
   id: "bengaluru",
   name: "Bengaluru",
   lumaSlug: "bengaluru",
-  bookMyShowCity: "Bengaluru",
+  bookMyShowSlug: "bengaluru",
   aliases: ["bengaluru", "bangalore"],
   pincodePrefix: "560",
 };
@@ -87,19 +87,6 @@ function eventItem(name: string, url: string, price: string | null, locality = "
   };
 }
 
-function eventListing(title: string, url: string, amountMinor: number) {
-  return {
-    id: title.replaceAll(" ", ""),
-    kind: "events",
-    title,
-    detail_url: url,
-    genres: ["comedy"],
-    category: "Stand up Comedy",
-    advertised_price: { amount_minor: amountMinor, currency: "INR", label: `₹${amountMinor / 100}` },
-    venues: [{ name: "Comedy Square: Bengaluru", showtimes: [{ starts_at: "2026-10-25T21:00:00+05:30", prices: [] }] }],
-  };
-}
-
 function sources(eventsStatus = 200): typeof fetch {
   return (async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -118,7 +105,7 @@ async function turn(
   fetchImpl: typeof fetch,
   memory = new ChatMemoryStore(),
   mapsApiKey = "",
-  pomeradoApiKey = "",
+  readPage: ((url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>) | undefined = undefined,
   anthropicApiKey = "",
 ): Promise<ChatEvent[]> {
   const events: ChatEvent[] = [];
@@ -137,13 +124,22 @@ async function turn(
       cache: new ListingCache(60_000, () => Date.parse("2026-10-25T00:00:00.000Z")),
       fetchImpl,
       mapsApiKey,
-      pomeradoApiKey,
       anthropicApiKey,
+      ...(readPage ? { readPage } : {}),
     },
     (event) => events.push(event),
   );
   return events;
 }
+
+const bookMyShowEventsHtml = `<script type="application/ld+json">${JSON.stringify({
+  "@type": "ItemList",
+  itemListElement: [
+    { "@type": "ListItem", item: { "@type": "ComedyEvent", name: "Cheap Standup Comedy", url: "https://in.bookmyshow.com/events/cheap-standup/ET00000001", startDate: "2026-10-25T20:00:00", location: { "@type": "Place", name: "Hall One" }, offers: { "@type": "Offer", price: "199" } } },
+    { "@type": "ListItem", item: { "@type": "ComedyEvent", name: "Pricey Standup Comedy", url: "https://in.bookmyshow.com/events/pricey-standup/ET00000002", startDate: "2026-10-25T21:00:00", offers: { "@type": "Offer", price: "800" } } },
+    { "@type": "ListItem", item: { "@type": "ComedyEvent", name: "Bad Link Comedy", url: "http://in.bookmyshow.com/events/bad/ET00000003", startDate: "2026-10-25T21:00:00" } },
+  ],
+})}</script>`;
 
 describe("event listings", () => {
   it("uses Luma's public place slug for Delhi", () => {
@@ -182,42 +178,21 @@ describe("event listings", () => {
     assert.equal(cards.some((card) => card.kind === "movie" && card.url.endsWith("MV219550")), true);
   });
 
-  it("calls the BookMyShow tool and keeps a comedy under the budget", async () => {
-    const bodies: unknown[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.includes("api.pomerado.ai")) {
-        bodies.push(JSON.parse(String(init?.body ?? "{}")) as unknown);
-        return new Response(JSON.stringify({
-          id: "job_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          status: "succeeded",
-          result: {
-            applied_city: "Bengaluru",
-            listings: [
-              eventListing("Cheap Standup", "https://in.bookmyshow.com/events/cheap-standup/ET1", 19900),
-              eventListing("Pricey Standup", "https://in.bookmyshow.com/events/pricey-standup/ET2", 80000),
-              eventListing("Bad Link Comedy", "http://in.bookmyshow.com/events/bad/ET3", 10000),
-            ],
-          },
-        }), { status: 202 });
-      }
-      return sources()(input, init);
-    }) as typeof fetch;
-    const events = await turn("comedy in Bengaluru under 500", fetchImpl, new ChatMemoryStore(), "", "test-key");
+  it("reads BookMyShow's explore page and keeps a comedy under the budget", async () => {
+    const asked: string[] = [];
+    const readPage = async (url: string) => {
+      asked.push(url);
+      return { ok: true as const, html: bookMyShowEventsHtml };
+    };
+    const events = await turn("comedy in Bengaluru under 500", sources(), new ChatMemoryStore(), "", readPage);
     const titles = events.flatMap((event) => (event.type === "card" ? [event.listing.title] : []));
-    assert.equal(titles.includes("Cheap Standup"), true);
-    assert.equal(titles.includes("Pricey Standup"), false);
+    assert.equal(titles.includes("Cheap Standup Comedy"), true);
+    assert.equal(titles.includes("Pricey Standup Comedy"), false);
     assert.equal(titles.includes("Bad Link Comedy"), false);
-    assert.equal(titles.filter((title) => title === "Cheap Standup").length, 1);
-    const cheap = events.find((event) => event.type === "card" && event.listing.title === "Cheap Standup");
+    const cheap = events.find((event) => event.type === "card" && event.listing.title === "Cheap Standup Comedy");
     assert.equal(cheap?.type === "card" && cheap.listing.platform, "BookMyShow");
     assert.equal(cheap?.type === "card" && cheap.listing.price.min, 199);
-    assert.equal(bodies.length > 0, true);
-    const first = bodies[0] as { tool_id?: string; input?: { city?: string; kind?: string } };
-    assert.equal(first.tool_id, "tool_1528e3718e37c1b0489614053d3b4080");
-    assert.equal(first.input?.city, "Bengaluru");
-    assert.equal(first.input?.kind, "events");
-    assert.equal(bodies.some((body) => (body as { input?: { kind?: string } }).input?.kind === "movies"), false);
+    assert.deepEqual(asked.filter((url) => url.includes("bookmyshow")), ["https://in.bookmyshow.com/explore/events-bengaluru"]);
   });
 
   it("drops a movie with no url and prefers the url without a city suffix", () => {
@@ -330,7 +305,7 @@ describe("event listings", () => {
       }
       return sources()(input, init);
     }) as typeof fetch;
-    const events = await turn("films tonight in the garden city", fetchImpl, new ChatMemoryStore(), "", "", "test-anthropic-key");
+    const events = await turn("films tonight in the garden city", fetchImpl, new ChatMemoryStore(), "", undefined, "test-anthropic-key");
     const replies = events.flatMap((event) => (event.type === "question" ? [event.message] : []));
     assert.match(replies.join("\n"), /Roast Tank/);
     assert.equal(events.some((event) => event.type === "card" && event.listing.title === "Roast Tank"), true);
@@ -352,7 +327,7 @@ describe("event listings", () => {
       if (String(input) === "https://api.anthropic.com/v1/messages") return new Response("no", { status: 500 });
       return sources()(input, init);
     }) as typeof fetch;
-    const events = await turn("comedy in Bengaluru under 500", fetchImpl, new ChatMemoryStore(), "", "", "test-anthropic-key");
+    const events = await turn("comedy in Bengaluru under 500", fetchImpl, new ChatMemoryStore(), "", undefined, "test-anthropic-key");
     const titles = events.flatMap((event) => (event.type === "card" ? [event.listing.title] : []));
     assert.equal(titles.includes("Free Comedy"), true);
   });
@@ -511,7 +486,6 @@ async function haikuTurn(text: string, fetchImpl: typeof fetch, cache: ListingCa
       cache,
       fetchImpl,
       mapsApiKey: "",
-      pomeradoApiKey: "",
       anthropicApiKey: "test-anthropic-key",
     },
     (event) => events.push(event),

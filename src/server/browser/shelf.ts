@@ -172,11 +172,21 @@ function offersFrom(merchant: ShopMerchant, pageUrl: string, items: readonly { t
 
 /** Keeps offers whose title names every query word. Store pages mix in ads and suggestions. */
 export function matching(offers: readonly ShopOffer[], query: string): ShopOffer[] {
-  const words = query.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 1);
+  const words = withUnits(query).split(/[^a-z0-9]+/).filter((word) => word.length > 1);
   return offers.filter((offer) => {
-    const title = offer.title.toLowerCase();
+    const title = withUnits(offer.title);
     return words.every((word) => title.includes(word) || (word.endsWith("s") && title.includes(word.slice(0, -1))));
   });
+}
+
+/** Stores write sizes as "500 g", "500 gm", or "500g"; one spelling lets a sized query match any of them. */
+function withUnits(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/(\d+(?:\.\d+)?)\s*(kgs?|gms?|grams?|g|ml|ltrs?|litres?|liters?|l|pcs?|pieces?)\b/g, (_, amount: string, unit: string) => {
+      const short = /^k/.test(unit) ? "kg" : /^g/.test(unit) ? "g" : unit === "ml" ? "ml" : /^l/.test(unit) ? "l" : "pc";
+      return `${amount}${short}`;
+    });
 }
 
 function pause(ms: number): Promise<void> {

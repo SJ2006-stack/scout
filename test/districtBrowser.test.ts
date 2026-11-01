@@ -33,6 +33,20 @@ describe("district browser fallback", () => {
     assert.equal(result.listings.some((listing) => listing.title === "Free Comedy"), true);
   });
 
+  it("reads through the browser worker when the plain page has no listings, and caches nothing empty", async () => {
+    const seen: string[] = [];
+    const cache = new ListingCache(60_000, () => 0);
+    const empty = { ...context(async (url) => {
+      seen.push(url);
+      return { ok: true, html: "<html></html>" };
+    }), cache, fetchImpl: async () => new Response("<html>shell</html>", { status: 200 }) };
+    const first = await districtTool.load(empty);
+    assert.equal(first.listings.length, 0);
+    assert.deepEqual(seen, ["https://www.district.in/events/", "https://www.district.in/movies/"]);
+    const second = await districtTool.load({ ...empty, readPage: async () => ({ ok: true, html: eventsHtml }) });
+    assert.equal(second.listings.some((listing) => listing.title === "Free Comedy"), true);
+  });
+
   it("keeps the 403 when the browser worker is off", async () => {
     const result = await districtTool.load(context());
     assert.equal(result.ok, false);
@@ -53,7 +67,6 @@ function context(readPage?: ToolContext["readPage"]): ToolContext {
     signal: new AbortController().signal,
     fetchImpl: async () => new Response("blocked", { status: 403 }),
     cache: new ListingCache(60_000, () => 0),
-    pomeradoApiKey: "",
     readPage,
   };
 }
