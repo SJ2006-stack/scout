@@ -45,6 +45,23 @@ export function EventCard({ listing, busy, onBook }: EventCardProps) {
   );
 }
 
+const MORE_STEP = 6;
+
+export function MoreListings({ listings, busy, onBook }: { listings: Listing[]; busy: boolean; onBook: (listing: Listing) => void }) {
+  const [open, setOpen] = useState(0);
+  const left = listings.length - open;
+  return (
+    <>
+      {listings.slice(0, open).map((listing) => <EventCard key={listing.url} listing={listing} busy={busy} onBook={onBook} />)}
+      {left > 0 ? (
+        <button className="more-listings" type="button" onClick={() => setOpen((count) => count + MORE_STEP)}>
+          {open === 0 ? `Show ${left} more ${left === 1 ? "listing" : "listings"}` : `Show ${Math.min(MORE_STEP, left)} more (${left} left)`}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
 function priceLabel(listing: Listing): string {
   switch (listing.price.provenance) {
     case "free":

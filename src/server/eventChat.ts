@@ -2,22 +2,24 @@ import { cityById, type City } from "../shared/cities.ts";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import { dedupeListings, listingInWindow, sortListings, withinBudget, type EventKind, type Listing } from "../shared/event.ts";
 import { calendarDate, dateRange, isCalendarDay, isSingleDay, isTimeZone, whenInMessage, windowLabel, type DateRange, type WhenWindow } from "../shared/when.ts";
-import type { ChatLine, ChatMemory } from "./chatMemory.ts";
+import type { ChatMemory } from "./chatMemory.ts";
+import { askedUser, askPicks, askReply, blockText, contentBlocks, transcript } from "./toolLoop.ts";
 import type { ChatTurn } from "./chatRun.ts";
 import { SIGN_IN_CODE_MESSAGE } from "./browser/signIn.ts";
 import { bookMyShowTool } from "./tools/bookmyshow.ts";
 import { districtTool } from "./tools/district.ts";
 import { lumaTool } from "./tools/luma.ts";
 import type { EventTool, ToolName } from "./tools/types.ts";
-import { postHaiku, type HaikuMessage } from "./haikuClient.ts";
+import { postSarvam, type ChatMessage } from "./sarvamChat.ts";
 import { scoutPurpose } from "./scoutPrompt.ts";
 import { withEmoji } from "../shared/emoji.ts";
 import { browseFollowUp, matchFound, readablePage, type FoundEvent } from "./events/pageText.ts";
 import { assistantPrompt, assistantTools, isAssistantTool, runAssistantTool, type AssistantContext, type AssistantToolName } from "./assistantTools.ts";
 
-export { HAIKU_MODEL } from "./haikuClient.ts";
 const CARD_LIMIT = 24;
 const SHOW_LIMIT = 3;
+const MORE_LIMIT = 21;
+const MORE_FOR_MODEL = 8;
 const ROUND_LIMIT = 4;
 
 const INPUT_SCHEMA = {
@@ -83,32 +85,33 @@ type WhenWord = WhenWindow;
 type KindWord = EventKind | "any";
 type SearchInput = { city: City; when: WhenWord; kind: EventKind | null; budget: number | null };
 type Block = Record<string, unknown>;
-type ApiMessage = HaikuMessage;
+type ApiMessage = ChatMessage;
 
-export async function converseWithHaiku(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<boolean> {
+export async function converseEvent(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<boolean> {
   const remembered = turn.memory.get(turn.sessionId).lines;
   const messages = transcript(remembered, turn.text);
   const seen = new Set<string>();
   const announced = new Set<string>();
   const spoken: string[] = [];
   const shown: string[] = [];
+  const more: string[] = [];
   let patch: Partial<ChatMemory> = {};
   let started = false;
   for (let round = 0; round < ROUND_LIMIT; round += 1) {
-    if (turn.signal.aborted) return finish(turn, spoken.join("\n\n"), patch, shown, emit);
+    if (turn.signal.aborted) return finish(turn, spoken.join("\n\n"), patch, shown, emit, more);
     const body = await complete(turn, messages);
     if (body == null) {
       if (!started) return false;
-      return finish(turn, spoken.join("\n\n"), patch, shown, emit);
+      return finish(turn, spoken.join("\n\n"), patch, shown, emit, more);
     }
     if (body.stop_reason === "refusal") {
-      return finish(turn, "I can't help with that.", patch, shown, emit);
+      return finish(turn, "I can't help with that.", patch, shown, emit, more);
     }
-    const blocks = Array.isArray(body.content) ? body.content.filter(isBlock) : [];
-    const text = blocks.filter((block) => block.type === "text" && typeof block.text === "string").map((block) => String(block.text).trim()).filter((line) => line.length > 0).join("\n");
+    const blocks = contentBlocks(body.content);
+    const text = blockText(blocks);
     if (text.length > 0 && !spoken.includes(text)) spoken.push(text);
     const calls = blocks.filter(isToolUse);
-    if (calls.length === 0) return finish(turn, text.length > 0 ? text : spoken.join("\n\n"), patch, shown, emit);
+    if (calls.length === 0) return finish(turn, text.length > 0 ? text : spoken.join("\n\n"), patch, shown, emit, more);
     started = true;
     messages.push({ role: "assistant", content: blocks });
     const gathered: Listing[] = [];
@@ -118,11 +121,19 @@ export async function converseWithHaiku(turn: ChatTurn, emit: (event: ChatEvent)
       if (ran.patch) patch = { ...patch, ...ran.patch, found: mergeFound(patch.found, ran.patch.found) };
       return ran;
     }));
-    const preview = dedupeListings(sortListings(gathered)).filter((listing) => !seen.has(listing.url)).slice(0, SHOW_LIMIT);
+    if (askedUser(calls, results)) return finish(turn, askReply(text), patch, shown, emit, more);
+    const fresh = dedupeListings(sortListings(gathered)).filter((listing) => !seen.has(listing.url));
+    const preview = fresh.slice(0, SHOW_LIMIT);
+    const rest = fresh.slice(SHOW_LIMIT, SHOW_LIMIT + MORE_LIMIT);
     const visible = new Set(preview.map((listing) => listing.url));
     for (const listing of preview) {
       seen.add(listing.url);
       emit({ type: "card", listing });
+    }
+    if (rest.length > 0) {
+      for (const listing of rest) seen.add(listing.url);
+      emit({ type: "more", listings: rest });
+      more.push(...rest.map((listing) => listing.title));
     }
     shown.push(...preview.map((listing) => listing.title));
     messages.push({
@@ -135,7 +146,7 @@ export async function converseWithHaiku(turn: ChatTurn, emit: (event: ChatEvent)
       })),
     });
   }
-  return finish(turn, spoken.join("\n\n"), patch, shown, emit);
+  return finish(turn, spoken.join("\n\n"), patch, shown, emit, more);
 }
 
 function finish(
@@ -144,13 +155,20 @@ function finish(
   patch: Partial<ChatMemory>,
   shown: string[],
   emit: (event: ChatEvent) => void,
+  more: string[] = [],
 ): boolean {
-  const asked = browseFollowUp(reply.trim(), shown.length, turn.text);
+  const cleaned = reply
+    .split("\n")
+    .filter((line) => !/^\s*(?:\[?Shown on screen in order:|\(Cards on screen:|\(Under Show more:|Mentioned in order:)|held back \d+/i.test(line))
+    .join("\n")
+    .trim();
+  const asked = askPicks(turn.sessionId, "event", browseFollowUp(cleaned || "I checked Luma, District, and BookMyShow.", shown.length, turn.text), emit);
   const spoken = asked.length > 0 ? withEmoji(asked) : "";
   if (spoken.length > 0) emit({ type: "question", message: spoken });
   const previous = turn.memory.get(turn.sessionId);
   const titles = shown.slice(0, 6).map((title, index) => `${index + 1}. ${title}`).join("; ");
-  const remembered = `${spoken.length > 0 ? spoken : "I checked the listings."}${titles ? `\n[Shown on screen in order: ${titles}]` : ""}`;
+  const extra = more.slice(0, 12).join("; ");
+  const remembered = `${spoken.length > 0 ? spoken : "I checked the listings."}${titles ? `\n(Cards on screen: ${titles})` : ""}${extra ? `\n(Under Show more: ${extra})` : ""}`;
   const lines = [...previous.lines, { role: "user" as const, text: turn.text }, { role: "assistant" as const, text: remembered }].slice(-12);
   turn.memory.save(turn.sessionId, { ...previous, ...patch, found: patch.found ?? previous.found ?? [], lines });
   emit({ type: "done", count: shown.length });
@@ -158,8 +176,8 @@ function finish(
 }
 
 async function complete(turn: ChatTurn, messages: ApiMessage[]): Promise<{ stop_reason?: string; content?: unknown } | null> {
-  return postHaiku({
-    apiKey: turn.anthropicApiKey,
+  return postSarvam({
+    apiKey: turn.sarvamApiKey,
     fetchImpl: turn.fetchImpl,
     signal: turn.signal,
     system: `${instructions(turn.now(), timeZone(turn), turn.memory.get(turn.sessionId).date)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}`,
@@ -182,6 +200,7 @@ export function assistantContext(turn: ChatTurn): AssistantContext {
     timezone: timeZone(turn),
     ...(turn.profile ? { profile: turn.profile } : {}),
     ...(turn.watches ? { watches: turn.watches } : {}),
+    ...(turn.phone ? { phone: turn.phone } : {}),
   };
 }
 
@@ -261,7 +280,7 @@ async function runTool(
     ok,
     content: "",
     listings: matched,
-    fill: (visible) => toolContent(tool.name, ok, fromCache, range, zone, matched.filter((listing) => visible.has(listing.url)), matched.length, message),
+    fill: (visible) => toolContent(tool.name, ok, fromCache, range, zone, matched.filter((listing) => visible.has(listing.url)), matched.filter((listing) => !visible.has(listing.url)), message),
     patch: {
       cityId: search.city.id,
       date: search.when,
@@ -335,7 +354,7 @@ function windowCacheKey(tool: ToolName, cityId: string, range: DateRange, kind: 
   return `window|${tool}|${cityId}|${range.startMs}|${range.endMs}|${kind ?? "any"}`;
 }
 
-function toolContent(source: ToolName, ok: boolean, cached: boolean, range: DateRange, timezone: string, listings: Listing[], total: number, message: string): string {
+function toolContent(source: ToolName, ok: boolean, cached: boolean, range: DateRange, timezone: string, listings: Listing[], hidden: Listing[], message: string): string {
   const start = calendarDate(range.startMs, timezone);
   const end = calendarDate(Math.max(range.startMs, range.endMs - 1), timezone);
   const singleDay = isSingleDay(range.phrase);
@@ -349,7 +368,6 @@ function toolContent(source: ToolName, ok: boolean, cached: boolean, range: Date
     end,
     timezone,
     note: message === SIGN_IN_CODE_MESSAGE || !ok ? message : undefined,
-    withheld: Math.max(0, total - listings.length),
     listings: listings.map((listing) => ({
       title: listing.title,
       kind: listing.kind,
@@ -357,6 +375,8 @@ function toolContent(source: ToolName, ok: boolean, cached: boolean, range: Date
       price: listingPrice(listing),
       url: listing.url,
     })),
+    more: hidden.slice(0, MORE_FOR_MODEL).map((listing) => ({ title: listing.title, price: listingPrice(listing) })),
+    moreCount: hidden.length,
   });
 }
 
@@ -392,42 +412,28 @@ function instructions(nowMs: number, timeZoneName: string, remembered: WhenWindo
   return [
     scoutPurpose("Event Scout", "Find shows, movies, and things to do on Luma, District, and BookMyShow. Reply in a few sentences."),
     "Your harness is search_luma, search_district, search_bookmyshow, open_event, and register_event. The browser worker is available. Never say you have no browser worker, no login, or no way to register.",
-    "When they ask what is on, call all three search tools with the same city, date, and kind. The screen shows only three events. Mention those three, say this is what you got when you last checked, and ask if they are looking for something particular. Then wait. Do not list the rest.",
+    "If they are not asking what is on, for a detail, or to book, answer them and do not call a tool. Use the earlier messages in this chat.",
+    "When they ask what is on, or which listing is cheaper, call all three search tools with the same city, date, and kind. Compare only prices those tools returned. Do not invent a price or a link. The screen shows only three events. Mention those three, say this is what you got when you last checked, and ask if they are looking for something particular. Then wait. Do not list the rest.",
     "When they ask for more detail about one event, call open_event with that title. Answer from the page text it returns. Do not say the search listing is all you can see.",
-    "When they ask to register, RSVP, book, or use their Gmail, call register_event with that title. The worker uses the saved Gmail and phone. Tell them what the tool result says. Do not send them the link to do it themselves.",
+    "When app_event_book is available and they ask to book or get tickets, call it for the cheaper listing on an app the phone can drive. For a BookMyShow or District movie, pass the cinema they named as ref.venue and the time they named as showtime (ISO with offset); the phone goes to that seat map. For a District event, pass the day and slot start as showtime and their price limit as maxPricePerTicket; the phone adds the tickets and stops on Checkout. For Luma, no showtime is needed; the phone stops on the filled registration form. If they named no show or day, call it without a showtime; the phone reports the showtimes or open days, so ask which one. Tell them to tap Allow, then finish in the app: pick seats and pay, tap Checkout, or tap Register. Do not call register_event for that event.",
+    "When app_event_book is not available and they ask to register, RSVP, book, or use their Gmail, call register_event with that title. The worker uses the saved Gmail and phone. Tell them what the tool result says. Do not send them the link to do it themselves.",
     "You can search Bengaluru, Mumbai, Delhi, and Hyderabad. Map a city name in any language to bengaluru, mumbai, delhi, or hyderabad. For any other city, say so in their language and do not call a tool.",
     "City ids and the when value stay in that English form even when the reply is in another language.",
     `Today is ${today} in ${timeZoneName}. Tomorrow is ${tomorrow}. The current search window is ${rememberedDay}.`,
     `${WHEN_RULE} kind is any when they did not name a type. budgetRupees is 0 when they did not name a maximum.`,
-    "A search result is JSON. Its fields are source, ok, cached, window, date, start, end, timezone, withheld, and listings. window is today, tomorrow, weekend, week, or YYYY-MM-DD. date is YYYY-MM-DD when window is a single day, and null otherwise. start and end are the first and last calendar dates in the window. listings items are title, kind, start, price, and url. withheld is how many other listings were held back. Each listing's start is the time to judge. open_event returns the full page text for one event.",
+    "A search result is JSON. Its fields are source, ok, cached, window, date, start, end, timezone, listings, more, and moreCount. window is today, tomorrow, weekend, week, or YYYY-MM-DD. date is YYYY-MM-DD when window is a single day, and null otherwise. start and end are the first and last calendar dates in the window. listings items are title, kind, start, price, and url; those have cards. more is the title and price of other matches, which sit under a Show more button on screen; moreCount is how many there are. When they ask about the other listings, name them from more, or from the Under Show more note in this chat, and point to the Show more button. Each listing's start is the time to judge. open_event returns the full page text for one event.",
     "The reply may mention only listings inside the requested window. A named day means that day only. If listings is empty, say nothing matched that day.",
     "A failed result has a note. If the note says a source is still loading, say that source is still loading and offer to check again in a moment. Do not say it found nothing.",
     "If register_event already ran for an event in this chat, report that result when they ask whether it worked. Do not call register_event again unless they ask you to retry.",
     "Do not invent events, prices, or links. After the tools answer, talk about those results.",
     "Sign in with the Gmail address and phone number already on this account. The browser worker types that phone number or that Gmail address and asks the site to send a code. When the code comes back, the signed-in browser session is saved in the vault and reused. Do not say you have no login, no account, or no booking ability. If a tool says a sign-in code was sent, tell them to approve that code on their phone.",
     "Payment still opens in their UPI app. Never ask for a UPI PIN. If they are just chatting, answer without tools.",
+    "The cards on screen already show each event's link, price, and date. Do not paste links. Do not list more than three events. Write two or three short sentences. Never repeat bracketed notes or the order they were mentioned. Do not say listings were held back; say the rest are under Show more.",
   ].join(" ");
 }
 
 function timeZone(turn: ChatTurn): string {
   return isTimeZone(turn.timezone) ? turn.timezone : "Asia/Kolkata";
-}
-
-function transcript(lines: ChatLine[], text: string): ApiMessage[] {
-  const messages: ApiMessage[] = [];
-  for (const line of lines) {
-    const last = messages.at(-1);
-    if (last && last.role === line.role && typeof last.content === "string") {
-      last.content = `${last.content}\n${line.text}`;
-      continue;
-    }
-    messages.push({ role: line.role, content: line.text });
-  }
-  if (messages[0]?.role === "assistant") messages.shift();
-  const last = messages.at(-1);
-  if (last?.role === "user" && typeof last.content === "string") last.content = `${last.content}\n${text}`;
-  else messages.push({ role: "user", content: text });
-  return messages;
 }
 
 function toolByName(name: SearchToolId): EventTool {
@@ -458,10 +464,6 @@ function sourceName(name: SearchToolId): ToolName {
       return neverName;
     }
   }
-}
-
-function isBlock(value: unknown): value is Block {
-  return Boolean(value) && typeof value === "object";
 }
 
 function isToolUse(block: Block): block is Block & { id: string; name: ToolId; input: unknown } {

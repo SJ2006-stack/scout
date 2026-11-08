@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MapPin, Menu } from "lucide-react";
+import type { CartEstimate } from "../shared/cartQuote.ts";
+import type { ErrandAnswers, ErrandForm } from "../shared/errands.ts";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import type { CommerceEvent } from "../shared/commerce.ts";
 import { matchesCardFilter, type CardFilter, type Listing } from "../shared/event.ts";
@@ -19,7 +21,7 @@ import { conversationsFromStorage, emptyConversation, loadConversations, mergeCo
 import { siteAgentFromHealth, siteAgentFromLocation } from "./site.ts";
 import { PreferredName, SignIn, Splash } from "./SignIn.tsx";
 import { BrowserTasks } from "./BrowserTasks.tsx";
-import { EventCard } from "./EventCard.tsx";
+import { EventCard, MoreListings } from "./EventCard.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { Welcome, type BookingLink } from "./Welcome.tsx";
@@ -35,10 +37,22 @@ import {
 import { readSse } from "./sse.ts";
 import { rememberVoiceReplies, speakReply, stopSpeech, voiceRepliesEnabled } from "./voice.ts";
 import { Thinking } from "./Thinking.tsx";
+import { ReplyText } from "./ReplyText.tsx";
 import { appendThought, finishThought } from "../shared/thinking.ts";
 import { withEmoji } from "../shared/emoji.ts";
 import type { LiveEvent } from "../shared/liveEvents.ts";
-import { runDeviceAction, watchDeviceResults } from "./deviceRunner.ts";
+import { actionId, phoneAutomation, runAppAction, runDeviceAction, watchDeviceResults } from "./deviceRunner.ts";
+import { bookActionForListing, eventAppFor } from "../shared/listingBook.ts";
+import { PayTray } from "./PayTray.tsx";
+import { EstimateCard } from "./EstimateCard.tsx";
+import { ErrandFormCard } from "./ErrandFormCard.tsx";
+import { BusCard } from "./BusCard.tsx";
+import { PlacesCard } from "./PlacesCard.tsx";
+import { readPlaces } from "../shared/places.ts";
+import { PhoneRunCard } from "./PhoneRunCard.tsx";
+import { phoneRunsFromTurns } from "../shared/payReady.ts";
+import { canAutomate, isAppAction, type DeviceResult } from "../shared/deviceActions.ts";
+import { applyPhoneResult } from "../shared/phoneRun.ts";
 import { useVoiceCall } from "./voiceCall.ts";
 
 type Place = { lat: number; lon: number };
@@ -59,7 +73,7 @@ const FILTERS: { id: CardFilter; label: string }[] = [
 ];
 
 export function App() {
-  const [siteAgent, setSiteAgent] = useState<AgentId>(() => siteAgentFromLocation(window.location.hostname, window.location.pathname) ?? "event");
+  const [siteAgent, setSiteAgent] = useState<AgentId>(() => siteAgentFromLocation(window.location.hostname, window.location.pathname) ?? "main");
   const [screen, setScreen] = useState<Screen>({ kind: "home" });
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -234,7 +248,17 @@ export function App() {
   const active = screen.kind === "chat" ? conversations.find((item) => item.id === screen.conversationId) ?? null : null;
   const voiceChatRef = useRef<string | null>(null);
   const voiceCall = useVoiceCall({ agent: siteAgent, sessionId: active?.sessionId, onLive: onVoiceLive, onToast: showToast });
-  useEffect(() => watchDeviceResults((line) => setToast({ text: line })), []);
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  useEffect(() => watchDeviceResults((result, line) => {
+    if (!conversationsRef.current.some((item) => hasPhoneRun(item.turns, result.id))) {
+      setToast({ text: line });
+      return;
+    }
+    setConversations((current) => current.map((item) => (
+      hasPhoneRun(item.turns, result.id) ? { ...item, turns: applyPhoneTurns(item.turns, result), updatedAt: Date.now() } : item
+    )));
+  }), []);
   useEffect(() => {
     if (voiceCall.state === "idle" || voiceCall.state === "ended") voiceChatRef.current = null;
     else if (voiceCall.state === "connecting") stopSpeech();
@@ -261,7 +285,6 @@ export function App() {
   }
 
   function startConversation(): Conversation {
-    if (siteAgent === "main") throw new Error("The hub has no chats.");
     const created = { ...emptyConversation(siteAgent, agentById(siteAgent).intro), turns: [] };
     setConversations((current) => [created, ...current]);
     openChat(created);
@@ -296,7 +319,6 @@ export function App() {
   }
 
   function onVoiceLive(event: LiveEvent): void {
-    if (siteAgent === "main") return;
     let target = conversations.find((item) => item.id === voiceChatRef.current) ?? active;
     if (!target) {
       if (event.type !== "voice-user") return;
@@ -361,6 +383,25 @@ export function App() {
     await sendEventChat(conversation, trimmed);
   }
 
+  async function answerForm(conversation: Conversation, form: ErrandForm, values: Record<string, string>): Promise<void> {
+    if (busyId != null) return;
+    const said = form.questions
+      .filter((question) => (values[question.id] ?? "").trim().length > 0)
+      .map((question) => `${question.prompt} ${question.kind === "photo" ? "(added)" : values[question.id]?.trim()}`);
+    const text = said.length > 0 ? said.join("\n") : "Go ahead with what you have.";
+    stickToEnd.current = true;
+    patch(conversation.id, (current) => ({
+      ...current,
+      activity: ["Answers sent."],
+      turns: beginThinking(
+        [...current.turns.map((turn) => (turn.kind === "form" && turn.form.id === form.id ? { ...turn, answered: true } : turn)), { kind: "user" as const, text }],
+        ["Answers sent."],
+      ),
+      updatedAt: Date.now(),
+    }));
+    await sendEventChat(conversation, text, { formId: form.id, values });
+  }
+
   function confirmReview(conversation: Conversation, quoteId: string): void {
     if (busyId != null) return;
     const agent = commerceAgent(conversation.agent);
@@ -376,6 +417,14 @@ export function App() {
 
   async function sendBook(conversation: Conversation, listing: Listing): Promise<void> {
     if (busyId != null) return;
+    if (canAutomate(phoneAutomation(), eventAppFor(listing.platform))) {
+      const action = bookActionForListing(listing, actionId(), Date.now());
+      const run = action ? runAppAction(action, conversation.sessionId) : null;
+      if (run) {
+        patch(conversation.id, (current) => ({ ...current, turns: [...current.turns, { kind: "phone", run }], updatedAt: Date.now() }));
+        return;
+      }
+    }
     const controller = new AbortController();
     abortRef.current = controller;
     setBusyId(conversation.id);
@@ -518,7 +567,7 @@ export function App() {
     });
   }
 
-  async function sendEventChat(conversation: Conversation, trimmed: string): Promise<void> {
+  async function sendEventChat(conversation: Conversation, trimmed: string, answers?: ErrandAnswers): Promise<void> {
     const controller = new AbortController();
     abortRef.current = controller;
     setBusyId(conversation.id);
@@ -533,6 +582,8 @@ export function App() {
           pincode,
           lat: place?.lat ?? null,
           lon: place?.lon ?? null,
+          phone: phoneAutomation(),
+          ...(answers ? { answers } : {}),
         }),
         signal: controller.signal,
       });
@@ -680,7 +731,6 @@ export function App() {
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
     if (screen.kind === "home") {
-      if (siteAgent === "main") return;
       void submit(startConversation(), trimmed);
       return;
     }
@@ -704,7 +754,6 @@ export function App() {
   }
 
   function usePrompt(text: string): void {
-    if (siteAgent === "main") return;
     void submit(startConversation(), text);
   }
 
@@ -767,7 +816,7 @@ export function App() {
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, 12);
   const busy = busyId != null;
-  const showComposer = (screen.kind === "chat" || screen.kind === "home") && siteAgent !== "main";
+  const showComposer = screen.kind === "chat" || screen.kind === "home";
 
   return (
     <div className={sidebarOpen ? "shell menu-open" : "shell"}>
@@ -832,10 +881,12 @@ export function App() {
                 onFilter={setFilter}
                 onConfirm={(quoteId) => confirmReview(active, quoteId)}
                 onBook={(listing) => void sendBook(active, listing)}
+                onAnswer={(form, values) => void answerForm(active, form, values)}
               />
             )
           ) : null}
         </section>
+        {screen.kind === "chat" && active ? <PayTray runs={phoneRunsFromTurns(active.turns)} /> : null}
         {showComposer ? (
           <Composer
             value={draft}
@@ -919,6 +970,7 @@ function Transcript({
   onFilter,
   onConfirm,
   onBook,
+  onAnswer,
 }: {
   conversation: Conversation;
   filter: CardFilter;
@@ -926,6 +978,7 @@ function Transcript({
   onFilter: (filter: CardFilter) => void;
   onConfirm: (quoteId: string) => void;
   onBook: (listing: Listing) => void;
+  onAnswer: (form: ErrandForm, values: Record<string, string>) => void;
 }) {
   const cards = conversation.turns.filter((turn): turn is Extract<Turn, { kind: "card" }> => turn.kind === "card");
   const visibleCards = cards.filter((turn) => matchesCardFilter(turn.listing.kind, filter));
@@ -954,7 +1007,7 @@ function Transcript({
           ? conversation.activity
           : null;
         return (
-          <TurnView key={`${turn.kind}-${index}`} turn={turn} steps={steps} filter={filter} busy={busy} onConfirm={onConfirm} onBook={onBook} />
+          <TurnView key={`${turn.kind}-${index}`} turn={turn} estimate={turn.kind === "phone" ? estimateBefore(conversation.turns, index) : null} steps={steps} filter={filter} busy={busy} onConfirm={onConfirm} onBook={onBook} onAnswer={onAnswer} />
         );
       })}
       {conversation.agent === "event" && cards.length > 0 && visibleCards.length === 0 ? (
@@ -978,19 +1031,23 @@ function TurnView({
   busy,
   onConfirm,
   onBook,
+  onAnswer,
+  estimate,
 }: {
   turn: Turn;
+  estimate: CartEstimate | null;
   steps: readonly string[] | null;
   filter: CardFilter;
   busy: boolean;
   onConfirm: (quoteId: string) => void;
   onBook: (listing: Listing) => void;
+  onAnswer: (form: ErrandForm, values: Record<string, string>) => void;
 }) {
   switch (turn.kind) {
     case "user":
       return <p className="user">{turn.text}</p>;
     case "text":
-      return <p className="reply">{withEmoji(turn.text)}</p>;
+      return <ReplyText text={withEmoji(turn.text)} />;
     case "note":
       return <p className="note">{turn.text}</p>;
     case "thinking":
@@ -998,21 +1055,41 @@ function TurnView({
     case "card":
       if (!matchesCardFilter(turn.listing.kind, filter)) return null;
       return <EventCard listing={turn.listing} busy={busy} onBook={onBook} />;
+    case "more":
+      return <MoreListings listings={turn.listings.filter((listing) => matchesCardFilter(listing.kind, filter))} busy={busy} onBook={onBook} />;
     case "cart":
       return <CartCard cart={turn.cart} />;
     case "quote":
       return <QuoteCard quote={turn.quote} busy={busy} onConfirm={onConfirm} />;
+    case "estimate":
+      return <EstimateCard estimate={turn.estimate} />;
+    case "form":
+      return <ErrandFormCard form={turn.form} answered={turn.answered} busy={busy} onSubmit={(values) => onAnswer(turn.form, values)} />;
+    case "buses":
+      return <BusCard buses={turn.buses} />;
+    case "places":
+      return <PlacesCard places={turn.places} />;
     case "receipt":
       return <ReceiptCard receipt={turn.receipt} />;
     case "pay":
       return <PayCard pay={turn.pay} />;
     case "task":
       return <ScoutTaskCard taskId={turn.taskId} title={turn.title} />;
+    case "phone":
+      return <PhoneRunCard run={turn.run} estimate={estimate} />;
     default: {
       const neverTurn: never = turn;
       return neverTurn;
     }
   }
+}
+
+function estimateBefore(turns: readonly Turn[], index: number): CartEstimate | null {
+  for (let at = index - 1; at >= 0; at -= 1) {
+    const turn = turns[at];
+    if (turn?.kind === "estimate") return turn.estimate;
+  }
+  return null;
 }
 
 function LocationLine({ view }: { view: LocationView }) {
@@ -1053,8 +1130,20 @@ function applyDrive(turns: Turn[], url: string, minutes: number): Turn[] {
 function deviceTurns(event: ChatEvent, sessionId: string | undefined): Turn[] {
   if (event.type === "watch") return [{ kind: "note", text: `Scout Watch is on. You'll get a phone alert when new ${event.watch.kind ?? "events"} show up.` }];
   if (event.type !== "device") return [];
+  if (isAppAction(event.action)) {
+    const run = runAppAction(event.action, sessionId);
+    return run ? [{ kind: "phone", run }] : [];
+  }
   const line = runDeviceAction(event.action, sessionId);
   return line ? [{ kind: "note", text: line }] : [];
+}
+
+function hasPhoneRun(turns: readonly Turn[], id: string): boolean {
+  return turns.some((turn) => turn.kind === "phone" && turn.run.id === id);
+}
+
+function applyPhoneTurns(turns: readonly Turn[], result: DeviceResult): Turn[] {
+  return turns.map((turn) => (turn.kind === "phone" && turn.run.id === result.id ? { kind: "phone", run: applyPhoneResult(turn.run, result) } : turn));
 }
 
 function turnsFrom(event: ChatEvent): Turn[] {
@@ -1067,12 +1156,24 @@ function turnsFrom(event: ChatEvent): Turn[] {
       return event.ok ? [] : [{ kind: "note", text: event.message }];
     case "card":
       return [{ kind: "card", listing: event.listing }];
+    case "more":
+      return [{ kind: "more", listings: event.listings }];
     case "note":
       return [{ kind: "note", text: event.message }];
     case "cart":
       return [{ kind: "cart", cart: event.cart }];
     case "quote":
       return [{ kind: "quote", quote: event.quote }];
+    case "estimate":
+      return [{ kind: "estimate", estimate: event.estimate }];
+    case "form":
+      return [{ kind: "form", form: event.form, answered: false }];
+    case "buses":
+      return [{ kind: "buses", buses: event.buses }];
+    case "places": {
+      const places = readPlaces(event.places);
+      return places ? [{ kind: "places", places }] : [];
+    }
     case "receipt":
       return [{ kind: "receipt", receipt: event.receipt }];
     case "pay":
@@ -1199,9 +1300,14 @@ function activityFrom(event: ChatEvent): string | null {
       return event.message;
     case "question":
     case "card":
+    case "more":
     case "note":
     case "cart":
     case "quote":
+    case "estimate":
+    case "form":
+    case "buses":
+    case "places":
     case "receipt":
     case "pay":
     case "task":

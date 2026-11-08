@@ -5,6 +5,50 @@ const UNIT =
 
 const UNIT_PATTERN = new RegExp(`(?<amount>\\d+(?:\\.\\d+)?)\\s*(?<unit>${UNIT})\\b`, "gi");
 
+/** Display units for a product reference. Includes the pack words the shelf already matches, plus pcs. */
+const SIZE_UNIT =
+  "kilograms?|grams?|millilitres?|milliliters?|litres?|liters?|kgs?|gms?|pcs?|pieces?|ltr|ml|kg|gm|l|g";
+
+const SIZE_PATTERN = new RegExp(
+  `(\\d+(?:\\.\\d+)?)(?:\\s*[x×]\\s*(\\d+(?:\\.\\d+)?))?\\s*(${SIZE_UNIT})\\b`,
+  "gi",
+);
+
+type SizeHit = { index: number; raw: string; label: string };
+
+function shortUnit(unit: string): "kg" | "g" | "ml" | "l" | "pcs" {
+  const value = unit.toLowerCase();
+  if (value === "kg" || value === "kgs" || /^kilogram/.test(value)) return "kg";
+  if (value === "g" || value === "gm" || value === "gms" || /^gram/.test(value)) return "g";
+  if (value === "ml" || /^millilit/.test(value)) return "ml";
+  if (value === "l" || value === "ltr" || /^litre/.test(value) || /^liter/.test(value)) return "l";
+  return "pcs";
+}
+
+function lastSize(text: string): SizeHit | null {
+  const matches = [...text.matchAll(SIZE_PATTERN)];
+  const match = matches.at(-1);
+  if (!match?.[1] || !match[3] || match.index == null || match[0] == null) return null;
+  const amount = match[2] ? `${match[1]} x ${match[2]}` : match[1];
+  return { index: match.index, raw: match[0], label: `${amount} ${shortUnit(match[3])}` };
+}
+
+/** The pack size as the stores print it: "500 gm", "1 kilogram", and "6 pieces" become "500 g", "1 kg", and "6 pcs". */
+export function normalisedSize(text: string): string | null {
+  return lastSize(text)?.label ?? null;
+}
+
+/** Drops a size that sits at the end of a product name, so a slug is not built from "80 g". */
+export function withoutTrailingSize(text: string): string {
+  const found = lastSize(text);
+  const trimmed = text.trim();
+  if (!found) return trimmed;
+  const end = found.index + found.raw.length;
+  if (text.slice(end).trim().length > 0) return trimmed;
+  const name = text.slice(0, found.index).replace(/\s+/g, " ").trim();
+  return name || trimmed;
+}
+
 function toBase(amount: number, unitRaw: string, raw: string): Quantity | null {
   const unit = unitRaw.toLowerCase();
   if (/^(l|ltr|litres?|liters?)$/.test(unit)) {

@@ -20,8 +20,8 @@ export function talkDuty(agent: Extract<AgentId, "main" | "travel" | "home">): {
     case "main":
       return {
         name: "Main Scout",
-        duty: "Point them to Event, Travel, Food, Shop, Home, or Appointments Scout. Do not pretend you searched.",
-        offline: "Main Scout is not connected to a live search. Open Event Scout for events and movies.",
+        duty: "You are the chief. You assign Event, Shop, Food, Travel, Home, and Appointments, and their work comes back in this chat. Do not tell them to open another site. Do not pretend you searched when you have not.",
+        offline: "Tell me what you need. I'll hand it to the right scout.",
       };
     case "travel":
       return {

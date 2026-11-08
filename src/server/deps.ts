@@ -30,6 +30,7 @@ import { EmailAuth } from "./auth/emailAuth.ts";
 import { scoutDbPath, UserDirectory } from "./db/userDirectory.ts";
 import { createArcGisGeocoder, createGoogleGeocoder } from "./geocode.ts";
 import { fcmFromEnv, FcmSender } from "./notify/fcm.ts";
+import { CartBillStore } from "./cartBills.ts";
 import { InboxStore } from "./notify/inbox.ts";
 import { Notifier } from "./notify/notifier.ts";
 import { ProfileStore } from "./profile/profileStore.ts";
@@ -80,6 +81,7 @@ export function createDeps(): ApiDeps {
     watches,
     watchRunner,
     inbox,
+    cartBills: new CartBillStore(dbPath),
     liveConnectors: [],
     cache: new PriceCache(Number(process.env.CACHE_TTL_MS ?? 60_000), Date.now),
     timeoutMs: connectorTimeoutMs,
@@ -92,6 +94,7 @@ export function createDeps(): ApiDeps {
     mapsApiKey: process.env.GOOGLE_MAPS_API_KEY?.trim() ?? "",
     anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() ?? "",
     sarvamApiKey: process.env.SARVAM_API_KEY?.trim() ?? "",
+    gnaniApiKey: process.env.GNANI_API_KEY?.trim() ?? "",
     commerce: createCommerceHub(Date.now),
     ...createBrowserRuntime(directory, inbox, notifier),
     browserRuntime: browserRuntimeFromEnv(process.env),

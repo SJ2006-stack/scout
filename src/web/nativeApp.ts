@@ -9,10 +9,10 @@ export function insideNativeApp(): boolean {
 
 /** Opens the app's own permissions screen (microphone, location, camera, notifications). */
 export function openNativePermissions(): boolean {
-  const request = (window as NativeWindow).ScoutNative?.request;
-  if (typeof request !== "function") return false;
+  const native = (window as NativeWindow).ScoutNative;
+  if (typeof native?.request !== "function") return false;
   try {
-    const parsed = JSON.parse(request(JSON.stringify({ op: "permissions" }))) as { accepted?: unknown };
+    const parsed = JSON.parse(native.request(JSON.stringify({ op: "permissions" }))) as { accepted?: unknown };
     return parsed.accepted === true;
   } catch {
     return false;

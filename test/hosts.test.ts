@@ -17,7 +17,7 @@ describe("scout hosts", () => {
     assert.equal(agentFromHostname("shop-scout.example.com"), "shop");
     assert.equal(agentFromHostname("home-scout.example.com"), "home");
     assert.equal(agentFromHostname("localhost"), null);
-    assert.equal(scoutAgent(undefined), "event");
+    assert.equal(scoutAgent(undefined), "main");
     assert.equal(scoutAgent("travel"), "travel");
     assert.equal(healthPayload("main").agent, "main");
     assert.equal(hostFor("event"), "https://sj-event-scout.azurewebsites.net");

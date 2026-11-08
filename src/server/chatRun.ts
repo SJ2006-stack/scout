@@ -4,19 +4,25 @@ import { parseChatIntent } from "../shared/chatIntent.ts";
 import { dedupeListings, listingInWindow, sortListings, withinBudget, type Listing } from "../shared/event.ts";
 import { dateRange, isTimeZone, windowLabel, type WhenWindow } from "../shared/when.ts";
 import type { AgentId } from "../shared/hosts.ts";
+import type { PhoneAutomation } from "../shared/deviceActions.ts";
+import type { StoreBill } from "../shared/cartQuote.ts";
 import type { ChatMemory } from "./chatMemory.ts";
 import { ChatMemoryStore } from "./chatMemory.ts";
 import type { ListingCache } from "./listingCache.ts";
 import type { CommerceHub } from "./commerce/hub.ts";
 import type { ScoutTaskView } from "../shared/scoutTask.ts";
-import type { ShopRun } from "./browser/shelf.ts";
-import { converseWithHaiku } from "./haikuChat.ts";
+import type { BasketRun, ShopRun } from "./browser/shelf.ts";
+import { converseEvent } from "./eventChat.ts";
 import { converseSpecialist, fallbackSpecialist, type SpecialistAgent } from "./specialistChat.ts";
 import { eventTools } from "./tools/index.ts";
 import { driveMinutes } from "./travel.ts";
 import type { ProfileStore } from "./profile/profileStore.ts";
 import type { WatchStore } from "./watch/watchStore.ts";
 import { withEmoji } from "../shared/emoji.ts";
+import type { BusResult, ErrandAnswers } from "../shared/errands.ts";
+import type { BusTrip } from "./browser/buses.ts";
+import { runAnsweredErrands, runMainScout } from "./mainScout.ts";
+import { answersMessage, pendingForms } from "./questionBack.ts";
 
 const CARD_LIMIT = 24;
 const TRAVEL_LIMIT = 8;
@@ -36,7 +42,7 @@ export type ChatTurn = {
   cache: ListingCache;
   fetchImpl: typeof fetch;
   mapsApiKey: string;
-  anthropicApiKey: string;
+  sarvamApiKey: string;
   readPage?: (url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>;
   /** Reads a listings page for an event source without trying to sign in on it. */
   readListings?: (url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>;
@@ -44,6 +50,9 @@ export type ChatTurn = {
   agent?: AgentId;
   commerce?: CommerceHub;
   compareShop?: (query: string, signal: AbortSignal, onStatus: (message: string) => void) => Promise<ShopRun>;
+  compareBasket?: (queries: readonly string[], signal: AbortSignal, onStatus: (message: string) => void) => Promise<BasketRun>;
+  /** Cart bills the phone read for this user, oldest first, which tune the total estimates. */
+  cartBills?: () => StoreBill[];
   /** Starts a live cart task on one store and resolves when it needs the user or stops. */
   prepareCart?: (
     store: string,
@@ -54,37 +63,78 @@ export type ChatTurn = {
   ) => Promise<{ ok: true; task: ScoutTaskView } | { ok: false; error: string }>;
   profile?: ProfileStore;
   watches?: WatchStore;
-  /** Receives the reply so far while Haiku streams; an empty string means earlier text was superseded. */
+  /** What the Scout Android app reports it can automate; absent outside the app. */
+  phone?: PhoneAutomation;
+  /** Receives the reply so far while Sarvam streams; an empty string means earlier text was superseded. */
   onSpeech?: (text: string) => void;
+  /** Main Scout splits a message into errands with Claude Haiku; empty means it only chats. */
+  anthropicApiKey?: string;
+  /** Their answers to Main Scout's question form. */
+  answers?: ErrandAnswers;
+  compareBuses?: (trip: BusTrip, signal: AbortSignal) => Promise<{ result: BusResult | null; failure: string | null }>;
 };
 
 export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {
+  if (turn.answers) {
+    await resumeForm(turn, turn.answers, emit);
+    return;
+  }
   const agent = turn.agent ?? "event";
+  if (agent === "main" && (await runMainScout(turn, emit, listEvents))) return;
+  await runAgent(agent, turn, emit);
+}
+
+/** Answers to a form go back to whoever asked: Main Scout's errands, or the scout that called ask_user. */
+async function resumeForm(turn: ChatTurn, answers: ErrandAnswers, emit: (event: ChatEvent) => void): Promise<void> {
+  const form = pendingForms.take(turn.sessionId, answers.formId);
+  if (!form) {
+    emit({ type: "question", message: withEmoji("Those questions have expired. Send your request again and I'll ask once more.") });
+    emit({ type: "done", count: 0 });
+    return;
+  }
+  switch (form.kind) {
+    case "errands":
+      await runAnsweredErrands(form.plan, answers.values, { ...turn, answers: undefined }, emit, listEvents);
+      return;
+    case "ask":
+      await runAgent(form.agent, { ...turn, agent: form.agent, text: answersMessage(form.questions, answers.values), answers: undefined }, emit);
+      return;
+    default: {
+      const neverForm: never = form;
+      return neverForm;
+    }
+  }
+}
+
+async function runAgent(agent: AgentId, turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {
   if (agent !== "event") {
     await runSpecialist(agent, turn, emit);
     return;
   }
-  if (turn.anthropicApiKey.trim().length > 0) {
-    const spoke = await converseWithHaiku(turn, emit);
+  if (turn.sarvamApiKey.trim().length > 0) {
+    const spoke = await converseEvent(turn, emit);
     if (spoke) return;
     if (turn.signal.aborted) {
       emit({ type: "done", count: 0 });
       return;
     }
   }
+  const found = await listEvents(turn, emit);
+  emit({ type: "question", message: withEmoji(found.message) });
+  await found.drives();
+  emit({ type: "done", count: found.count });
+}
+
+const noDrives = async (): Promise<void> => undefined;
+
+/** Reads Luma, District, and BookMyShow for the city and window in their words, without the chat model. drives adds drive times to the cards. */
+export async function listEvents(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<{ message: string; count: number; drives: () => Promise<void> }> {
   const previous = turn.memory.get(turn.sessionId);
   const zone = isTimeZone(turn.timezone) ? turn.timezone : isTimeZone(previous.timezone) ? previous.timezone : "Asia/Kolkata";
   const intent = parseChatIntent(turn.text, turn.now(), zone);
   const pincodeCity = cityFromPincode(turn.pincode);
   const unsupportedPincode = turn.pincode.length === 6 && pincodeCity == null && intent.city == null;
-  if (intent.namedUnsupportedPlace || unsupportedPincode) {
-    emit({
-      type: "question",
-      message: withEmoji("I can look in Bengaluru, Mumbai, Delhi, or Hyderabad."),
-    });
-    emit({ type: "done", count: 0 });
-    return;
-  }
+  if (intent.namedUnsupportedPlace || unsupportedPincode) return { message: "I can look in Bengaluru, Mumbai, Delhi, or Hyderabad.", count: 0, drives: noDrives };
   const city = intent.city ?? pincodeCity ?? cityById(previous.cityId);
   const next: ChatMemory = {
     cityId: city?.id ?? null,
@@ -98,14 +148,7 @@ export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void):
     found: previous.found ?? [],
   };
   turn.memory.save(turn.sessionId, next);
-  if (!city) {
-    emit({
-      type: "question",
-      message: withEmoji("Which city should I look in? Bengaluru, Mumbai, Delhi, or Hyderabad."),
-    });
-    emit({ type: "done", count: 0 });
-    return;
-  }
+  if (!city) return { message: "Which city should I look in? Bengaluru, Mumbai, Delhi, or Hyderabad.", count: 0, drives: noDrives };
 
   const range = dateRange(next.date, turn.now(), next.timezone);
   emit({ type: "status", message: statusLine(city.name, next.date, next.budget) });
@@ -137,13 +180,15 @@ export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void):
   }
   const shown = dedupeListings(sortListings(collected)).slice(0, CARD_LIMIT);
   for (const listing of shown) emit({ type: "card", listing: { ...listing } });
+  const when = windowLabel(next.date);
+  const drives = () => attachTravel(shown, next, turn, (url, minutes) => emit({ type: "drive", url, minutes }));
   if (shown.length === 0) {
     emit({ type: "status", message: `Nothing matched in ${city.name} for that window.` });
-  } else {
-    emit({ type: "status", message: `${shown.length} listing${shown.length === 1 ? "" : "s"} in ${city.name}.` });
+    return { message: `I checked Luma, District, and BookMyShow for ${when} in ${city.name}. Nothing listed there matches.`, count: 0, drives };
   }
-  await attachTravel(shown, next, turn, (url, minutes) => emit({ type: "drive", url, minutes }));
-  emit({ type: "done", count: shown.length });
+  emit({ type: "status", message: `${shown.length} listing${shown.length === 1 ? "" : "s"} in ${city.name}.` });
+  const names = shown.slice(0, 3).map((listing) => listing.title).join(", ");
+  return { message: `${shown.length} in ${city.name} for ${when}: ${names}.`, count: shown.length, drives };
 }
 
 function statusLine(city: string, date: WhenWindow, budget: number | null): string {
@@ -152,7 +197,7 @@ function statusLine(city: string, date: WhenWindow, budget: number | null): stri
 }
 
 async function runSpecialist(agent: SpecialistAgent, turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {
-  if (turn.anthropicApiKey.trim().length > 0) {
+  if (turn.sarvamApiKey.trim().length > 0) {
     const spoke = await converseSpecialist(agent, turn, emit);
     if (spoke) return;
     if (turn.signal.aborted) {

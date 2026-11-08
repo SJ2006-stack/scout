@@ -1,7 +1,7 @@
-import { HAIKU_MODEL } from "./haikuClient.ts";
 import { ocrMediaType, textFromOcrContent } from "../shared/ocr.ts";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+const HAIKU_MODEL = "claude-haiku-5-5";
 const OCR_TIMEOUT_MS = 20_000;
 
 export type OcrDeps = {

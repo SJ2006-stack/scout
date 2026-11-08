@@ -1,8 +1,17 @@
 import type { AgentId } from "./hosts.ts";
 import { roundMoney } from "./offer.ts";
 import type { PayLink } from "./payLink.ts";
+import type { ProductRef } from "./productRef.ts";
 
 export type CommerceAgent = Extract<AgentId, "shop" | "food" | "appointments">;
+
+/** One row of the shop comparison the chat already reads. `ref` is set when the shelf could read the product. */
+export type ShopCompareOffer = {
+  merchant: string;
+  title: string;
+  rupees: number;
+  ref?: ProductRef;
+};
 
 export type CommerceProvider = "instamart" | "swiggy-food";
 

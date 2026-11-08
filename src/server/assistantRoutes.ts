@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readDeviceResult } from "../shared/deviceActions.ts";
+import type { StoreBill } from "../shared/cartQuote.ts";
+import { readAppCartResult, readAppEventResult, readDeviceResult, type AppCartResult } from "../shared/deviceActions.ts";
+import type { CartBillStore } from "./cartBills.ts";
 import type { InboxStore } from "./notify/inbox.ts";
 import { isProfileKey, type ProfileStore } from "./profile/profileStore.ts";
 import type { WatchRunner } from "./watch/watchRunner.ts";
@@ -10,6 +12,7 @@ export type AssistantDeps = {
   watches?: WatchStore;
   watchRunner?: WatchRunner;
   inbox?: InboxStore;
+  cartBills?: CartBillStore;
   now: () => number;
 };
 
@@ -106,11 +109,28 @@ export async function routeAssistant(request: IncomingMessage, response: ServerR
     const body = await readBody(request);
     const result = readDeviceResult(body);
     if (!result) return send(response, 400, { error: "Send an action id and status." });
-    console.log(`phone action ${result.id} ${result.status}`);
+    console.log(`phone action ${result.id} ${result.status}${appRunLog(result.data)}`);
+    const bill = result.status === "completed" ? billFrom(readAppCartResult(result.data), now) : null;
+    if (bill) deps.cartBills?.add(userId, bill);
     return send(response, 200, { recorded: true });
   }
 
   send(response, 404, { error: "Not found" });
+}
+
+/** Only full runs teach the fee estimates: a run that stopped early read no trustworthy bill. */
+function billFrom(cart: AppCartResult | null, now: number): StoreBill | null {
+  if (!cart || cart.reason !== null || !cart.cart || cart.added.length === 0) return null;
+  if (cart.cart.grandTotal === null) return null;
+  return { store: cart.store, ...cart.cart, elapsedMs: cart.elapsedMs, lines: cart.added.length, at: now };
+}
+
+function appRunLog(data: unknown): string {
+  const cart = readAppCartResult(data);
+  if (cart) return ` ${cart.store} added=${cart.added.length} reason=${cart.reason ?? "-"} step=${JSON.stringify(cart.stoppedAt ?? "-")}`;
+  const event = readAppEventResult(data);
+  if (event) return ` ${event.app} tickets=${event.tickets ?? "-"} reason=${JSON.stringify(event.reason ?? "-")} step=${JSON.stringify(event.stoppedAt ?? "-")}`;
+  return "";
 }
 
 async function readBody(request: IncomingMessage): Promise<Record<string, unknown> | null> {

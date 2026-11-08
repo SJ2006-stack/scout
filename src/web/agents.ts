@@ -16,10 +16,10 @@ export type Agent = {
 export const AGENTS: Agent[] = [
   {
     id: "main",
-    name: "Main Scout",
-    description: "A starting point for everyday requests.",
-    intro: "Tell me what you need. I can point you to Event, Travel, Food, Shop, Home, or Appointments Scout.",
-    unavailable: "Main Scout is not connected to a live search. Open Event Scout for events and movies.",
+    name: "Scout",
+    description: "Assigns the other scouts and brings their work back here.",
+    intro: "Tell me what you need. I'll hand it to Event, Shop, Food, Travel, Home, or Appointments, and their work shows up in this chat.",
+    unavailable: "",
     icon: Sparkles,
   },
   {

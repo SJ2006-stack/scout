@@ -1,20 +1,22 @@
 import type { AgentId } from "../shared/hosts.ts";
 import type { ChatEvent } from "../shared/chatEvents.ts";
+import { BASKET_LIMIT, quoteLine, quoteOffers, storeName } from "../shared/cartQuote.ts";
+import { BasketMemory, planBasket, readBasket, readBuy, type BasketItem } from "./basket.ts";
 import type { CommerceEvent } from "../shared/commerce.ts";
 import { withEmoji } from "../shared/emoji.ts";
-import type { ChatLine } from "./chatMemory.ts";
 import type { ChatTurn } from "./chatRun.ts";
-import { isLiveShopQuery, payResultLine } from "./browser/shelf.ts";
-import { postHaiku, type HaikuMessage } from "./haikuClient.ts";
+import { askedUser, askPicks, askReply, blockText, contentBlocks, transcript } from "./toolLoop.ts";
+import { isChatter, isLiveShopQuery, payResultLine, shopCompareView, shopSearchPlaces } from "./browser/shelf.ts";
+import { postSarvam } from "./sarvamChat.ts";
 import { scoutPurpose, talkDuty } from "./scoutPrompt.ts";
 import { assistantPrompt, assistantTools, isAssistantTool, runAssistantTool, type AssistantToolName } from "./assistantTools.ts";
-import { assistantContext, voicePrompt } from "./haikuChat.ts";
+import { assistantContext, voicePrompt } from "./eventChat.ts";
 
 const ROUND_LIMIT = 4;
 
 export type SpecialistAgent = Exclude<AgentId, "event">;
 
-type SpecialistTool = "compare_shops" | "buy_from_shop" | "shop_catalog" | "food_order" | "salon_request";
+type SpecialistTool = "compare_shops" | "compare_basket" | "order_basket" | "buy_from_shop" | "shop_catalog" | "food_order" | "salon_request";
 type ToolName = SpecialistTool | AssistantToolName;
 
 type ToolSpec = {
@@ -42,6 +44,38 @@ const SHOP_TOOLS: readonly ToolSpec[] = [
     name: "compare_shops",
     description: "Open Blinkit, Zepto, and Instamart in the browser worker and compare prices for one item. Pass only the item words, such as chocolate ice cream. Use this when they ask you to find, check, or compare an item.",
     input_schema: QUERY_SCHEMA,
+  },
+  {
+    name: "compare_basket",
+    description: `Compare a basket of 2 to ${BASKET_LIMIT} different items on Blinkit, Zepto, and Instamart at once, and estimate each store's total for the whole basket in one cart, with its fees counted once. Use this, not compare_shops, whenever they name two or more items. Pass each item's words, such as Tata Salt 1 kg, and how many they want.`,
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        items: {
+          type: "array",
+          minItems: 2,
+          maxItems: BASKET_LIMIT,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { query: { type: "string" }, quantity: { type: "integer", minimum: 1, maximum: 20 } },
+            required: ["query", "quantity"],
+          },
+        },
+      },
+      required: ["items"],
+    },
+  },
+  {
+    name: "order_basket",
+    description: "Fill the basket from the last compare_basket in one store's app on their phone, all items in one run. store is best unless they named a store. They tap Allow on the phone; Scout stops before payment.",
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { store: { type: "string", enum: ["best", "blinkit", "zepto", "instamart"] } },
+      required: ["store"],
+    },
   },
   {
     name: "buy_from_shop",
@@ -81,16 +115,25 @@ const SALON_TOOLS: readonly ToolSpec[] = [
 ];
 
 export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<boolean> {
-  if (turn.anthropicApiKey.trim().length === 0) return false;
+  if (turn.sarvamApiKey.trim().length === 0) return false;
   const memoryId = specialistMemoryId(turn.sessionId, agent);
   const previous = turn.memory.get(memoryId);
   const messages = transcript(previous.lines, turn.text);
   const spoken: string[] = [];
   let started = false;
+  let toolSummary = "";
+  const forced = agent === "shop" ? serverBasketCall(turn) : null;
+  if (forced) {
+    started = true;
+    const ran = await runTool(turn, forced, emit);
+    toolSummary = ran.ok ? shopSentence(ran.content) : ran.content;
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: forced.id, name: forced.name, input: forced.input }] });
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: ran.id, is_error: !ran.ok, content: ran.content }] });
+  }
   for (let round = 0; round < ROUND_LIMIT; round += 1) {
-    if (turn.signal.aborted) return finish(turn, agent, spoken.join("\n\n"), emit);
-    const body = await postHaiku({
-      apiKey: turn.anthropicApiKey,
+    if (turn.signal.aborted) return finish(turn, agent, spoken.join("\n\n"), emit, toolSummary);
+    const body = await postSarvam({
+      apiKey: turn.sarvamApiKey,
       fetchImpl: turn.fetchImpl,
       signal: turn.signal,
       system: `${instructions(agent)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}`,
@@ -100,17 +143,28 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
     });
     if (body == null) {
       if (!started) return false;
-      return finish(turn, agent, spoken.join("\n\n"), emit);
+      return finish(turn, agent, spoken.join("\n\n"), emit, toolSummary);
     }
     if (body.stop_reason === "refusal") return finish(turn, agent, "I can't help with that.", emit);
-    const blocks = Array.isArray(body.content) ? body.content.filter(isBlock) : [];
-    const text = blocks.filter((block) => block.type === "text" && typeof block.text === "string").map((block) => String(block.text).trim()).filter((line) => line.length > 0).join("\n");
+    const blocks = contentBlocks(body.content);
+    const text = blockText(blocks);
     if (text.length > 0 && !spoken.includes(text)) spoken.push(text);
     const calls = blocks.filter((block) => isToolUse(agent, block));
-    if (calls.length === 0) return finish(turn, agent, text.length > 0 ? text : spoken.join("\n\n"), emit);
+    if (calls.length === 0) return finish(turn, agent, text.length > 0 ? text : spoken.join("\n\n"), emit, toolSummary);
     started = true;
     messages.push({ role: "assistant", content: blocks });
-    const results = await Promise.all(calls.map((call) => runTool(turn, call, emit)));
+    const results = await Promise.all(
+      calls.map((call) => {
+        if (call.name === forced?.name) return Promise.resolve({ id: call.id, ok: true, content: "Scout already ran this for their message; the result is above. Reply from it." });
+        if (call.name === "order_basket" && forced?.name === "compare_basket") return Promise.resolve({ id: call.id, ok: false, content: "They have not asked to buy yet. Tell them the best store and ask if they want it." });
+        return runTool(turn, call, emit);
+      }),
+    );
+    if (askedUser(calls, results)) return finish(turn, agent, askReply(text), emit);
+    calls.forEach((call, index) => {
+      const ran = results[index];
+      if (call.name === "compare_shops" && ran?.ok) toolSummary = shopSentence(ran.content);
+    });
     messages.push({
       role: "user",
       content: results.map((ran) => ({
@@ -121,12 +175,22 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
       })),
     });
   }
-  return finish(turn, agent, spoken.join("\n\n"), emit);
+  return finish(turn, agent, spoken.join("\n\n"), emit, toolSummary);
 }
 
 export async function fallbackSpecialist(agent: SpecialistAgent, turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {
   if (agent === "shop" && turn.compareShop && isLiveShopQuery(turn.text)) {
-    await speakShop(turn, turn.text, emit);
+    const summary = await speakShop(turn, turn.text, emit);
+    const spoken = shopSentence(summary);
+    emit({ type: "question", message: withEmoji(spoken) });
+    emit({ type: "done", count: 0 });
+    return;
+  }
+  if (agent === "shop" && isChatter(turn.text)) {
+    const earlier = turn.memory.get(specialistMemoryId(turn.sessionId, agent)).lines.filter((line) => line.role === "user").at(-1)?.text;
+    const remembered = earlier && isLiveShopQuery(earlier) ? ` Last time you asked about ${earlier}.` : "";
+    emit({ type: "question", message: withEmoji(`I'm Shop Scout. I compare one grocery on Blinkit, Zepto, and Instamart.${remembered} Name the item and I'll check.`) });
+    emit({ type: "done", count: 0 });
     return;
   }
   const commerceAgent = agent === "shop" || agent === "food" || agent === "appointments" ? agent : null;
@@ -140,9 +204,11 @@ export async function fallbackSpecialist(agent: SpecialistAgent, turn: ChatTurn,
   emit({ type: "done", count: 0 });
 }
 
-function finish(turn: ChatTurn, agent: SpecialistAgent, reply: string, emit: (event: ChatEvent) => void): boolean {
-  const spoken = reply.trim().length > 0 ? withEmoji(reply.trim()) : "";
-  if (spoken.length > 0) emit({ type: "question", message: spoken });
+function finish(turn: ChatTurn, agent: SpecialistAgent, reply: string, emit: (event: ChatEvent) => void, toolSummary = ""): boolean {
+  const fallback = toolSummary.trim().length > 0 ? toolSummary.trim() : "I checked. What should I look at next?";
+  const cleaned = askPicks(turn.sessionId, agent, cleanReply(reply), emit);
+  const spoken = withEmoji(cleaned.length > 0 ? cleaned : fallback);
+  emit({ type: "question", message: spoken });
   const memoryId = specialistMemoryId(turn.sessionId, agent);
   const previous = turn.memory.get(memoryId);
   const remembered = spoken.length > 0 ? spoken : "I checked.";
@@ -165,6 +231,10 @@ async function runTool(
   switch (call.name) {
     case "compare_shops":
       return { id: call.id, ok: true, content: await shopComparison(turn, text, emit) };
+    case "compare_basket":
+      return { id: call.id, ...(await basketComparison(turn, call.input, emit)) };
+    case "order_basket":
+      return { id: call.id, ...(await orderBasket(turn, call.input, emit)) };
     case "buy_from_shop":
       return { id: call.id, ...(await buyFromShop(turn, call.input, emit)) };
     case "shop_catalog":
@@ -184,6 +254,7 @@ const comparing = new WeakMap<ChatTurn, { query: string; result: Promise<string>
 
 async function shopComparison(turn: ChatTurn, query: string, emit: (event: ChatEvent) => void): Promise<string> {
   const needle = query.trim();
+  if (!isLiveShopQuery(needle)) return "That is not a grocery item. Answer them in words and do not search the shops.";
   if (needle.length < 2) return "Ask which item to compare before opening the shops.";
   if (!turn.compareShop) return "The browser worker is not enabled on this server.";
   const running = comparing.get(turn);
@@ -191,6 +262,7 @@ async function shopComparison(turn: ChatTurn, query: string, emit: (event: ChatE
     const first = await running.result;
     return `Only one shop comparison runs per message. Scout compared "${running.query}" instead of "${needle}". Use this result and offer to compare "${needle}" next.\n${first}`;
   }
+  baskets.forget(turn.sessionId);
   const result = speakShop(turn, needle, emit);
   comparing.set(turn, { query: needle, result });
   return result;
@@ -204,13 +276,121 @@ async function speakShop(turn: ChatTurn, query: string, emit: (event: ChatEvent)
     emit({ type: "status", message: payResultLine(shop.pay) });
     emit({ type: "pay", pay: shop.pay });
   }
+  const quote = quoteOffers(shop.offers, turn.cartBills?.() ?? []);
+  const estimate = quoteLine(quote);
+  if (estimate) {
+    emit({ type: "status", message: estimate });
+    emit({ type: "estimate", estimate: { item: query, quote, lines: 1 } });
+  }
   return JSON.stringify({
-    summary: shop.summary,
+    summary: estimate ? `${shop.summary} ${estimate}` : shop.summary,
     signIn: shop.signIn,
-    cheapest: shop.cheapest ? { merchant: shop.cheapest.merchant, title: shop.cheapest.title, rupees: shop.cheapest.rupees } : null,
-    offers: shop.offers.map((offer) => ({ merchant: offer.merchant, title: offer.title, rupees: offer.rupees })),
+    cheapest: shop.cheapest ? shopCompareView(shop.cheapest) : null,
+    offers: modelOffers(shop.offers).map((offer) => shopCompareView(offer)),
+    estimates: quote.estimates,
+    best: quote.best,
     pay: shop.pay?.url ?? null,
   });
+}
+
+const baskets = new BasketMemory(Date.now);
+
+/** The model sometimes answers a basket in words without searching, or says it ordered without ordering, so Scout runs these itself. */
+function serverBasketCall(turn: ChatTurn): { id: string; name: "compare_basket" | "order_basket"; input: unknown } | null {
+  const buy = baskets.get(turn.sessionId) ? readBuy(turn.text) : null;
+  if (buy) return { id: "toolu_scout_order", name: "order_basket", input: { store: buy.store } };
+  const items = turn.compareBasket ? readBasket(turn.text) : null;
+  return items ? { id: "toolu_scout_basket", name: "compare_basket", input: { items } } : null;
+}
+
+function basketItems(input: unknown): BasketItem[] {
+  const record = input && typeof input === "object" ? (input as { items?: unknown }) : {};
+  if (!Array.isArray(record.items)) return [];
+  const items: BasketItem[] = [];
+  for (const raw of record.items.slice(0, BASKET_LIMIT)) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as { query?: unknown; quantity?: unknown };
+    const query = typeof row.query === "string" ? row.query.trim().slice(0, 80) : "";
+    const quantity = typeof row.quantity === "number" && Number.isInteger(row.quantity) ? Math.min(20, Math.max(1, row.quantity)) : 1;
+    if (query.length < 2 || items.some((item) => item.query.toLowerCase() === query.toLowerCase())) continue;
+    items.push({ query, quantity });
+  }
+  return items;
+}
+
+/** Main Scout's grocery errand: the same compare as Shop Scout, kept as the basket "buy it" fills. */
+export async function shopErrand(turn: ChatTurn, items: readonly BasketItem[], emit: (event: ChatEvent) => void): Promise<string> {
+  for (const item of items) emit({ type: "places", places: shopSearchPlaces(item.query) });
+  const only = items.length === 1 ? items[0] : null;
+  if (only) return shopSentence(await shopComparison({ ...turn, agent: "shop" }, only.query, emit));
+  const ran = await basketComparison({ ...turn, agent: "shop" }, { items }, emit, 1);
+  if (!ran.ok) return ran.content;
+  const best = baskets.get(turn.sessionId)?.quote.best;
+  return `${shopSentence(ran.content)}${best ? ` Say "buy it" and your phone fills the ${storeName(best)} cart.` : ""}`;
+}
+
+/** "buy it" after a compare, from any chat. Null when there is no basket or it is not a go-ahead. */
+export async function orderPendingBasket(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<string | null> {
+  if (!baskets.get(turn.sessionId)) return null;
+  const buy = readBuy(turn.text);
+  if (!buy) return null;
+  const ran = await orderBasket({ ...turn, agent: "shop" }, { store: buy.store }, emit);
+  return ran.content;
+}
+
+async function basketComparison(turn: ChatTurn, input: unknown, emit: (event: ChatEvent) => void, fewest = 2): Promise<{ ok: boolean; content: string }> {
+  const items = basketItems(input);
+  if (items.length < fewest) return { ok: false, content: "Pass two or more different items. For one item use compare_shops." };
+  if (!turn.compareBasket) return { ok: false, content: "The browser worker is not enabled on this server." };
+  const run = await turn.compareBasket(items.map((item) => item.query), turn.signal, (message) => emit({ type: "status", message }));
+  if (run.opened === 0) return { ok: false, content: run.signIn ?? "The browser worker could not open Blinkit, Zepto, or Instamart." };
+  const plan = planBasket(items, run, turn.cartBills?.() ?? []);
+  baskets.save(turn.sessionId, plan);
+  const estimate = quoteLine(plan.quote);
+  if (estimate) {
+    emit({ type: "status", message: estimate });
+    emit({ type: "estimate", estimate: { item: plan.label, quote: plan.quote, lines: items.length } });
+  }
+  const stores = Object.fromEntries(
+    Object.entries(plan.picks).map(([store, picks]) => [store, picks.map(({ query, offer, quantity }) => ({ item: query, quantity, title: offer.title, rupees: offer.rupees }))]),
+  );
+  return {
+    ok: true,
+    content: JSON.stringify({
+      summary: estimate ?? "No store showed a price for these items.",
+      estimates: plan.quote.estimates,
+      best: plan.quote.best,
+      stores,
+      next: "To buy, call order_basket with store best, or the store they name. Do not call app_cart_add for a basket.",
+    }),
+  };
+}
+
+async function orderBasket(turn: ChatTurn, input: unknown, emit: (event: ChatEvent) => void): Promise<{ ok: boolean; content: string }> {
+  const plan = baskets.get(turn.sessionId);
+  if (!plan) return { ok: false, content: "There is no basket to order. Call compare_basket with their items first." };
+  const asked = input && typeof input === "object" ? (input as { store?: unknown }).store : undefined;
+  const store = asked === "blinkit" || asked === "zepto" || asked === "instamart" ? asked : plan.quote.best;
+  const cart = store ? plan.carts[store] : undefined;
+  if (!store || !cart || cart.items.length === 0) return { ok: false, content: `${store ? storeName(store) : "No store"} had none of these items. Offer another store.` };
+  const estimate = plan.quote.estimates.find((row) => row.store === store);
+  const sent = await runAssistantTool(assistantContext(turn), "app_cart_add", cart, emit);
+  if (!sent.ok) return sent;
+  baskets.forget(turn.sessionId);
+  const missing = estimate && estimate.missing.length > 0 ? ` ${storeName(store)} does not have ${estimate.missing.join(", ")}, so those are left out.` : "";
+  return { ok: true, content: `${sent.content} Estimated total about ₹${estimate?.total ?? "?"}; the phone takes about ${estimate?.phoneSeconds ?? "?"} s after Allow.${missing}` };
+}
+
+const OFFERS_PER_STORE = 3;
+
+/** Sarvam spends its whole token budget reasoning over 40+ offers and returns no reply, so it sees the cheapest few per store. */
+export function modelOffers<T extends { merchant: string; rupees: number }>(offers: readonly T[]): T[] {
+  const kept: T[] = [];
+  for (const merchant of new Set(offers.map((offer) => offer.merchant))) {
+    const cheapest = offers.filter((offer) => offer.merchant === merchant).sort((left, right) => left.rupees - right.rupees);
+    kept.push(...cheapest.slice(0, OFFERS_PER_STORE));
+  }
+  return kept;
 }
 
 const STORE_NAMES: Readonly<Record<string, string>> = { blinkit: "Blinkit", zepto: "Zepto", instamart: "Instamart" };
@@ -311,10 +491,12 @@ function instructions(agent: SpecialistAgent): string {
     case "shop":
       return [
         scoutPurpose("Shop Scout", "Compare groceries on Blinkit, Zepto, and Instamart, build the real cart, and hand payment to their UPI app."),
-        "Your tools are compare_shops, buy_from_shop, and shop_catalog. The browser worker is available. Never say you have no browser worker.",
-        "If they have not named an item, ask what they want and wait. Do not call a tool for a greeting.",
-        "When they name an item to find or compare, call compare_shops with the item words only. Tell them the summary the tool returns. Do not invent a price.",
-        "When they ask to buy or order an item, call buy_from_shop once with the cheapest store from the comparison, or the store they name.",
+        "Your tools are compare_shops, compare_basket, order_basket, buy_from_shop, and shop_catalog. The browser worker is available. Never say you have no browser worker.",
+        "If they have not named an item, answer them and wait. A greeting, who you are, or what you can do is not an item. Do not call a tool for it. Use the earlier messages in this chat.",
+        "When they name two or more items in one message, call compare_basket once with all of them and their quantities, then tell them the best store, its estimated total, any missing item, and the phone time. When they then ask to order or buy the basket, call order_basket with store best, or the store they name; it fills every item in one phone run.",
+        "When they name one item to find or compare, call compare_shops with the item words only. Tell them the summary the tool returns. Do not invent a price. Blinkit, Zepto, and Instamart are the shops compared.",
+        "compare_shops also returns estimates: each store's total with its delivery and handling fees, for one unit, and phoneSeconds, how long the phone takes to fill that cart. best is the store with the lowest estimated total. A rough basis means the fees are Scout's starting guess, not yet learned from their own bills; say about.",
+        "When they ask to buy or order, and app_cart_add is available, call app_cart_add once, for the best store's cheapest offer unless they name a store: its ref, the quantity, and a maxPrice at or above the price Scout saw. Only that one cart is filled. Tell them the estimated total and that the phone takes about phoneSeconds after they tap Allow. A null Instamart link is still that offer. Call buy_from_shop only when app_cart_add is not available, once, for the best store or the store they name.",
         "Never claim an order is placed. Scout stops at the cart for their approval, then hands payment to their UPI app.",
         "Use shop_catalog only when they ask for the simulated practice cart.",
         "A pay link from compare_shops is already on the screen. Tell them they can open it in their UPI app. Never ask for a UPI PIN.",
@@ -347,9 +529,9 @@ function instructions(agent: SpecialistAgent): string {
       ].join(" ");
     case "main":
       return [
-        scoutPurpose("Main Scout", "Point them to the specialist that fits the request."),
-        "You have no search tool. Ask what they need, then name Event Scout, Travel Scout, Food Scout, Shop Scout, Home Scout, or Appointments Scout.",
-        "Do not pretend you searched, compared a price, or booked anything.",
+        scoutPurpose("Scout", "You are the chief. You assign Event, Shop, Food, Travel, Home, and Appointments, and their results come back in this chat."),
+        "Groceries, events, WhatsApp messages, and bus trips are handed off before you speak. What reaches you is the rest: quick phone tasks (alarm, timer, reminder, open an app or maps), preferences, and event watches, which your tools run, or chat. If they have not given you a task, ask what they need and say you will assign the right scout.",
+        "Do not tell them to open another website. Do not pretend you searched, compared a price, or booked anything.",
       ].join(" ");
     default: {
       const neverAgent: never = agent;
@@ -378,6 +560,26 @@ function commerceAsChat(event: CommerceEvent): ChatEvent {
   }
 }
 
+const RAMBLE = /```\s*json|^\s*#{1,4}\s*user message|^\s*>?\s*user message\s*:|^\s*\**auto-reply\**\s*:|^\s*\**did i (?:get it|figure it out)/im;
+
+/** Sarvam sometimes keeps writing past its answer: a fake JSON note, an "Auto-Reply", a quiz, or the next user turn. Only the answer is kept. */
+export function cleanReply(reply: string): string {
+  const text = reply.trim();
+  const cut = RAMBLE.exec(text);
+  return (cut ? text.slice(0, cut.index) : text).replace(/\n-{3,}\s*$/, "").trim();
+}
+
+function shopSentence(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as { summary?: unknown };
+    if (typeof parsed.summary === "string" && parsed.summary.trim().length > 0) return parsed.summary.trim();
+  } catch {
+    // The tool already returned a sentence.
+  }
+  const text = raw.trim();
+  return text.length > 0 ? text : "I couldn't read a price on Blinkit, Zepto, or Instamart.";
+}
+
 function textInput(value: unknown): string {
   if (!value || typeof value !== "object") return "";
   const record = value as { query?: unknown; text?: unknown };
@@ -386,29 +588,8 @@ function textInput(value: unknown): string {
   return "";
 }
 
-function transcript(lines: ChatLine[], text: string): HaikuMessage[] {
-  const messages: HaikuMessage[] = [];
-  for (const line of lines) {
-    const last = messages.at(-1);
-    if (last && last.role === line.role && typeof last.content === "string") {
-      last.content = `${last.content}\n${line.text}`;
-      continue;
-    }
-    messages.push({ role: line.role, content: line.text });
-  }
-  if (messages[0]?.role === "assistant") messages.shift();
-  const last = messages.at(-1);
-  if (last?.role === "user" && typeof last.content === "string") last.content = `${last.content}\n${text}`;
-  else messages.push({ role: "user", content: text });
-  return messages;
-}
-
 function specialistMemoryId(sessionId: string, agent: SpecialistAgent): string {
   return `${sessionId}:${agent}`;
-}
-
-function isBlock(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
 }
 
 function isToolUse(agent: SpecialistAgent, block: Record<string, unknown>): block is Record<string, unknown> & { id: string; name: ToolName; input: unknown } {
@@ -419,6 +600,6 @@ function isToolUse(agent: SpecialistAgent, block: Record<string, unknown>): bloc
 }
 
 function isToolName(value: unknown): value is SpecialistTool {
-  return value === "compare_shops" || value === "buy_from_shop" || value === "shop_catalog" || value === "food_order" || value === "salon_request";
+  return value === "compare_shops" || value === "compare_basket" || value === "order_basket" || value === "buy_from_shop" || value === "shop_catalog" || value === "food_order" || value === "salon_request";
 }
 

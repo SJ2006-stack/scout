@@ -79,6 +79,14 @@ export class EmailAuth {
     const user = this.directory.ensureEmailUser(email, this.now());
     return { ok: true, kind: "session", userId: user.id, email: user.email };
   }
+
+  /** A Gmail address already checked by Google sign-in on the phone. No email code. */
+  sessionForVerifiedGmail(rawEmail: string): AuthResult {
+    const email = gmailAddress(rawEmail);
+    if (!email) return { ok: false, status: 400, error: "Use a Gmail address." };
+    const user = this.directory.ensureEmailUser(email, this.now());
+    return { ok: true, kind: "session", userId: user.id, email: user.email };
+  }
 }
 
 export function normalizeEmail(raw: string): string | null {

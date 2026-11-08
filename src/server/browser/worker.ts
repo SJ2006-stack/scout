@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
 import type { BrowserSessionView, BrowserTaskEvent } from "../../shared/browser.ts";
 import type { BrowserDriver, IsolatedPage } from "./driver.ts";
+import type { BusResult } from "../../shared/errands.ts";
+import { readBuses, type BusTrip } from "./buses.ts";
 import { admit, describeBudget, idleSessionIds, sessionHost, type AdmissionLimits, type BudgetReport } from "./budget.ts";
 import { allowBrowserRequest, checkNavigationUrl } from "./policy.ts";
-import { attendListing, cheapestOffer, readShelf, registerControl, shelfSummary, SHOP_SITES, type AttendResult, type ShopRun } from "./shelf.ts";
+import { attendListing, cheapestOffer, readShelf, registerControl, shelfSummary, SHOP_SITES, type AttendResult, type BasketRun, type ShopOffer, type ShopRun } from "./shelf.ts";
 import { attemptSignIn, SIGN_IN_CODE_MESSAGE, type AccountLogin } from "./signIn.ts";
 import type { UserDirectory } from "../db/userDirectory.ts";
 import { registrable, type SessionVault } from "./sessionVault.ts";
@@ -158,7 +160,18 @@ export class BrowserWorker {
   }
 
   compareShop(query: string, parent?: AbortSignal, ownerId?: string, onStatus?: (message: string) => void): Promise<ShopRun> {
-    return this.lane(ownerId, () => this.compareShopInner(query, parent, ownerId, onStatus));
+    return this.slot(() => this.compareShopInner(query, parent, ownerId, onStatus));
+  }
+
+  compareBasket(queries: readonly string[], parent?: AbortSignal, ownerId?: string, onStatus?: (message: string) => void): Promise<BasketRun> {
+    return this.slot(() => this.compareBasketInner(queries, parent, ownerId, onStatus));
+  }
+
+  /** Reads one day's buses for a route from redBus. Scout lists them; booking stays on redBus. */
+  async compareBuses(trip: BusTrip, parent?: AbortSignal, ownerId?: string): Promise<{ result: BusResult | null; failure: string | null }> {
+    const note: Note = { text: null };
+    const result = await this.slot(() => this.withPage(parent, ownerId, null, note, (page, step) => readBuses(page, trip, step), SHOP_STEP_MS, false));
+    return { result, failure: note.text };
   }
 
   collectPay(pageUrl: string, title: string, merchant: string, parent?: AbortSignal, ownerId?: string): Promise<AttendResult | null> {
@@ -347,6 +360,35 @@ export class BrowserWorker {
     } finally {
       if (!held) await page?.close();
     }
+  }
+
+  /** One page per store reads each basket item in turn, and the three stores run at the same time. */
+  private async compareBasketInner(queries: readonly string[], parent?: AbortSignal, ownerId?: string, onStatus?: (message: string) => void): Promise<BasketRun> {
+    const needles = queries.map((query) => query.trim()).filter((query) => query.length >= 2);
+    const lines = needles.map((query) => ({ query, offers: [] as ShopOffer[] }));
+    if (needles.length === 0 || parent?.aborted || this.stopped) return { lines, opened: 0, signIn: null };
+    const note: Note = { text: null };
+    onStatus?.(`Searching ${needles.length} items on Blinkit, Zepto, and Instamart together.`);
+    const opened = await Promise.all(SHOP_SITES.map(async (site) => {
+      const siteNote: Note = { text: null };
+      const read = await this.withPage(parent, ownerId, null, siteNote, async (page, step) => {
+        let found = 0;
+        for (const [index, query] of needles.entries()) {
+          if (parent?.aborted) break;
+          const shelf = await readShelf(page, query, site.merchant, step).catch(() => null);
+          const line = lines[index];
+          if (shelf && line) {
+            line.offers.push(...shelf.offers);
+            if (shelf.offers.length > 0) found += 1;
+          }
+        }
+        return found;
+      }, SHOP_STEP_MS, false);
+      if (siteNote.text) note.text = siteNote.text;
+      if (read != null) onStatus?.(`${site.merchant} had ${read} of ${needles.length} items.`);
+      return read != null;
+    }));
+    return { lines, opened: opened.filter(Boolean).length, signIn: note.text };
   }
 
   private async compareShopInner(query: string, parent?: AbortSignal, ownerId?: string, onStatus?: (message: string) => void): Promise<ShopRun> {

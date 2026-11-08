@@ -1,5 +1,11 @@
 import type { AgentId } from "../shared/hosts.ts";
 
+const CHIEF_PROMPTS = [
+  "Find comedy shows in Delhi this weekend.",
+  "Find milk and butter.",
+  "What's happening tomorrow in Delhi?",
+];
+
 const PROMPTS: Record<Exclude<AgentId, "main">, string[]> = {
   event: ["Find comedy shows in Delhi this weekend.", "What's happening tomorrow in Delhi?"],
   travel: ["Compare cabs to the airport.", "Plan a weekend trip."],
@@ -12,7 +18,7 @@ const PROMPTS: Record<Exclude<AgentId, "main">, string[]> = {
 export function promptsFor(agent: AgentId): string[] {
   switch (agent) {
     case "main":
-      return [];
+      return CHIEF_PROMPTS;
     case "event":
     case "travel":
     case "food":

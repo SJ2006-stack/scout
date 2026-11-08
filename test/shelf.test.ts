@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import QRCode from "qrcode";
 import { parseAriaSnapshot } from "../src/server/browser/aria.ts";
 import { decodeQrPng } from "../src/server/browser/qrPng.ts";
-import { asksForLocation, attendListing, cheapestOffer, matching, nextCheckoutClick, pricedText, pricedTitles, searchUrl, shelfSummary } from "../src/server/browser/shelf.ts";
+import { asksForLocation, attendListing, cheapestOffer, isLiveShopQuery, matching, nextCheckoutClick, pricedText, pricedTitles, searchTerms, searchUrl, shelfSummary } from "../src/server/browser/shelf.ts";
 import { readCart } from "../src/server/browser/siteFlows.ts";
 import { SKILLS } from "../src/server/browser/skills.ts";
 import { listingsFromHtml } from "../src/server/events/htmlListings.ts";
@@ -11,6 +11,12 @@ import { paymentTarget, paymentUrlInText } from "../src/shared/payLink.ts";
 import type { ElementTarget, IsolatedPage, PageElement } from "../src/server/browser/driver.ts";
 
 describe("shop shelf", () => {
+  it("does not treat a greeting as a grocery", () => {
+    assert.equal(isLiveShopQuery("Yo tell me about yourself"), false);
+    assert.equal(isLiveShopQuery("hey"), false);
+    assert.equal(isLiveShopQuery("Amul butter 500 g"), true);
+  });
+
   it("reads every product in one Instamart grid text and keeps only query matches", () => {
     const elements = [{ role: "text", name: "Filters MaxxSaver Sort By Quick filters Customer Ratings Cadbury Dairy Milk Milkinis Duo Pack Chocolate Bar ₹ 36 Amul Dark Chocolate ₹ 180 Kinder Joy icon.png ₹ 45 Cadbury Dairy Milk Silk 20% OFF ₹ 60" }];
     const priced = pricedTitles(elements);
@@ -34,6 +40,31 @@ describe("shop shelf", () => {
     }));
     assert.deepEqual(matching(offers, "amul butter 500g").map((offer) => offer.title), offers.slice(0, 3).map((offer) => offer.title));
     assert.equal(matching(offers, "Amul butter 500 grams").length, 3);
+  });
+
+  it("matches a sized query against a size the card shows apart from the name", () => {
+    const ref = { store: "instamart" as const, productId: "1", link: null, name: "Amul Salted Butter", size: "100 g", price: 58, seenAt: 0 };
+    const offers = [{ merchant: "Instamart" as const, title: "Amul Salted Butter", rupees: 58, pageUrl: "https://www.swiggy.com/instamart", ref }];
+    assert.equal(matching(offers, "Amul butter 100 g").length, 1);
+    assert.equal(matching(offers, "Amul butter 500 g").length, 0);
+  });
+
+  it("searches stores without the size so the size only filters", () => {
+    assert.equal(searchTerms("Amul butter 100 g"), "Amul butter");
+    assert.equal(searchTerms("2 kg atta"), "atta");
+    assert.equal(searchTerms("Coke 1.25L"), "Coke");
+    assert.equal(searchTerms("7up"), "7up");
+    assert.equal(searchTerms("500 g"), "500 g");
+  });
+
+  it("does not read the store's search banner as a product", () => {
+    const html = `<div>Login Cart Your cart is empty Showing results for "amul butter 100 g" ADD ₹83</div><div>tter Showing results for "amul butter" 22 mins Amul Salted Butter 100 g ₹66</div>`;
+    assert.deepEqual(pricedText(html).map((item) => [item.title, item.rupees]), [["Amul Salted Butter 100 g", 66]]);
+  });
+
+  it("matches a sized query to an offer that shows no size, as on Instamart", () => {
+    const offers = ["Amul Pasteurised Butter", "Amul Pasteurised Butter 500 g", "Amul Masti Spiced Buttermilk"].map((title) => ({ merchant: "Instamart" as const, title, rupees: 1, pageUrl: "https://www.swiggy.com/instamart" }));
+    assert.deepEqual(matching(offers, "Amul butter 100 g").map((offer) => offer.title), ["Amul Pasteurised Butter"]);
   });
 
   it("summarises one cheapest match per store and names stores with none", () => {

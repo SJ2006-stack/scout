@@ -19,7 +19,7 @@ export function isAgentId(value: unknown): value is AgentId {
 export function scoutAgent(value: string | undefined): AgentId {
   const trimmed = value?.trim().toLowerCase();
   if (isAgentId(trimmed)) return trimmed;
-  return "event";
+  return "main";
 }
 
 export const PUBLIC_ORIGIN = "https://scout.shrianshjaiswal.me";

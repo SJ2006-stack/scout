@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ChatEvent } from "../src/shared/chatEvents.ts";
 import type { EventKind, Listing } from "../src/shared/event.ts";
-import { readDeviceCommand, readDeviceResult } from "../src/shared/deviceActions.ts";
+import { needsConfirmation, readDeviceCommand, readDeviceResult } from "../src/shared/deviceActions.ts";
 import { ChatMemoryStore } from "../src/server/chatMemory.ts";
 import { runChat, type ChatTurn } from "../src/server/chatRun.ts";
 import { ListingCache } from "../src/server/listingCache.ts";
@@ -14,6 +14,7 @@ import { readCompletion, readVoiceTicket, signVoiceTicket, spokenText } from "..
 import { WatchRunner } from "../src/server/watch/watchRunner.ts";
 import { WatchStore } from "../src/server/watch/watchStore.ts";
 import { parseSse, withApi } from "./helpers.ts";
+import { sarvamReply } from "./sarvamReply.ts";
 
 const NOW = Date.parse("2026-10-31T12:00:00.000Z");
 const USER = "b".repeat(32);
@@ -35,7 +36,7 @@ describe("shared profile", () => {
     assert.equal(profile.get(USER, "city"), null);
   });
 
-  it("lets any specialist save a preference through Haiku", async () => {
+  it("lets any specialist save a preference through Sarvam", async () => {
     const profile = new ProfileStore(":memory:");
     const events = await speak({
       agent: "food",
@@ -59,6 +60,15 @@ describe("phone actions", () => {
     assert.equal(readDeviceCommand("open_app", { app: "com.evil.app" }, NOW).ok, false);
     assert.equal(readDeviceCommand("run_intent", { action: "android.intent.action.CALL" }, NOW).ok, false);
     assert.equal(readDeviceCommand("share_text", { text: "intent:#Intent;end" }, NOW).ok, false);
+    const whatsapp = readDeviceCommand("send_whatsapp", { phone: "+91 98765 43210", text: "On my way" }, NOW);
+    assert.equal(whatsapp.ok && whatsapp.command.name === "send_whatsapp" && whatsapp.command.args.phone, "919876543210");
+    assert.equal(whatsapp.ok && whatsapp.command.name === "send_whatsapp" && whatsapp.command.args.name, null);
+    const named = readDeviceCommand("send_whatsapp", { name: "Soham Bhanja", text: "On my way" }, NOW);
+    assert.equal(named.ok && named.command.name === "send_whatsapp" && named.command.args.name, "Soham Bhanja");
+    assert.equal(readDeviceCommand("send_whatsapp", { phone: "123", text: "Hi" }, NOW).ok, false);
+    assert.equal(readDeviceCommand("send_whatsapp", { name: "A", text: "Hi" }, NOW).ok, false);
+    assert.equal(readDeviceCommand("send_whatsapp", { text: "Hi" }, NOW).ok, false);
+    assert.equal(needsConfirmation({ name: "send_whatsapp", args: { phone: "919876543210", name: null, text: "Hi" } }), true);
     assert.equal(readDeviceCommand("create_reminder", { title: "Show", at: "2026-10-31T10:00:00+05:30" }, NOW).ok, false);
     const reminder = readDeviceCommand("create_reminder", { title: "Leave for the show", at: "2026-11-01T18:00:00+05:30" }, NOW);
     assert.equal(reminder.ok && reminder.command.name === "create_reminder" && reminder.command.args.at, Date.parse("2026-11-01T18:00:00+05:30"));
@@ -138,8 +148,8 @@ describe("bolna voice", () => {
   it("streams Scout's own reply as OpenAI chunks and relays cards to the open chat", async () => {
     const key = "k".repeat(64);
     const ticket = signVoiceTicket({ userId: USER, agent: "main" }, key, Date.now());
-    const fetchImpl = haikuFetch([{ stop_reason: "end_turn", content: [{ type: "text", text: "Namaste! Kya dhoondhun?" }] }]);
-    await withApi({ bolna: { apiKey: "bn-test", agentId: "agent", llmKey: key }, anthropicApiKey: "test-key", fetchImpl }, async (base) => {
+    const fetchImpl = sarvamFetch([{ stop_reason: "end_turn", content: [{ type: "text", text: "Namaste! Kya dhoondhun?" }] }]);
+    await withApi({ bolna: { apiKey: "bn-test", agentId: "agent", llmKey: key }, sarvamApiKey: "test-key", fetchImpl }, async (base) => {
       const denied = await fetch(`${base}/api/bolna/v1/chat/completions`, { method: "POST", body: "{}" });
       assert.equal(denied.status, 401);
       const response = await fetch(`${base}/api/bolna/v1/chat/completions`, {
@@ -176,16 +186,16 @@ function fakeTool(rows: () => Listing[]): EventTool {
   return { name: "Luma", load: async () => ({ name: "Luma", ok: true, message: "ok", listings: rows(), warnings: [] }) };
 }
 
-function haikuFetch(replies: unknown[]): typeof fetch {
+function sarvamFetch(replies: { stop_reason: string; content: unknown[] }[]): typeof fetch {
   let index = 0;
   return (async () => {
     const reply = replies[Math.min(index, replies.length - 1)];
     index += 1;
-    return Response.json(reply);
+    return Response.json(sarvamReply(reply));
   }) as typeof fetch;
 }
 
-async function speak(options: { agent: ChatTurn["agent"]; text: string; replies: unknown[]; profile?: ProfileStore }): Promise<ChatEvent[]> {
+async function speak(options: { agent: ChatTurn["agent"]; text: string; replies: { stop_reason: string; content: unknown[] }[]; profile?: ProfileStore }): Promise<ChatEvent[]> {
   const events: ChatEvent[] = [];
   const turn: ChatTurn = {
     sessionId: USER,
@@ -199,9 +209,9 @@ async function speak(options: { agent: ChatTurn["agent"]; text: string; replies:
     now: () => NOW,
     memory: new ChatMemoryStore(),
     cache: new ListingCache(60_000, () => NOW),
-    fetchImpl: haikuFetch(options.replies),
+    fetchImpl: sarvamFetch(options.replies),
     mapsApiKey: "",
-    anthropicApiKey: "test-key",
+    sarvamApiKey: "test-key",
     agent: options.agent,
     ...(options.profile ? { profile: options.profile } : {}),
   };

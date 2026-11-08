@@ -83,10 +83,14 @@ export function PayCard({ pay }: { pay: PayLink }) {
       </header>
       <p>{pay.title}</p>
       <button className="card-book" type="button" disabled={!phone && deeplink} onClick={() => openPayLink(pay)}>
-        {pay.source === "page" ? "Open pay page" : "Pay"}
+        {pay.source === "page" ? `Open on ${pay.merchant}` : "Pay"}
       </button>
       {!phone && deeplink ? <p className="review-note">{pay.url}</p> : null}
-      <p className="review-note">Opens the UPI app on your phone. Scout does not ask for a UPI PIN.</p>
+      <p className="review-note">
+        {pay.source === "page"
+          ? `Opens ${pay.merchant}, where you pick the show and seats and pay. Scout does not ask for a UPI PIN.`
+          : "Opens the UPI app on your phone. Scout does not ask for a UPI PIN."}
+      </p>
     </article>
   );
 }

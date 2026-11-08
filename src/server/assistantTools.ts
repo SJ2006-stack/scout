@@ -1,19 +1,33 @@
 import { randomBytes } from "node:crypto";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import {
+  appName,
+  automatableApps,
+  canAutomate,
+  commandApp,
   DEVICE_ACTION_NAMES,
   DEVICE_ACTION_TTL_MS,
   DEVICE_APPS,
   deviceSummary,
+  EVENT_APPS,
+  handoffLink,
+  isAppAction,
+  isAppActionName,
   needsConfirmation,
   readDeviceCommand,
+  SHOP_APPS,
+  type AppActionName,
   type DeviceAction,
+  type DeviceCommand,
+  type PhoneAutomation,
 } from "../shared/deviceActions.ts";
 import type { AgentId } from "../shared/hosts.ts";
+import type { EventApp, ShopApp } from "../shared/productRef.ts";
 import { isProfileKey, PROFILE_KEYS, profilePrompt, type ProfileStore } from "./profile/profileStore.ts";
 import { isEventKind, isWatchWhen, type WatchStore } from "./watch/watchStore.ts";
+import { ASK_PROMPT, ASK_TOOL, askUser } from "./questionBack.ts";
 
-export type AssistantToolName = "remember_preference" | "forget_preference" | "phone_action" | "watch_events";
+export type AssistantToolName = "ask_user" | "remember_preference" | "forget_preference" | "phone_action" | "watch_events" | AppActionName;
 
 export type AssistantContext = {
   userId: string;
@@ -22,11 +36,15 @@ export type AssistantContext = {
   timezone: string;
   profile?: ProfileStore;
   watches?: WatchStore;
+  /** What the Scout Android app reported about its Accessibility service and installed store and event apps. */
+  phone?: PhoneAutomation;
 };
 
 export type AssistantToolResult = { ok: boolean; content: string };
 
-const ASSISTANT_NAMES: readonly AssistantToolName[] = ["remember_preference", "forget_preference", "phone_action", "watch_events"];
+const ASSISTANT_NAMES: readonly AssistantToolName[] = ["ask_user", "remember_preference", "forget_preference", "phone_action", "watch_events", "app_cart_add", "app_event_book"];
+const PHONE_ACTION_NAMES = DEVICE_ACTION_NAMES.filter((name) => !isAppActionName(name));
+const APP_AGENT: Readonly<Record<AppActionName, AgentId>> = { app_cart_add: "shop", app_event_book: "event" };
 
 const REMEMBER = {
   name: "remember_preference",
@@ -52,12 +70,12 @@ const FORGET = {
 
 const PHONE = {
   name: "phone_action",
-  description: `Run one action on their Android phone through the Scout app: ${DEVICE_ACTION_NAMES.join(", ")}. The phone confirms the result on screen; tell them it was sent to the phone, not that it is done. set_alarm takes hour (0-23), minute, label. set_timer takes seconds, label. create_reminder takes title and at as an ISO time with offset, for example 2026-11-01T18:00:00+05:30. cancel_reminder takes reminderId. open_app takes app, one of ${DEVICE_APPS.join(", ")}. open_maps takes query. share_text takes text. toggle_flashlight takes on (true or false). set_volume takes stream (media, ring, alarm) and percent.`,
+  description: `Run one action on their Android phone through the Scout app: ${PHONE_ACTION_NAMES.join(", ")}. The phone confirms the result on screen; tell them it was sent to the phone, not that it is done. set_alarm takes hour (0-23), minute, label. set_timer takes seconds, label. create_reminder takes title and at as an ISO time with offset, for example 2026-11-01T18:00:00+05:30. cancel_reminder takes reminderId. open_app takes app, one of ${DEVICE_APPS.join(", ")}. open_maps takes query. share_text takes text. send_whatsapp takes text plus either phone (country code plus number, digits) or name (the chat's exact name). A number opens that chat directly. A name searches WhatsApp and opens the one matching chat. The phone then taps Send. If accessibility is off, a number still opens with the text filled in and Send left for them. toggle_flashlight takes on (true or false). set_volume takes stream (media, ring, alarm) and percent.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      action: { type: "string", enum: [...DEVICE_ACTION_NAMES] },
+      action: { type: "string", enum: [...PHONE_ACTION_NAMES] },
       hour: { type: "integer" },
       minute: { type: "integer" },
       seconds: { type: "integer" },
@@ -92,10 +110,92 @@ const WATCH = {
   },
 } as const;
 
+const NULLABLE_TEXT = { type: ["string", "null"] } as const;
+const TIME = { type: ["number", "string", "null"], description: "Epoch milliseconds or an ISO time with offset." } as const;
+
+function cartTool(stores: readonly ShopApp[]) {
+  return {
+    name: "app_cart_add",
+    description: `Add items to the cart in their own ${stores.map(appName).join(", ")} app on their Android phone. Scout's Accessibility service opens the app, checks the price, size, and stock again, sets the quantity, opens the cart, and stops before payment. They tap Allow on the phone first and pay in the app themselves. Pass each product reference exactly as the comparison returned it, including a null Instamart link. The phone searches Instamart by name and size when the link is missing. All items go to one store. maxPrice is their limit per unit in rupees; if they gave none, use the price Scout saw. allowSimilar is false unless they said a similar item is fine.`,
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        items: {
+          type: "array",
+          minItems: 1,
+          maxItems: 10,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              ref: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  store: { type: "string", enum: [...stores] },
+                  productId: NULLABLE_TEXT,
+                  link: NULLABLE_TEXT,
+                  name: { type: "string" },
+                  size: NULLABLE_TEXT,
+                  price: { type: "number" },
+                  seenAt: { type: ["number", "string"] },
+                },
+                required: ["store", "productId", "link", "name", "size", "price", "seenAt"],
+              },
+              quantity: { type: "integer", minimum: 1, maximum: 20 },
+              maxPrice: { type: "number" },
+            },
+            required: ["ref", "quantity", "maxPrice"],
+          },
+        },
+        allowSimilar: { type: "boolean" },
+      },
+      required: ["items", "allowSimilar"],
+    },
+  } as const;
+}
+
+function bookTool(apps: readonly EventApp[]) {
+  return {
+    name: "app_event_book",
+    description: `Open one event in their own ${apps.map(appName).join(", ")} app. The phone opens that listing link, closes a dining or membership sheet when it recognises one, and goes as far as it can without paying or signing up. BookMyShow movie: Book tickets, the first language and format, then with showtime set that day and time at the cinema in ref.venue and the ticket count, stopping on the seat map. District movie: that day and time at the cinema in ref.venue, stopping on the seat map. District event: the day and time slot from showtime, the cheapest ticket type within maxPricePerTicket, and the ticket count, stopping with Checkout on screen and the total read back. Luma: opens the registration form with the answers Luma fills in, and stops before its Register button. Without a showtime a movie stops on the showtimes and a District event on its calendar, and the result lists what is open. It never picks seats or taps Pay, Checkout, or Register. They tap Allow on the phone first. Build ref from the listing: app is its source, link is its url, title, venue (for a movie, the cinema they chose, else null), startsAt is its start, price. seat stays user_picks.`,
+    input_schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        ref: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            app: { type: "string", enum: [...apps] },
+            eventId: NULLABLE_TEXT,
+            link: { type: "string" },
+            title: { type: "string" },
+            venue: NULLABLE_TEXT,
+            startsAt: TIME,
+            price: { type: ["number", "null"] },
+          },
+          required: ["app", "eventId", "link", "title", "venue", "startsAt", "price"],
+        },
+        tickets: { type: "integer", minimum: 1, maximum: 10 },
+        maxPricePerTicket: { type: ["number", "null"] },
+        seat: { type: "string", enum: ["best_available", "user_picks"] },
+        showtime: TIME,
+      },
+      required: ["ref", "tickets", "maxPricePerTicket", "seat", "showtime"],
+    },
+  } as const;
+}
+
 export function assistantTools(context: AssistantContext): readonly Record<string, unknown>[] {
-  const tools: Record<string, unknown>[] = [PHONE];
+  const tools: Record<string, unknown>[] = [ASK_TOOL, PHONE];
   if (context.profile) tools.push(REMEMBER, FORGET);
   if (context.watches && (context.agent === "event" || context.agent === "main")) tools.push(WATCH);
+  const stores = automatableApps(context.phone, SHOP_APPS);
+  if (context.agent === "shop" && stores.length > 0) tools.push(cartTool(stores));
+  const apps = automatableApps(context.phone, EVENT_APPS);
+  if (context.agent === "event" && apps.length > 0) tools.push(bookTool(apps));
   return tools;
 }
 
@@ -109,7 +209,28 @@ export function assistantPrompt(context: AssistantContext): string {
   const watch = context.watches && (context.agent === "event" || context.agent === "main")
     ? "When they want to be told later about new events, call watch_events. It keeps running after this chat."
     : "";
-  return [profile, phone, watch].filter((line) => line.length > 0).join(" ");
+  return [profile, ASK_PROMPT, phone, watch, appPrompt(context)].filter((line) => line.length > 0).join(" ");
+}
+
+function appPrompt(context: AssistantContext): string {
+  if (context.agent === "shop") {
+    const stores = automatableApps(context.phone, SHOP_APPS);
+    const missing = SHOP_APPS.filter((store) => !stores.includes(store)).map(appName);
+    const ready = stores.length > 0
+      ? `For ${stores.map(appName).join(", ")}, when they ask to add or buy compared items, call app_cart_add instead of buy_from_shop. Their phone fills the cart in the real app and stops before payment; tell them to tap Allow on the phone, not that it is added.`
+      : "";
+    const handoff = missing.length > 0
+      ? `Scout cannot drive the ${missing.join(", ")} app on this phone (the Scout app's Accessibility service is off or the store app is missing). For those, offer the product link so they open it in the app themselves, or buy_from_shop if they want Scout's browser to build the cart.`
+      : "";
+    return [ready, handoff].filter((line) => line.length > 0).join(" ");
+  }
+  if (context.agent === "event") {
+    const apps = automatableApps(context.phone, EVENT_APPS);
+    return apps.length > 0
+      ? `For tickets on ${apps.map(appName).join(", ")}, call app_event_book instead of register_event. Their phone picks the tickets in the real app and stops before payment; tell them to tap Allow on the phone.`
+      : "Scout cannot drive the BookMyShow, District, or Luma apps on this phone. If they ask to book in the app, give them the listing link to open.";
+  }
+  return "";
 }
 
 export async function runAssistantTool(
@@ -120,6 +241,8 @@ export async function runAssistantTool(
 ): Promise<AssistantToolResult> {
   const args = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
   switch (name) {
+    case "ask_user":
+      return askUser(context.userId, context.agent, input, emit);
     case "remember_preference": {
       if (!context.profile) return { ok: false, content: "Memory is not available." };
       if (!isProfileKey(args.key) || typeof args.value !== "string") return { ok: false, content: "Pass a known key and a value." };
@@ -137,21 +260,35 @@ export async function runAssistantTool(
     }
     case "phone_action": {
       const { action, ...rest } = args;
+      if (isAppActionName(action)) return { ok: false, content: `Use the ${action} tool for that.` };
       const read = readDeviceCommand(action, rest, context.now());
       if (!read.ok) return { ok: false, content: read.error };
-      const device: DeviceAction = {
-        ...read.command,
-        id: randomBytes(12).toString("hex"),
-        summary: deviceSummary(read.command, context.timezone),
-        confirm: needsConfirmation(read.command),
-        expiresAt: context.now() + DEVICE_ACTION_TTL_MS,
-      };
+      const device = deviceAction(context, read.command);
       emit({ type: "device", action: device });
       return {
         ok: true,
         content: device.confirm
           ? `Sent to the phone for approval: ${device.summary}. They must tap Allow; the phone reports the result.`
           : `Sent to the phone: ${device.summary}. The phone reports whether it completed.`,
+      };
+    }
+    case "app_cart_add":
+    case "app_event_book": {
+      const read = readDeviceCommand(name, args, context.now());
+      if (!read.ok) return { ok: false, content: read.error };
+      if (!isAppAction(read.command) || context.agent !== APP_AGENT[name]) return { ok: false, content: "This scout cannot run that phone action." };
+      const app = commandApp(read.command);
+      if (!canAutomate(context.phone, app)) {
+        return {
+          ok: false,
+          content: `Scout cannot drive the ${appName(app)} app on this phone: the Scout app's Accessibility service is off or ${appName(app)} is not installed. Give them this link to open it in ${appName(app)} themselves: ${handoffLink(read.command)}`,
+        };
+      }
+      const device = deviceAction(context, read.command);
+      emit({ type: "device", action: device });
+      return {
+        ok: true,
+        content: `Sent to the phone for approval: ${device.summary}. They tap Allow, then Scout works in ${appName(app)} and stops before payment. The phone reports what it added or where it stopped on a card. Do not say it is done.`,
       };
     }
     case "watch_events": {
@@ -169,4 +306,14 @@ export async function runAssistantTool(
       return neverName;
     }
   }
+}
+
+function deviceAction(context: AssistantContext, command: DeviceCommand): DeviceAction {
+  return {
+    ...command,
+    id: randomBytes(12).toString("hex"),
+    summary: deviceSummary(command, context.timezone),
+    confirm: needsConfirmation(command),
+    expiresAt: context.now() + DEVICE_ACTION_TTL_MS,
+  };
 }

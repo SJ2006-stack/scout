@@ -4,7 +4,7 @@ import type { ChatEvent } from "../../shared/chatEvents.ts";
 import type { Listing } from "../../shared/event.ts";
 import { isAgentId, type AgentId } from "../../shared/hosts.ts";
 import { runChat, type ChatTurn } from "../chatRun.ts";
-import { postHaiku } from "../haikuClient.ts";
+import { postSarvam } from "../sarvamChat.ts";
 import type { ProfileStore } from "../profile/profileStore.ts";
 import {
   bearerMatches,
@@ -25,7 +25,7 @@ export type BolnaRouteDeps = {
   bolna?: BolnaConfig | null;
   liveRelay?: LiveRelay;
   profile?: ProfileStore;
-  anthropicApiKey?: string;
+  sarvamApiKey?: string;
   fetchImpl?: typeof fetch;
   now: () => number;
 };
@@ -168,7 +168,7 @@ export async function routeVoiceLive(request: IncomingMessage, response: ServerR
 }
 
 async function passthrough(messages: { role: string; content: string }[], deps: BolnaRouteDeps, signal: AbortSignal): Promise<string | null> {
-  const apiKey = deps.anthropicApiKey ?? "";
+  const apiKey = deps.sarvamApiKey ?? "";
   if (apiKey.length === 0) return null;
   const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n");
   const turns = messages
@@ -176,7 +176,7 @@ async function passthrough(messages: { role: string; content: string }[], deps: 
     .map((message) => ({ role: message.role as "user" | "assistant", content: message.content }));
   if (turns[0]?.role === "assistant") turns.shift();
   if (turns.length === 0) return null;
-  const body = await postHaiku({ apiKey, fetchImpl: deps.fetchImpl ?? fetch, signal, system, tools: [], messages: turns });
+  const body = await postSarvam({ apiKey, fetchImpl: deps.fetchImpl ?? fetch, signal, system, tools: [], messages: turns });
   if (!body || !Array.isArray(body.content)) return null;
   const text = body.content
     .map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" ? String((block as { text?: unknown }).text ?? "") : ""))

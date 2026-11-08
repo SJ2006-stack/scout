@@ -6,12 +6,13 @@ import { districtEvents, districtMovies } from "../src/server/events/district.ts
 import { lumaEvents } from "../src/server/events/luma.ts";
 import { ChatMemoryStore } from "../src/server/chatMemory.ts";
 import { runChat } from "../src/server/chatRun.ts";
-import { HAIKU_MODEL } from "../src/server/haikuChat.ts";
+import { SARVAM_CHAT_MODEL, SARVAM_CHAT_URL } from "../src/server/sarvamChat.ts";
 import { ListingCache } from "../src/server/listingCache.ts";
 import { driveMinutes } from "../src/server/travel.ts";
 import { cityById, type City } from "../src/shared/cities.ts";
 import type { ChatEvent } from "../src/shared/chatEvents.ts";
 import { parseSse, withApi } from "./helpers.ts";
+import { sarvamReply } from "./sarvamReply.ts";
 
 const city: City = {
   id: "bengaluru",
@@ -106,7 +107,7 @@ async function turn(
   memory = new ChatMemoryStore(),
   mapsApiKey = "",
   readPage: ((url: string) => Promise<{ ok: true; html: string } | { ok: false; message: string }>) | undefined = undefined,
-  anthropicApiKey = "",
+  sarvamApiKey = "",
 ): Promise<ChatEvent[]> {
   const events: ChatEvent[] = [];
   await runChat(
@@ -124,7 +125,7 @@ async function turn(
       cache: new ListingCache(60_000, () => Date.parse("2026-10-25T00:00:00.000Z")),
       fetchImpl,
       mapsApiKey,
-      anthropicApiKey,
+      sarvamApiKey,
       ...(readPage ? { readPage } : {}),
     },
     (event) => events.push(event),
@@ -246,7 +247,7 @@ describe("event listings", () => {
     const memory = new ChatMemoryStore();
     await turn("what's happening in Bengaluru this week", sources(), memory);
     const events = await turn("under 500", sources(), memory);
-    assert.equal(events.some((event) => event.type === "question"), false);
+    assert.equal(events.some((event) => event.type === "question" && event.message.includes("Bengaluru")), true);
     const status = events.find((event) => event.type === "status" && event.message.startsWith("Looking"));
     assert.match(status?.type === "status" ? status.message : "", /Bengaluru/);
   });
@@ -276,19 +277,19 @@ describe("event listings", () => {
     assert.equal(parsed.some((listing) => listing.url.includes("evil.example")), false);
   });
 
-  it("lets Haiku talk and call Luma, District, and BookMyShow", async () => {
-    const bodies: Array<{ model?: string; temperature?: unknown; thinking?: { type?: string }; tools?: Array<{ name?: string }>; messages?: unknown[] }> = [];
+  it("lets Sarvam talk and call Luma, District, and BookMyShow", async () => {
+    const bodies: WireBody[] = [];
     const headers: Headers[] = [];
-    let haikuCalls = 0;
+    let modelCalls = 0;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://api.anthropic.com/v1/messages") {
-        haikuCalls += 1;
-        const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+      if (url === SARVAM_CHAT_URL) {
+        modelCalls += 1;
+        const body = JSON.parse(String(init?.body)) as WireBody;
         bodies.push(body);
         headers.push(new Headers(init?.headers));
-        if (haikuCalls === 1) {
-          return new Response(JSON.stringify({
+        if (modelCalls === 1) {
+          return Response.json(sarvamReply({
             stop_reason: "tool_use",
             content: [
               { type: "text", text: "I'll check Bengaluru for tonight." },
@@ -296,66 +297,66 @@ describe("event listings", () => {
               { type: "tool_use", id: "toolu_district", name: "search_district", input: { city: "bengaluru", when: "today", kind: "any", budgetRupees: 0 } },
               { type: "tool_use", id: "toolu_bms", name: "search_bookmyshow", input: { city: "bengaluru", when: "today", kind: "any", budgetRupees: 0 } },
             ],
-          }), { status: 200 });
+          }));
         }
-        return new Response(JSON.stringify({
+        return Response.json(sarvamReply({
           stop_reason: "end_turn",
           content: [{ type: "text", text: "Tonight in Bengaluru I found Roast Tank on Luma." }],
-        }), { status: 200 });
+        }));
       }
       return sources()(input, init);
     }) as typeof fetch;
-    const events = await turn("films tonight in the garden city", fetchImpl, new ChatMemoryStore(), "", undefined, "test-anthropic-key");
+    const events = await turn("films tonight in the garden city", fetchImpl, new ChatMemoryStore(), "", undefined, "test-sarvam-key");
     const replies = events.flatMap((event) => (event.type === "question" ? [event.message] : []));
     assert.match(replies.join("\n"), /Roast Tank/);
     assert.equal(events.some((event) => event.type === "card" && event.listing.title === "Roast Tank"), true);
     assert.equal(events.some((event) => event.type === "source" && event.source === "BookMyShow"), true);
-    const names = bodies[0]?.tools?.map((tool) => tool.name);
-    assert.deepEqual(names, ["search_luma", "search_district", "search_bookmyshow", "open_event", "register_event", "phone_action"]);
-    assert.equal(bodies[0]?.model, HAIKU_MODEL);
+    const names = bodies[0]?.tools?.map((tool) => tool.function?.name);
+    assert.deepEqual(names, ["search_luma", "search_district", "search_bookmyshow", "open_event", "register_event", "ask_user", "phone_action"]);
+    assert.equal(bodies[0]?.model, SARVAM_CHAT_MODEL);
     assert.equal(bodies[0]?.temperature, undefined);
-    assert.equal(bodies[0]?.thinking?.type, "disabled");
-    assert.equal(headers[0]?.get("x-api-key"), "test-anthropic-key");
+    assert.equal(bodies[0]?.reasoning_effort, "low");
+    assert.equal(headers[0]?.get("api-subscription-key"), "test-sarvam-key");
     const followUp = JSON.stringify(bodies[1]?.messages);
     assert.match(followUp, /toolu_luma/);
     assert.match(followUp, /toolu_district/);
     assert.match(followUp, /toolu_bms/);
   });
 
-  it("keeps the keyword parser when Haiku does not answer", async () => {
+  it("keeps the keyword parser when Sarvam does not answer", async () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "https://api.anthropic.com/v1/messages") return new Response("no", { status: 500 });
+      if (String(input) === SARVAM_CHAT_URL) return new Response("no", { status: 500 });
       return sources()(input, init);
     }) as typeof fetch;
-    const events = await turn("comedy in Bengaluru under 500", fetchImpl, new ChatMemoryStore(), "", undefined, "test-anthropic-key");
+    const events = await turn("comedy in Bengaluru under 500", fetchImpl, new ChatMemoryStore(), "", undefined, "test-sarvam-key");
     const titles = events.flatMap((event) => (event.type === "card" ? [event.listing.title] : []));
     assert.equal(titles.includes("Free Comedy"), true);
   });
 
-  it("clamps tomorrow to that day even when Haiku asks for a week", async () => {
+  it("clamps tomorrow to that day even when Sarvam asks for a week", async () => {
     const now = Date.parse("2026-10-26T18:35:00.000Z");
     const cache = new ListingCache(60_000, () => now);
-    const bodies: Array<{ system?: string; tools?: Array<{ description?: string; input_schema?: { properties?: { when?: { enum?: string[] } } } }>; messages?: Array<{ content?: unknown }> }> = [];
-    let haikuCalls = 0;
+    const bodies: WireBody[] = [];
+    let modelCalls = 0;
     let lumaCalls = 0;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://api.anthropic.com/v1/messages") {
-        haikuCalls += 1;
-        const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+      if (url === SARVAM_CHAT_URL) {
+        modelCalls += 1;
+        const body = JSON.parse(String(init?.body)) as WireBody;
         bodies.push(body);
-        if (haikuCalls % 2 === 1) {
-          return new Response(JSON.stringify({
+        if (modelCalls % 2 === 1) {
+          return Response.json(sarvamReply({
             stop_reason: "tool_use",
             content: [
               { type: "tool_use", id: "toolu_luma", name: "search_luma", input: { city: "delhi", when: "week", kind: "any", budgetRupees: 0 } },
             ],
-          }), { status: 200 });
+          }));
         }
-        return new Response(JSON.stringify({
+        return Response.json(sarvamReply({
           stop_reason: "end_turn",
           content: [{ type: "text", text: "Tomorrow in Delhi I only have Tomorrow Show." }],
-        }), { status: 200 });
+        }));
       }
       if (url.includes("api.luma.com")) {
         lumaCalls += 1;
@@ -370,8 +371,8 @@ describe("event listings", () => {
       }
       return new Response("missing", { status: 404 });
     }) as typeof fetch;
-    const first = await haikuTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
-    const second = await haikuTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
+    const first = await sarvamTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
+    const second = await sarvamTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
     for (const events of [first, second]) {
       const status = events.find((event) => event.type === "status");
       assert.match(status?.type === "status" ? status.message : "", /Looking in Delhi for tomorrow/);
@@ -381,7 +382,7 @@ describe("event listings", () => {
       assert.equal(calendarDate(Date.parse(cards[0]?.start ?? ""), "Asia/Kolkata"), "2026-10-28");
     }
     assert.equal(lumaCalls, 1);
-    const followUps = bodies.filter((body) => JSON.stringify(body.messages).includes("tool_result"));
+    const followUps = bodies.filter((body) => body.messages?.some((message) => message.role === "tool"));
     assert.equal(followUps.length, 2);
     const parsed = followUps.map((body) => toolResultJson(body));
     assert.equal(parsed[0]?.cached, false);
@@ -401,12 +402,49 @@ describe("event listings", () => {
       assert.equal(typeof result?.listings[0]?.price, "string");
       assert.equal(result?.listings[0]?.url, "https://luma.com/tomorrow-show");
     }
-    assert.match(bodies[0]?.system ?? "", /2026-10-27/);
-    assert.match(bodies[0]?.system ?? "", /Asia\/Kolkata/);
-    assert.match(bodies[0]?.system ?? "", /Do not use week for one day/);
-    assert.match(bodies[0]?.system ?? "", /Reply in the language of their latest message/);
-    assert.match(bodies[0]?.tools?.[0]?.description ?? "", /YYYY-MM-DD/);
-    assert.equal(bodies[0]?.tools?.[0]?.input_schema?.properties?.when?.enum, undefined);
+    const instructions = systemText(bodies[0]);
+    assert.match(instructions, /2026-10-27/);
+    assert.match(instructions, /Asia\/Kolkata/);
+    assert.match(instructions, /Do not use week for one day/);
+    assert.match(instructions, /Reply in the language of their latest message/);
+    const searchTool = bodies[0]?.tools?.[0]?.function;
+    assert.match(searchTool?.description ?? "", /YYYY-MM-DD/);
+    assert.equal(searchTool?.parameters?.properties?.when?.enum, undefined);
+  });
+
+  it("puts listings past the first three behind Show more and names them to the model", async () => {
+    const now = Date.parse("2026-10-26T18:35:00.000Z");
+    const cache = new ListingCache(60_000, () => now);
+    const bodies: WireBody[] = [];
+    let modelCalls = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === SARVAM_CHAT_URL) {
+        modelCalls += 1;
+        bodies.push(JSON.parse(String(init?.body)) as WireBody);
+        if (modelCalls === 1) {
+          return Response.json(sarvamReply({
+            stop_reason: "tool_use",
+            content: [{ type: "tool_use", id: "toolu_luma", name: "search_luma", input: { city: "delhi", when: "week", kind: "any", budgetRupees: 0 } }],
+          }));
+        }
+        return Response.json(sarvamReply({ stop_reason: "end_turn", content: [{ type: "text", text: "Three shows are up; the rest are under Show more." }] }));
+      }
+      if (url.includes("api.luma.com")) {
+        const days = ["2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01"];
+        return Response.json({ entries: days.map((day, index) => lumaShow(`Show ${index + 1}`, `show-${index + 1}`, `${day}T09:30:00.000Z`)) });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+    const events = await sarvamTurn("what's on in delhi this week", fetchImpl, cache, now);
+    const cards = events.flatMap((event) => (event.type === "card" ? [event.listing.title] : []));
+    const more = events.flatMap((event) => (event.type === "more" ? event.listings.map((listing) => listing.title) : []));
+    assert.equal(cards.length, 3);
+    assert.equal(more.length, 3);
+    assert.equal(new Set([...cards, ...more]).size, 6);
+    const result = toolResultJson(bodies[1] ?? {}) as { more?: Array<{ title?: string }>; moreCount?: number } | null;
+    assert.equal(result?.moreCount, 3);
+    assert.deepEqual(result?.more?.map((item) => item.title).sort(), [...more].sort());
   });
 
   it("asks through the chat route when the city is missing", async () => {
@@ -469,7 +507,7 @@ function lumaShow(name: string, slug: string, start: string | null) {
   };
 }
 
-async function haikuTurn(text: string, fetchImpl: typeof fetch, cache: ListingCache, nowMs: number): Promise<ChatEvent[]> {
+async function sarvamTurn(text: string, fetchImpl: typeof fetch, cache: ListingCache, nowMs: number): Promise<ChatEvent[]> {
   const events: ChatEvent[] = [];
   await runChat(
     {
@@ -486,14 +524,35 @@ async function haikuTurn(text: string, fetchImpl: typeof fetch, cache: ListingCa
       cache,
       fetchImpl,
       mapsApiKey: "",
-      anthropicApiKey: "test-anthropic-key",
+      sarvamApiKey: "test-sarvam-key",
     },
     (event) => events.push(event),
   );
   return events;
 }
 
-function toolResultJson(body: { messages?: Array<{ content?: unknown }> }): {
+type WireMessage = { role?: string; content?: unknown };
+type WireTool = {
+  function?: {
+    name?: string;
+    description?: string;
+    parameters?: { properties?: { when?: { enum?: string[] } } };
+  };
+};
+type WireBody = {
+  model?: string;
+  temperature?: unknown;
+  reasoning_effort?: string;
+  tools?: WireTool[];
+  messages?: WireMessage[];
+};
+
+function systemText(body: WireBody | undefined): string {
+  const system = body?.messages?.find((message) => message.role === "system");
+  return typeof system?.content === "string" ? system.content : "";
+}
+
+function toolResultJson(body: { messages?: WireMessage[] }): {
   source?: string;
   ok?: boolean;
   cached?: boolean;
@@ -505,13 +564,8 @@ function toolResultJson(body: { messages?: Array<{ content?: unknown }> }): {
   listings: Array<{ title?: string; kind?: string; start?: string | null; price?: string; url?: string }>;
 } | null {
   for (const message of body.messages ?? []) {
-    if (!Array.isArray(message.content)) continue;
-    for (const block of message.content) {
-      if (!block || typeof block !== "object") continue;
-      const record = block as { type?: string; content?: unknown };
-      if (record.type !== "tool_result" || typeof record.content !== "string") continue;
-      return JSON.parse(record.content) as ReturnType<typeof toolResultJson>;
-    }
+    if (message.role !== "tool" || typeof message.content !== "string") continue;
+    return JSON.parse(message.content) as ReturnType<typeof toolResultJson>;
   }
   return null;
 }

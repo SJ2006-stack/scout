@@ -5,6 +5,10 @@ import { createServer as createViteServer } from "vite";
 import { handleApi, handleUpgrade } from "./api.ts";
 import { startBrowserWarm } from "./browser/worker.ts";
 import { appRoot, createDeps, loadLocalEnv } from "./deps.ts";
+import { setSessionCookie } from "./session.ts";
+
+/** Local test account in `.data/scout.sqlite`. This file is the dev server only. */
+const DEV_USER = "1119b3224351de5bcb72379d1c986eef";
 
 loadLocalEnv();
 const root = appRoot();
@@ -20,6 +24,12 @@ const vite = await createViteServer({
 
 server.on("request", (request: IncomingMessage, response: ServerResponse) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "GET" && url.pathname === "/api/dev/session" && isLoopback(request)) {
+    setSessionCookie(response, DEV_USER);
+    response.writeHead(302, { location: "/" });
+    response.end();
+    return;
+  }
   if (url.pathname.startsWith("/api/")) {
     void handleApi(request, response, deps);
     return;
@@ -49,6 +59,11 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`Grocery Scout listening on http://127.0.0.1:${port}`);
   startBrowserWarm(deps.browser);
 });
+
+function isLoopback(request: IncomingMessage): boolean {
+  const address = request.socket.remoteAddress ?? "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
 
 let closing = false;
 function shutdown(): void {

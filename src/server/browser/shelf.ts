@@ -1,4 +1,7 @@
+import type { ShopCompareOffer } from "../../shared/commerce.ts";
 import { paymentTarget, paymentUrlInText, payPageUrl, type PayLink } from "../../shared/payLink.ts";
+import type { ProductRef, ShopApp } from "../../shared/productRef.ts";
+import { normalisedSize, withoutTrailingSize } from "../../shared/quantity.ts";
 import type { IsolatedPage, PageElement } from "./driver.ts";
 import { decodeQrPng } from "./qrPng.ts";
 import type { AccountLogin } from "./signIn.ts";
@@ -10,6 +13,16 @@ export type ShopOffer = {
   title: string;
   rupees: number;
   pageUrl: string;
+  /** Set on every offer the shelf reads. Link and product id stay null when the page does not show them. */
+  ref?: ProductRef;
+};
+
+type Priced = {
+  title: string;
+  rupees: number;
+  link: string | null;
+  productId: string | null;
+  size: string | null;
 };
 
 export type ShopRun = {
@@ -17,6 +30,13 @@ export type ShopRun = {
   cheapest: ShopOffer | null;
   pay: PayLink | null;
   summary: string;
+  signIn: string | null;
+};
+
+/** Matching shelf offers for each basket item, from every store that opened. */
+export type BasketRun = {
+  lines: { query: string; offers: ShopOffer[] }[];
+  opened: number;
   signIn: string | null;
 };
 
@@ -30,9 +50,20 @@ export const SHOP_SITES: readonly { merchant: ShopMerchant; home: string }[] = [
 
 const PRICE = /₹\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/;
 
+const NOT_AN_ITEM = /\b(who are you|about yourself|about you|what can you do|what do you do|how are you|thank you|thanks|your name)\b/i;
+const GREETING = /^(?:yo|hey|hi|hello|thanks|thank you)[.!\s]*$/i;
+
+/** A greeting or a question about Scout itself. */
+export function isChatter(text: string): boolean {
+  const trimmed = text.trim();
+  return NOT_AN_ITEM.test(trimmed) || GREETING.test(trimmed);
+}
+
+/** A grocery lookup. A greeting or a question about Scout is not one. */
 export function isLiveShopQuery(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < 2 || trimmed.length > 80) return false;
+  if (isChatter(trimmed)) return false;
   if (/^(?:checkout|check out|quote)\b/i.test(trimmed)) return false;
   if (/^(?:show\s+(?:my\s+)?)?cart\b/i.test(trimmed)) return false;
   if (/^(?:add|select|set|update|change|remove|delete)\b/i.test(trimmed)) return false;
@@ -64,7 +95,8 @@ export function pricedTitles(elements: readonly PageElement[]): { title: string;
 
 function cleanTitle(text: string): string {
   return text
-    .replace(/^.*\b(?:Customer Ratings|Sort By|Quick filters)\b/i, " ")
+    .replace(/^.*\b(?:Customer Ratings|Sort By|Quick filters|Your cart is empty)\b/i, " ")
+    .replace(/^.*\bShowing results for\s*["“][^"”]*["”]/i, " ")
     .replace(/\b\d{1,3}% OFF\b/gi, " ")
     .replace(/\b(?:Ad|ADD|\d+ MINS?|\d+ mins)\b|\S+\.(?:png|jpe?g|webp|svg)\b/g, " ")
     .replace(/\s+/g, " ")
@@ -89,6 +121,16 @@ export function shelfSummary(offers: readonly ShopOffer[]): string {
   const rest = others.length > 0 ? ` ${others.join(". ")}.` : "";
   const gap = missing.length > 0 ? ` ${missing.join(" and ")} showed no match.` : "";
   return `${lead}${rest}${gap}`;
+}
+
+/** The same search pages the shop check opens, kept so they can be opened again. */
+export function shopSearchPlaces(query: string): { app: ShopMerchant; label: string; url: string }[] {
+  const item = query.trim().slice(0, 40);
+  return SHOP_SITES.map((site) => ({
+    app: site.merchant,
+    label: `Open ${item} on ${site.merchant}`,
+    url: searchUrl(site.merchant, item),
+  }));
 }
 
 export function searchUrl(merchant: ShopMerchant, query: string): string {
@@ -116,7 +158,7 @@ export function pricedText(html: string): { title: string; rupees: number }[] {
     .replace(/\s+/g, " ");
   const found: { title: string; rupees: number }[] = [];
   for (const match of plain.matchAll(/([A-Za-z][^₹]{1,70}?)\s*₹\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/g)) {
-    const title = (match[1] ?? "").replace(/\s+/g, " ").trim();
+    const title = cleanTitle(match[1] ?? "");
     const rupees = Number((match[2] ?? "").replace(/,/g, ""));
     if (!Number.isFinite(rupees) || rupees <= 0 || title.length < 2 || /fee|tax|charge/i.test(title)) continue;
     found.push({ title, rupees });
@@ -131,23 +173,31 @@ export function asksForLocation(html: string): boolean {
 
 export type ShelfRead = { offers: ShopOffer[]; needsLocation: boolean };
 
+/** Zepto finds nothing for "amul butter 100 g", so stores get the words without a size and the size filters the results. */
+export function searchTerms(query: string): string {
+  const words = query.replace(/\b\d+(?:\.\d+)?\s*(?:kgs?|gms?|grams?|g|ml|ltrs?|litres?|liters?|l)\b/gi, " ").replace(/\s+/g, " ").trim();
+  return words.length >= 2 ? words : query.trim();
+}
+
 export async function readShelf(page: IsolatedPage, query: string, merchant: ShopMerchant, step: Step): Promise<ShelfRead> {
-  await step((signal) => page.goto(searchUrl(merchant, query), signal));
+  const terms = searchTerms(query);
+  await step((signal) => page.goto(searchUrl(merchant, terms), signal));
   let offers: ShopOffer[] = [];
   let needsLocation = false;
   let searched = false;
+  const seenAt = Date.now();
   for (let attempt = 0; attempt < 8 && offers.length === 0; attempt += 1) {
     if (attempt > 0) await pause(1_000);
     let elements = await step((signal) => page.elements(signal));
     const html = await step((signal) => page.html(signal));
     const landed = await step((signal) => page.location(signal));
     needsLocation = needsLocation || asksForLocation(html);
-    offers = matching(offersFrom(merchant, landed.url, [...pricedTitles(elements), ...pricedText(html)]), query);
+    offers = matching(collectShelfOffers(merchant, landed.url, elements, html, seenAt), query);
     if (offers.length > 0) break;
     if (attempt < 5) continue;
     const box = elements.find((element) => element.role === "searchbox" || element.role === "combobox" || (element.role === "textbox" && /search/i.test(element.name)));
     if (box && !searched) {
-      await step((signal) => page.fill({ role: box.role, name: box.name, nth: 0 }, query, signal));
+      await step((signal) => page.fill({ role: box.role, name: box.name, nth: 0 }, terms, signal));
       searched = true;
       elements = await step((signal) => page.elements(signal));
     }
@@ -158,26 +208,267 @@ export async function readShelf(page: IsolatedPage, query: string, merchant: Sho
   return { offers, needsLocation };
 }
 
-function offersFrom(merchant: ShopMerchant, pageUrl: string, items: readonly { title: string; rupees: number }[]): ShopOffer[] {
+function offersFrom(merchant: ShopMerchant, pageUrl: string, items: readonly Priced[], seenAt: number): ShopOffer[] {
   const seen = new Set<string>();
   const offers: ShopOffer[] = [];
   for (const item of items) {
-    const key = `${item.title.toLowerCase()}\0${item.rupees}`;
+    const key = item.productId ? `${merchant}\0${item.productId}` : `${item.title.toLowerCase()}\0${item.rupees}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    offers.push({ merchant, title: item.title, rupees: item.rupees, pageUrl });
+    offers.push({
+      merchant,
+      title: item.title,
+      rupees: item.rupees,
+      pageUrl,
+      ref: productRefFor(merchant, item, seenAt),
+    });
   }
   return offers;
 }
 
-/** Keeps offers whose title names every query word. Store pages mix in ads and suggestions. */
+/** The compare row the chat already reads. Existing fields stay; `ref` is added when the shelf stored one. */
+export function shopCompareView(offer: ShopOffer): ShopCompareOffer {
+  const view: ShopCompareOffer = { merchant: offer.merchant, title: offer.title, rupees: offer.rupees };
+  if (offer.ref) view.ref = offer.ref;
+  return view;
+}
+
+/**
+ * Prices from the accessibility tree, plus a product link when the page HTML has one.
+ * Blinkit search cards are buttons whose id is the product id; the link is the same path the site builds.
+ * Zepto cards are anchors. Instamart's item id is not in the search HTML, so those stay null unless an item href is present.
+ */
+export function collectShelfOffers(
+  merchant: ShopMerchant,
+  pageUrl: string,
+  elements: readonly PageElement[],
+  html: string,
+  seenAt: number,
+): ShopOffer[] {
+  const textItems = [...pricedTitles(elements), ...pricedText(html)];
+  const cards = productCardsFromHtml(merchant, html);
+  const used = new Set<number>();
+  const items: Priced[] = textItems.map((item) => {
+    const index = cards.findIndex((card, cardIndex) => !used.has(cardIndex) && card.rupees === item.rupees && titlesClose(card.title, item.title));
+    if (index < 0) return { title: item.title, rupees: item.rupees, link: null, productId: null, size: normalisedSize(item.title) };
+    used.add(index);
+    const card = cards[index];
+    if (!card) return { title: item.title, rupees: item.rupees, link: null, productId: null, size: normalisedSize(item.title) };
+    return {
+      title: item.title,
+      rupees: item.rupees,
+      link: card.link,
+      productId: card.productId,
+      size: normalisedSize(item.title) ?? card.size,
+    };
+  });
+  for (let index = 0; index < cards.length; index += 1) {
+    const card = cards[index];
+    if (card && !used.has(index)) items.push(card);
+  }
+  return offersFrom(merchant, pageUrl, items, seenAt);
+}
+
+function titlesClose(left: string, right: string): boolean {
+  const a = withUnits(left);
+  const b = withUnits(right);
+  return a.includes(b) || b.includes(a);
+}
+
+function productRefFor(merchant: ShopMerchant, item: Priced, seenAt: number): ProductRef {
+  return {
+    store: shopApp(merchant),
+    productId: item.productId,
+    link: item.link,
+    name: item.title,
+    size: item.size ?? normalisedSize(item.title),
+    price: item.rupees,
+    seenAt,
+  };
+}
+
+function shopApp(merchant: ShopMerchant): ShopApp {
+  switch (merchant) {
+    case "Blinkit":
+      return "blinkit";
+    case "Zepto":
+      return "zepto";
+    case "Instamart":
+      return "instamart";
+    default: {
+      const neverMerchant: never = merchant;
+      return neverMerchant;
+    }
+  }
+}
+
+/** A product href for this store, or null when the URL is a search page or a different host. */
+export function parseShopLink(merchant: ShopMerchant, href: string): { link: string | null; productId: string | null } | null {
+  const url = shopUrl(merchant, href);
+  if (!url) return null;
+  switch (merchant) {
+    case "Blinkit":
+      return blinkitLink(url);
+    case "Zepto":
+      return zeptoLink(url);
+    case "Instamart":
+      return instamartLink(url);
+    default: {
+      const neverMerchant: never = merchant;
+      return neverMerchant;
+    }
+  }
+}
+
+export function productCardsFromHtml(merchant: ShopMerchant, html: string): Priced[] {
+  const source = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ");
+  const byId = new Map<string, Priced>();
+  const loose: Priced[] = [];
+  if (merchant === "Blinkit") {
+    for (const card of blinkitIdCards(source)) {
+      if (card.productId && !byId.has(card.productId)) byId.set(card.productId, card);
+    }
+  }
+  for (const anchor of source.matchAll(/<a\b[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)<\/a>/gi)) {
+    const href = anchor[1] ?? anchor[2] ?? "";
+    const parsed = parseShopLink(merchant, href);
+    if (!parsed?.productId && !parsed?.link) continue;
+    const body = anchor[3] ?? "";
+    const title = cardTitle(body);
+    const rupees = firstPrice(body);
+    if (!title || rupees == null || !parsed) continue;
+    const card: Priced = {
+      title,
+      rupees,
+      link: parsed.link,
+      productId: parsed.productId,
+      size: normalisedSize(title),
+    };
+    if (card.productId && card.link) byId.set(card.productId, card);
+    else if (card.productId && !byId.has(card.productId)) byId.set(card.productId, card);
+    else if (!card.productId) loose.push(card);
+  }
+  return [...byId.values(), ...loose];
+}
+
+function blinkitIdCards(html: string): Priced[] {
+  const ids = [...html.matchAll(/\bid="(\d{4,})"/g)];
+  const cards: Priced[] = [];
+  for (let index = 0; index < ids.length; index += 1) {
+    const id = ids[index]?.[1];
+    const attrAt = ids[index]?.index ?? 0;
+    const contentStart = html.indexOf(">", attrAt);
+    const start = contentStart >= 0 ? contentStart + 1 : attrAt;
+    const nextAttr = ids[index + 1]?.index;
+    const nextTag = nextAttr == null ? html.length : html.lastIndexOf("<", nextAttr);
+    const end = nextTag > start ? nextTag : (nextAttr ?? html.length);
+    if (!id) continue;
+    const slice = html.slice(start, Math.min(end, start + 8_000));
+    const title = cardTitle(slice);
+    const rupees = firstPrice(slice);
+    if (!title || rupees == null) continue;
+    const slug = blinkitSlug(withoutTrailingSize(title));
+    cards.push({
+      title,
+      rupees,
+      link: slug && slug !== "x" ? `https://blinkit.com/prn/${slug}/prid/${id}` : null,
+      productId: id,
+      size: normalisedSize(title),
+    });
+  }
+  return cards;
+}
+
+/** Blinkit's own product path: lowercase, drop punctuation, collapse spaces. A slug of "x" does not open the app. */
+function blinkitSlug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9\s.-]/g, "").replace(/(?:-|\s)+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function blinkitLink(url: URL): { link: string | null; productId: string | null } | null {
+  const host = url.hostname.toLowerCase();
+  if (host !== "blinkit.com" && host !== "www.blinkit.com") return null;
+  const match = /^\/prn\/([^/]+)\/prid\/(\d+)\/?$/.exec(url.pathname);
+  const slug = match?.[1] ?? "";
+  const productId = match?.[2] ?? "";
+  if (!slug || !productId) return null;
+  const link = slug.toLowerCase() === "x" ? null : `https://blinkit.com/prn/${slug}/prid/${productId}`;
+  return { link, productId };
+}
+
+function zeptoLink(url: URL): { link: string | null; productId: string | null } | null {
+  const host = url.hostname.toLowerCase();
+  if (host !== "zepto.com" && host !== "www.zepto.com") return null;
+  const match = /^\/pn\/([^/]+)\/pvid\/([0-9a-f-]{36})\/?$/i.exec(url.pathname);
+  const slug = match?.[1] ?? "";
+  const productId = (match?.[2] ?? "").toLowerCase();
+  if (!slug || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(productId)) return null;
+  return { link: `https://www.zepto.com/pn/${slug}/pvid/${productId}`, productId };
+}
+
+function instamartLink(url: URL): { link: string | null; productId: string | null } | null {
+  const host = url.hostname.toLowerCase();
+  const path = url.pathname.replace(/\/$/, "");
+  if (host === "www.swiggy.com" || host === "swiggy.com") {
+    const match = /^\/instamart\/item\/([A-Za-z0-9]{4,32})$/.exec(path);
+    const productId = match?.[1] ?? "";
+    if (!productId) return null;
+    return { link: `https://www.swiggy.com/instamart/item/${productId}`, productId };
+  }
+  if (host === "instamart.in" || host === "www.instamart.in") {
+    const match = /^\/item\/([A-Za-z0-9]{4,32})$/.exec(path);
+    const productId = match?.[1] ?? "";
+    if (!productId) return null;
+    return { link: `https://instamart.in/item/${productId}`, productId };
+  }
+  return null;
+}
+
+function shopUrl(merchant: ShopMerchant, href: string): URL | null {
+  const trimmed = href.trim();
+  if (!trimmed || /^(?:javascript|data|file):/i.test(trimmed)) return null;
+  const base = merchant === "Blinkit" ? "https://blinkit.com" : merchant === "Zepto" ? "https://www.zepto.com" : "https://www.swiggy.com";
+  try {
+    return new URL(trimmed, base);
+  } catch {
+    return null;
+  }
+}
+
+function cardTitle(html: string): string {
+  return cleanTitle(textOf(html).replace(/₹\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?/g, " "));
+}
+
+function firstPrice(html: string): number | null {
+  const match = /₹\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/.exec(textOf(html));
+  if (!match?.[1]) return null;
+  const rupees = Number(match[1].replace(/,/g, ""));
+  return Number.isFinite(rupees) && rupees > 0 ? rupees : null;
+}
+
+function textOf(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#8377;|&rupee;/gi, (token) => (/rupee|8377/i.test(token) ? "₹" : " "))
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Keeps offers whose title names every query word. Store pages mix in ads and suggestions.
+ * Instamart's web search shows no sizes, so a size they asked for only rules out an offer that shows a different one.
+ */
 export function matching(offers: readonly ShopOffer[], query: string): ShopOffer[] {
   const words = withUnits(query).split(/[^a-z0-9]+/).filter((word) => word.length > 1);
   return offers.filter((offer) => {
-    const title = withUnits(offer.title);
-    return words.every((word) => title.includes(word) || (word.endsWith("s") && title.includes(word.slice(0, -1))));
+    const size = offer.ref?.size ?? normalisedSize(offer.title);
+    const title = new Set(withUnits(`${offer.title} ${size ?? ""}`).split(/[^a-z0-9]+/));
+    const has = (word: string) => title.has(word) || title.has(`${word}s`) || title.has(`${word}es`);
+    return words.every((word) => has(word) || (word.endsWith("s") && has(word.slice(0, -1))) || (size == null && SIZE_WORD.test(word)));
   });
 }
+
+const SIZE_WORD = /^\d+(?:\.\d+)?(?:kg|g|ml|l|pc)$/;
 
 /** Stores write sizes as "500 g", "500 gm", or "500g"; one spelling lets a sized query match any of them. */
 function withUnits(text: string): string {

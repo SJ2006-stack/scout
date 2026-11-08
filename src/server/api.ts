@@ -26,8 +26,11 @@ import { isTerminalState } from "../shared/scoutTask.ts";
 import type { BrowserRuntimeConfig } from "./browser/runtimeTicket.ts";
 import type { BrowserWorker } from "./browser/worker.ts";
 import type { EmailAuth } from "./auth/emailAuth.ts";
+import { verifyFirebaseIdToken } from "./auth/firebaseToken.ts";
 import { CommerceHub, createCommerceHub, type CommerceRequest } from "./commerce/hub.ts";
 import { isAgentId } from "../shared/hosts.ts";
+import { readPhoneAutomation, type PhoneAutomation } from "../shared/deviceActions.ts";
+import { readErrandAnswers, type ErrandAnswers } from "../shared/errands.ts";
 import { isLiveShopQuery, parsePayRequest, runListingPay, runShopSearch } from "./shopRun.ts";
 import { listingPlatform } from "./events/pageText.ts";
 import { DeskStore } from "./desk.ts";
@@ -42,6 +45,7 @@ import { clearSessionCookie, currentSessionId, sessionId, setSessionCookie } fro
 import { writeEvents } from "./sseWriter.ts";
 import { isAssistantRoute, routeAssistant } from "./assistantRoutes.ts";
 import type { InboxStore } from "./notify/inbox.ts";
+import type { CartBillStore } from "./cartBills.ts";
 import type { ProfileStore } from "./profile/profileStore.ts";
 import type { WatchRunner } from "./watch/watchRunner.ts";
 import type { WatchStore } from "./watch/watchStore.ts";
@@ -77,10 +81,12 @@ export type ApiDeps = {
   auth?: EmailAuth;
   invite?: AppInvite;
   sarvamApiKey?: string;
+  gnaniApiKey?: string;
   profile?: ProfileStore;
   watches?: WatchStore;
   watchRunner?: WatchRunner;
   inbox?: InboxStore;
+  cartBills?: CartBillStore;
   bolna?: BolnaConfig | null;
   liveRelay?: LiveRelay;
 };
@@ -292,7 +298,7 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
   sendJson(response, 404, { error: "Not found" });
 }
 
-type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null };
+type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null; phone?: PhoneAutomation | null; answers?: ErrandAnswers | null };
 
 function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortSignal): ChatTurn {
   if (!deps.commerce) deps.commerce = createCommerceHub(deps.now);
@@ -311,12 +317,18 @@ function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortS
     cache: deps.listingCache ?? new ListingCache(60_000, deps.now),
     fetchImpl: deps.fetchImpl ?? fetch,
     mapsApiKey: deps.mapsApiKey ?? "",
-    anthropicApiKey: deps.anthropicApiKey ?? "",
+    sarvamApiKey: deps.sarvamApiKey ?? "",
     agent: input.agent,
     commerce: deps.commerce,
     ...(deps.profile ? { profile: deps.profile } : {}),
     ...(deps.watches ? { watches: deps.watches } : {}),
+    ...(input.phone ? { phone: input.phone } : {}),
+    ...(input.answers ? { answers: input.answers } : {}),
+    anthropicApiKey: deps.anthropicApiKey ?? "",
+    compareBuses: browser ? (trip, busSignal) => browser.compareBuses(trip, busSignal, owner) : undefined,
     compareShop: browser ? (query, shopSignal, onStatus) => browser.compareShop(query, shopSignal, owner, onStatus) : undefined,
+    compareBasket: browser ? (queries, shopSignal, onStatus) => browser.compareBasket(queries, shopSignal, owner, onStatus) : undefined,
+    ...(deps.cartBills ? { cartBills: () => deps.cartBills?.recent(owner) ?? [] } : {}),
     prepareCart: deps.scoutTasks ? cartPreparer(deps.scoutTasks, owner, input, signal) : undefined,
     readPage: browser ? (url) => browser.readHtml(url, signal, owner) : undefined,
     readListings: browser ? (url) => browser.readHtml(url, signal, owner, { signIn: false }) : undefined,
@@ -365,6 +377,7 @@ async function routeSignIn(request: IncomingMessage, response: ServerResponse, u
   }
   if (request.method === "GET" && url.pathname === "/api/auth/session") {
     const account = auth.account(currentSessionId(request));
+    if (account) setSessionCookie(response, account.id);
     sendJson(response, 200, account
       ? { signedIn: true, email: account.email, userId: account.id, phone: account.phone, name: account.name }
       : { signedIn: false });
@@ -405,6 +418,30 @@ async function routeSignIn(request: IncomingMessage, response: ServerResponse, u
     }
     setSessionCookie(response, result.userId);
     sendJson(response, 200, { signedIn: true, email: result.email, userId: result.userId });
+    return;
+  }
+  if (url.pathname === "/api/auth/google") {
+    const idToken = typeof record.idToken === "string" ? record.idToken : "";
+    const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || "scout-b4da3";
+    const verified = await verifyFirebaseIdToken(idToken, { projectId, now: deps.now() });
+    if (!verified.ok) {
+      sendJson(response, 401, { error: verified.error });
+      return;
+    }
+    const result = auth.sessionForVerifiedGmail(verified.email);
+    if (!result.ok || result.kind !== "session") {
+      sendJson(response, result.ok ? 400 : result.status, { error: result.ok ? "Use a Gmail address." : result.error });
+      return;
+    }
+    setSessionCookie(response, result.userId);
+    const account = auth.account(result.userId);
+    sendJson(response, 200, {
+      signedIn: true,
+      email: result.email,
+      userId: result.userId,
+      phone: account?.phone ?? null,
+      name: account?.name ?? null,
+    });
     return;
   }
   sendJson(response, 404, { error: "Not found" });
@@ -571,6 +608,8 @@ function parseChatRequest(value: unknown): {
   lat: number | null;
   lon: number | null;
   agent: "main" | "event" | "travel" | "food" | "shop" | "home" | "appointments";
+  phone: PhoneAutomation | null;
+  answers: ErrandAnswers | null;
 } | { ok: false; error: string } {
   if (!value || typeof value !== "object") return { ok: false, error: "Send a message." };
   const body = value as Record<string, unknown>;
@@ -581,7 +620,7 @@ function parseChatRequest(value: unknown): {
   const lat = readOptionalCoord(body.lat, -90, 90);
   const lon = readOptionalCoord(body.lon, -180, 180);
   if (lat === "bad" || lon === "bad") return { ok: false, error: "Coordinates are not a valid point." };
-  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon, agent: isAgentId(body.agent) ? body.agent : "event" };
+  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon, agent: isAgentId(body.agent) ? body.agent : "event", phone: readPhoneAutomation(body.phone), answers: readErrandAnswers(body.answers) };
 }
 
 function readOptionalCoord(value: unknown, min: number, max: number): number | null | "bad" {

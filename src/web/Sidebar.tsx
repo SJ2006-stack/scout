@@ -39,16 +39,23 @@ export function Sidebar({
         <span className="logo">S</span>
         <strong>Scout</strong>
       </button>
-      {siteAgent === "main" ? null : (
-        <button className="new-chat" type="button" onClick={onNewChat}>
-          <SquarePen size={16} aria-hidden="true" />
-          New chat
-        </button>
-      )}
-      <p className="nav-label">Scouts</p>
+      <button className="new-chat" type="button" onClick={onNewChat}>
+        <SquarePen size={16} aria-hidden="true" />
+        New chat
+      </button>
+      <p className="nav-label">{siteAgent === "main" ? "Scout assigns" : "Scouts"}</p>
       {AGENTS.filter((agent) => agent.id !== "main").map((agent) => {
         const Icon = agent.icon;
         const soon = agent.unavailable.length > 0;
+        if (siteAgent === "main") {
+          return (
+            <div className="nav team" key={agent.id}>
+              <Icon size={18} aria-hidden="true" />
+              <span className="nav-text">{agent.name.replace(" Scout", "")}</span>
+              {soon ? <span className="badge">Soon</span> : null}
+            </div>
+          );
+        }
         if (agent.id === siteAgent) {
           return (
             <button
@@ -71,32 +78,28 @@ export function Sidebar({
           </a>
         );
       })}
-      {siteAgent === "main" ? null : (
-        <>
-          <p className="nav-label">Recent</p>
-          {recent.length === 0 ? <p className="nav-empty">Your chats show up here.</p> : null}
-          {recent.map((conversation) => (
-            <div className="recent-row" key={conversation.id}>
-              <button
-                className={screen.kind === "chat" && screen.conversationId === conversation.id ? "nav recent selected" : "nav recent"}
-                type="button"
-                onClick={() => onOpenChat(conversation)}
-              >
-                {conversation.title}
-              </button>
-              <button
-                className="icon-button recent-delete"
-                type="button"
-                aria-label={`Delete ${conversation.title}`}
-                title="Delete chat"
-                onClick={() => onDelete(conversation.id)}
-              >
-                <Trash2 size={15} />
-              </button>
-            </div>
-          ))}
-        </>
-      )}
+      <p className="nav-label">Recent</p>
+      {recent.length === 0 ? <p className="nav-empty">Your chats show up here.</p> : null}
+      {recent.map((conversation) => (
+        <div className="recent-row" key={conversation.id}>
+          <button
+            className={screen.kind === "chat" && screen.conversationId === conversation.id ? "nav recent selected" : "nav recent"}
+            type="button"
+            onClick={() => onOpenChat(conversation)}
+          >
+            {conversation.title}
+          </button>
+          <button
+            className="icon-button recent-delete"
+            type="button"
+            aria-label={`Delete ${conversation.title}`}
+            title="Delete chat"
+            onClick={() => onDelete(conversation.id)}
+          >
+            <Trash2 size={15} />
+          </button>
+        </div>
+      ))}
       <div className="sidebar-foot">
         <button
           className={screen.kind === "tasks" ? "nav selected" : "nav"}

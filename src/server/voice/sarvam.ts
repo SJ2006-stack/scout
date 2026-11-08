@@ -1,17 +1,19 @@
 import { stripEmoji } from "../../shared/emoji.ts";
 import { spokenLanguage } from "../../shared/spoken.ts";
 
-const STT_URL = "https://api.sarvam.ai/speech-to-text";
+const STT_URL = "https://api.vachana.ai/stt/v3";
 const TTS_URL = "https://api.sarvam.ai/text-to-speech";
-const STT_MODEL = "saaras:v4";
-// "transcribe" writes English words in Devanagari when it detects Hindi, which flips replies to Hindi.
-const STT_MODE = "codemix";
+const STT_MODEL = "prisma-v3.0";
+// codemix keeps English words in Latin letters inside a Hindi sentence.
+const STT_FORMAT = "codemix";
+const STT_LANGUAGE = "indic-auto";
 const TTS_MODEL = "bulbul:v3";
 const TTS_SPEAKER = "shubh";
 const MAX_SPEECH = 2_500;
 
 export type VoiceDeps = {
   sarvamApiKey?: string;
+  gnaniApiKey?: string;
   fetchImpl?: typeof fetch;
 };
 
@@ -38,27 +40,27 @@ async function transcribe(
   contentType: string,
   deps: VoiceDeps,
 ): Promise<{ status: number; body: unknown }> {
-  const key = deps.sarvamApiKey?.trim() ?? "";
-  if (key.length === 0) return { status: 503, body: { error: "Voice is off until SARVAM_API_KEY is set." } };
+  const key = deps.gnaniApiKey?.trim() ?? "";
+  if (key.length === 0) return { status: 503, body: { error: "Voice is off until GNANI_API_KEY is set." } };
   if (raw.byteLength === 0) return { status: 400, body: { error: "The recording was empty." } };
   const mime = contentType.split(";")[0]?.trim() || "audio/webm";
   const form = new FormData();
-  form.set("file", new Blob([new Uint8Array(raw)], { type: mime }), fileName(mime));
+  form.set("audio_file", new Blob([new Uint8Array(raw)], { type: mime }), fileName(mime));
   form.set("model", STT_MODEL);
-  form.set("mode", STT_MODE);
-  form.set("language_code", "unknown");
+  form.set("format", STT_FORMAT);
+  form.set("language_code", STT_LANGUAGE);
   let response: Response;
   try {
     response = await (deps.fetchImpl ?? fetch)(STT_URL, {
       method: "POST",
-      headers: { "api-subscription-key": key },
+      headers: { "X-API-Key-ID": key },
       body: form,
     });
   } catch {
-    return { status: 502, body: { error: "Sarvam could not be reached." } };
+    return { status: 502, body: { error: "Gnani could not be reached." } };
   }
   const payload = await readPayload(response);
-  if (!response.ok) return { status: 502, body: { error: sarvamError(response.status) } };
+  if (!response.ok) return { status: 502, body: { error: gnaniError(response.status) } };
   const text = transcriptOf(payload);
   if (text.length === 0) return { status: 422, body: { error: "No speech was heard." } };
   return { status: 200, body: { text } };
@@ -99,9 +101,11 @@ async function speak(raw: Uint8Array, deps: VoiceDeps): Promise<{ status: number
 }
 
 function fileName(mime: string): string {
-  if (mime.includes("mp4")) return "speech.mp4";
   if (mime.includes("wav")) return "speech.wav";
-  if (mime.includes("mpeg")) return "speech.mp3";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "speech.mp3";
+  if (mime.includes("mp4") || mime.includes("m4a") || mime.includes("aac")) return "speech.m4a";
+  if (mime.includes("ogg")) return "speech.ogg";
+  if (mime.includes("flac")) return "speech.flac";
   return "speech.webm";
 }
 
@@ -122,6 +126,11 @@ function audioOf(payload: unknown): string {
   const audios = payload.audios;
   if (!Array.isArray(audios) || typeof audios[0] !== "string") return "";
   return audios[0];
+}
+
+function gnaniError(status: number): string {
+  if (status === 401 || status === 403) return "The Gnani key was refused.";
+  return "Gnani could not complete that.";
 }
 
 function sarvamError(status: number): string {

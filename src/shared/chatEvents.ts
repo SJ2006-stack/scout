@@ -1,7 +1,10 @@
+import type { CartEstimate } from "./cartQuote.ts";
 import type { CartSnapshot, QuoteSnapshot, ReceiptSnapshot } from "./commerce.ts";
 import type { DeviceAction } from "./deviceActions.ts";
+import type { BusResult, ErrandForm } from "./errands.ts";
 import type { EventKind, Listing } from "./event.ts";
 import type { PayLink } from "./payLink.ts";
+import type { SavedPlace } from "./places.ts";
 
 export type ChatStatusEvent = {
   type: "status";
@@ -16,6 +19,12 @@ export type ChatQuestionEvent = {
 export type ChatCardEvent = {
   type: "card";
   listing: Listing;
+};
+
+/** Listings that matched but did not get a card. The page shows them behind a "Show more" button. */
+export type ChatMoreEvent = {
+  type: "more";
+  listings: Listing[];
 };
 
 export type ChatSourceEvent = {
@@ -49,6 +58,12 @@ export type ChatCartEvent = {
 export type ChatQuoteEvent = {
   type: "quote";
   quote: QuoteSnapshot;
+};
+
+/** Estimated cart totals per store right after the shelf compare, before any cart is filled. */
+export type ChatEstimateEvent = {
+  type: "estimate";
+  estimate: CartEstimate;
 };
 
 export type ChatReceiptEvent = {
@@ -88,18 +103,40 @@ export type ChatWatchEvent = {
   watch: WatchCard;
 };
 
+/** Main Scout's questions for every errand in one message, answered together before anything runs. */
+export type ChatFormEvent = {
+  type: "form";
+  form: ErrandForm;
+};
+
+export type ChatBusesEvent = {
+  type: "buses";
+  buses: BusResult;
+};
+
+/** App pages a task opened, kept so they can be opened again. */
+export type ChatPlacesEvent = {
+  type: "places";
+  places: SavedPlace[];
+};
+
 export type ChatEvent =
+  | ChatFormEvent
+  | ChatBusesEvent
+  | ChatPlacesEvent
   | ChatDeviceEvent
   | ChatWatchEvent
   | ChatStatusEvent
   | ChatQuestionEvent
   | ChatCardEvent
+  | ChatMoreEvent
   | ChatSourceEvent
   | ChatDriveEvent
   | ChatDoneEvent
   | ChatNoteEvent
   | ChatCartEvent
   | ChatQuoteEvent
+  | ChatEstimateEvent
   | ChatReceiptEvent
   | ChatPayEvent
   | ChatTaskEvent;

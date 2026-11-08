@@ -11,7 +11,7 @@ describe("sarvam voice", () => {
     assert.equal(spokenLanguage("சென்னையில் என்ன"), "ta-IN");
   });
 
-  it("stays quiet until a Sarvam key is set", async () => {
+  it("stays quiet until a Gnani key is set", async () => {
     let called = false;
     const result = await voiceResponse("POST", "/api/voice/stt", Uint8Array.from([1, 2]), "audio/webm", {
       fetchImpl: async () => {
@@ -21,28 +21,34 @@ describe("sarvam voice", () => {
     });
     assert.equal(called, false);
     assert.equal(result?.status, 503);
+    assert.match((result?.body as { error: string }).error, /GNANI_API_KEY/);
   });
 
-  it("sends a recording to Saaras and a reply to Bulbul", async () => {
+  it("sends a recording to Prisma and a reply to Bulbul", async () => {
     const seen: string[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = String(input);
       seen.push(url);
-      assert.equal(new Headers(init?.headers).get("api-subscription-key"), "test-key");
-      if (url.endsWith("/speech-to-text")) {
+      const headers = new Headers(init?.headers);
+      if (url.endsWith("/stt/v3")) {
+        assert.equal(headers.get("X-API-Key-ID"), "gnani-key");
         const form = init?.body as FormData;
-        assert.equal(form.get("mode"), "codemix");
-        assert.equal(form.get("model"), "saaras:v4");
+        assert.equal(form.get("format"), "codemix");
+        assert.equal(form.get("model"), "prisma-v3.0");
+        assert.equal(form.get("language_code"), "indic-auto");
+        const file = form.get("audio_file");
+        assert.equal(file instanceof File ? file.name : "", "speech.m4a");
         return Response.json({ transcript: "events in Delhi" });
       }
+      assert.equal(headers.get("api-subscription-key"), "test-key");
       const body = JSON.parse(String(init?.body)) as { language_code: string; model: string; speaker: string };
       assert.equal(body.language_code, "hi-IN");
       assert.equal(body.model, "bulbul:v3");
       assert.equal(body.speaker, "shubh");
       return Response.json({ audios: [Buffer.from("wav").toString("base64")] });
     };
-    const heard = await voiceResponse("POST", "/api/voice/stt", Uint8Array.from([1, 2, 3]), "audio/webm", {
-      sarvamApiKey: "test-key",
+    const heard = await voiceResponse("POST", "/api/voice/stt", Uint8Array.from([1, 2, 3]), "audio/mp4", {
+      gnaniApiKey: "gnani-key",
       fetchImpl,
     });
     assert.deepEqual(heard, { status: 200, body: { text: "events in Delhi" } });
@@ -55,7 +61,15 @@ describe("sarvam voice", () => {
     );
     assert.equal(spoken?.status, 200);
     assert.equal((spoken?.body as { mediaType: string }).mediaType, "audio/wav");
-    assert.deepEqual(seen, ["https://api.sarvam.ai/speech-to-text", "https://api.sarvam.ai/text-to-speech"]);
+    assert.deepEqual(seen, ["https://api.vachana.ai/stt/v3", "https://api.sarvam.ai/text-to-speech"]);
+  });
+
+  it("says when Prisma heard nothing", async () => {
+    const result = await voiceResponse("POST", "/api/voice/stt", Uint8Array.from([1]), "audio/wav", {
+      gnaniApiKey: "gnani-key",
+      fetchImpl: async () => Response.json({ transcript: "" }),
+    });
+    assert.equal(result?.status, 422);
   });
 
   it("serves the voice routes without calling Sarvam when the key is empty", async () => {

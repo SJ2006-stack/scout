@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const COOKIE = "scout_session";
+/** Browsers cap a cookie near 400 days. Each signed-in visit refreshes it. */
+const SESSION_MAX_AGE = 60 * 60 * 24 * 400;
 
 export function sessionId(request: IncomingMessage, response: ServerResponse): string {
   const existing = currentSessionId(request);
@@ -21,7 +23,7 @@ export function currentSessionId(request: IncomingMessage): string | null {
 }
 
 export function setSessionCookie(response: ServerResponse, id: string): void {
-  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`);
+  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`);
 }
 
 export function clearSessionCookie(response: ServerResponse): void {
@@ -33,7 +35,7 @@ export function browserOwner(request: IncomingMessage, response: ServerResponse)
   const existing = readCookie(request.headers.cookie, COOKIE);
   if (existing && /^[a-f0-9]{32}$/.test(existing)) return existing;
   const id = randomBytes(16).toString("hex");
-  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`);
+  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`);
   return id;
 }
 

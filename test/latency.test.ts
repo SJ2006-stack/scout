@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { postHaiku } from "../src/server/haikuClient.ts";
+import { postSarvam, SARVAM_CHAT_MODEL, SARVAM_CHAT_URL, wholeSentences } from "../src/server/sarvamChat.ts";
 import { listingCacheTtlMs, ListingCache } from "../src/server/listingCache.ts";
 import { runChat } from "../src/server/chatRun.ts";
 import { ChatMemoryStore } from "../src/server/chatMemory.ts";
@@ -11,6 +11,26 @@ import { speechCue } from "../src/shared/speech.ts";
 import { dateRange } from "../src/shared/when.ts";
 
 const now = Date.parse("2026-10-25T00:00:00.000Z");
+
+describe("replies cut by the token limit", () => {
+  it("drops the unfinished last sentence", () => {
+    assert.equal(wholeSentences("BookMyShow has 3 movies. I can't see those titles. Luma has"), "BookMyShow has 3 movies. I can't see those titles.");
+    assert.equal(wholeSentences("All done."), "All done.");
+    assert.equal(wholeSentences("no stop at all"), "no stop at all");
+  });
+
+  it("trims a streamed reply that ends on length", async () => {
+    const stream = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Ramayana is on. Luma has" } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const fetchImpl = (async () => new Response(stream, { headers: { "content-type": "text/event-stream" } })) as unknown as typeof fetch;
+    const body = await postSarvam({ apiKey: "k", fetchImpl, signal: new AbortController().signal, system: "", tools: [], messages: [{ role: "user", content: "hi" }], onText: () => {} });
+    assert.deepEqual(body?.content, [{ type: "text", text: "Ramayana is on." }]);
+  });
+});
 
 describe("shorter waits", () => {
   it("reads BookMyShow once per city and kind and serves the cache after", async () => {
@@ -50,38 +70,38 @@ describe("shorter waits", () => {
     assert.equal(reads, 1);
   });
 
-  it("emits answer text as Haiku chunks arrive and drops a tool-round draft", async () => {
+  it("emits answer text as Sarvam chunks arrive and drops a tool-round draft", async () => {
     const seen: string[] = [];
-    const answer = await postHaiku({
+    const answer = await postSarvam({
       apiKey: "test-key",
       signal: new AbortController().signal,
       system: "test",
       tools: [],
       messages: [{ role: "user", content: "hi" }],
       onText: (text) => seen.push(text),
-      fetchImpl: (async () => new Response(streamBody([
-        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } },
-        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " there." } },
-        { type: "message_delta", delta: { stop_reason: "end_turn" } },
-      ]), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch,
+      fetchImpl: sarvamStream([
+        sarvamChunk({ content: "Hello" }),
+        sarvamChunk({ content: " there." }),
+        sarvamChunk({}, "stop"),
+      ]),
     });
     assert.deepEqual(seen, ["Hello", "Hello there."]);
     assert.equal(answer?.stop_reason, "end_turn");
 
     const retracted: string[] = [];
-    await postHaiku({
+    await postSarvam({
       apiKey: "test-key",
       signal: new AbortController().signal,
       system: "test",
       tools: [],
       messages: [{ role: "user", content: "hi" }],
       onText: (text) => retracted.push(text),
-      fetchImpl: (async () => new Response(streamBody([
-        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "I'll check." } },
-        { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "search_luma", input: {} } },
-      ]), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch,
+      fetchImpl: sarvamStream([
+        sarvamChunk({ content: "I'll check." }),
+        sarvamChunk({
+          tool_calls: [{ index: 0, id: "toolu_1", function: { name: "search_luma", arguments: "{}" } }],
+        }),
+      ]),
     });
     assert.deepEqual(retracted, ["I'll check.", ""]);
   });
@@ -108,7 +128,7 @@ describe("shorter waits", () => {
         memory: new ChatMemoryStore(),
         cache: new ListingCache(60_000, () => now),
         mapsApiKey: "maps-key",
-        anthropicApiKey: "",
+        sarvamApiKey: "",
         fetchImpl: (async (input: RequestInfo | URL) => {
           const url = String(input);
           if (url.includes("api.luma.com")) {
@@ -150,6 +170,19 @@ describe("shorter waits", () => {
   });
 
 });
+
+function sarvamChunk(delta: Record<string, unknown>, finish?: string): unknown {
+  return { choices: [{ delta, ...(finish ? { finish_reason: finish } : {}) }] };
+}
+
+function sarvamStream(events: unknown[]): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), SARVAM_CHAT_URL);
+    const body = JSON.parse(String(init?.body)) as { model?: string };
+    assert.equal(body.model, SARVAM_CHAT_MODEL);
+    return new Response(streamBody(events), { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+}
 
 function streamBody(events: unknown[]): ReadableStream<Uint8Array> {
   const encoded = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");

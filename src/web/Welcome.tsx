@@ -1,6 +1,6 @@
 import { ChevronRight, ShieldCheck } from "lucide-react";
-import { publicScoutUrl, type AgentId } from "../shared/hosts.ts";
-import { AGENTS, agentById } from "./agents.ts";
+import type { AgentId } from "../shared/hosts.ts";
+import { agentById } from "./agents.ts";
 import { promptsFor } from "./prompts.ts";
 import { greeting } from "./uiText.ts";
 
@@ -14,7 +14,6 @@ type WelcomeProps = {
 };
 
 export function Welcome({ siteAgent, name, link, onPrompt }: WelcomeProps) {
-  if (siteAgent === "main") return <Hub name={name} />;
   const agent = agentById(siteAgent);
   const Icon = agent.icon;
   return (
@@ -59,27 +58,4 @@ function BookingStatus({ link }: { link: BookingLink }) {
       return neverLink;
     }
   }
-}
-
-function Hub({ name }: { name: string | null }) {
-  const specialists = AGENTS.filter((agent) => agent.id !== "main");
-  return (
-    <div className="welcome hub">
-      <h2>{greeting(name)}</h2>
-      <p className="welcome-lead">What do you need help with? Pick a Scout.</p>
-      <div className="specialist-grid">
-        {specialists.map((agent) => {
-          const Icon = agent.icon;
-          return (
-            <a className="specialist" key={agent.id} href={publicScoutUrl(agent.id)}>
-              <span className="specialist-icon" aria-hidden="true"><Icon size={20} /></span>
-              <strong>{agent.name}</strong>
-              <span className="specialist-copy">{agent.description}</span>
-              {agent.unavailable.length > 0 ? <span className="badge">Not connected yet</span> : null}
-            </a>
-          );
-        })}
-      </div>
-    </div>
-  );
 }

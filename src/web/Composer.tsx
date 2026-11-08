@@ -3,7 +3,7 @@ import { ArrowUp, Mic, Phone, PhoneOff, Plus, Square, Volume2, VolumeX } from "l
 import { readNativeSpeech, requestNativeMicrophone } from "../shared/nativeSpeech.ts";
 import { attachOcrText } from "../shared/ocr.ts";
 import { readAttachment } from "./ocr.ts";
-import { recordingMime, transcribeSpeech } from "./voice.ts";
+import { recordingMime, SPEECH_CLIP_MS, transcribeSpeech } from "./voice.ts";
 import type { VoiceCallState } from "./voiceCall.ts";
 
 const MAX_HEIGHT = 140;
@@ -44,6 +44,7 @@ export function Composer({
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
+  const clipTimer = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     const area = areaRef.current;
@@ -53,6 +54,7 @@ export function Composer({
   }, [value]);
 
   useEffect(() => () => {
+    if (clipTimer.current != null) window.clearTimeout(clipTimer.current);
     if (recorder.current?.state === "recording") recorder.current.stop();
   }, []);
 
@@ -117,6 +119,8 @@ export function Composer({
       if (event.data.size > 0) chunks.current.push(event.data);
     };
     media.onstop = () => {
+      if (clipTimer.current != null) window.clearTimeout(clipTimer.current);
+      clipTimer.current = null;
       stream.getTracks().forEach((track) => track.stop());
       setListening(false);
       const audio = new Blob(chunks.current, { type: mime });
@@ -131,6 +135,9 @@ export function Composer({
     };
     recorder.current = media;
     media.start();
+    clipTimer.current = window.setTimeout(() => {
+      if (recorder.current?.state === "recording") recorder.current.stop();
+    }, SPEECH_CLIP_MS);
     setListening(true);
   }
 
@@ -209,39 +216,41 @@ export function Composer({
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={onKeyDown}
         />
-        <button
-          className={voiceReplies ? "icon-button speak on" : "icon-button speak"}
-          type="button"
-          aria-label={voiceReplies ? "Spoken replies on" : "Spoken replies off"}
-          aria-pressed={voiceReplies}
-          title={voiceReplies ? "Scout reads replies aloud. Tap to turn off." : "Tap to have Scout read replies aloud."}
-          onClick={() => onVoiceReplies(!voiceReplies)}
-        >
-          {voiceReplies ? <Volume2 size={18} /> : <VolumeX size={18} />}
-        </button>
-        <button
-          className={listening ? "icon-button mic listening" : "icon-button mic"}
-          type="button"
-          aria-label={listening ? "Stop listening" : "Talk to Scout"}
-          title={listening ? "Stop listening" : "Talk to Scout"}
-          disabled={transcribing}
-          onClick={() => void toggleMic()}
-        >
-          <Mic size={18} />
-        </button>
-        {call ? (
+        <div className="composer-tools">
           <button
-            className={onCall ? "icon-button call live" : "icon-button call"}
+            className={voiceReplies ? "icon-button speak on" : "icon-button speak"}
             type="button"
-            aria-label={onCall ? "End voice call" : "Start a voice call"}
-            aria-pressed={onCall}
-            title={onCall ? "End the voice call" : "Talk with Scout in Hindi, English, or both"}
-            style={onCall ? { boxShadow: `0 0 0 ${2 + Math.round(call.level * 8)}px rgba(34, 197, 94, 0.35)` } : undefined}
-            onClick={call.onToggle}
+            aria-label={voiceReplies ? "Spoken replies on" : "Spoken replies off"}
+            aria-pressed={voiceReplies}
+            title={voiceReplies ? "Scout reads replies aloud. Tap to turn off." : "Tap to have Scout read replies aloud."}
+            onClick={() => onVoiceReplies(!voiceReplies)}
           >
-            {onCall ? <PhoneOff size={18} /> : <Phone size={18} />}
+            {voiceReplies ? <Volume2 size={18} /> : <VolumeX size={18} />}
           </button>
-        ) : null}
+          <button
+            className={listening ? "icon-button mic listening" : "icon-button mic"}
+            type="button"
+            aria-label={listening ? "Stop listening" : "Talk to Scout"}
+            title={listening ? "Stop listening" : "Talk to Scout"}
+            disabled={transcribing}
+            onClick={() => void toggleMic()}
+          >
+            <Mic size={18} />
+          </button>
+          {call ? (
+            <button
+              className={onCall ? "icon-button call live" : "icon-button call"}
+              type="button"
+              aria-label={onCall ? "End voice call" : "Start a voice call"}
+              aria-pressed={onCall}
+              title={onCall ? "End the voice call" : "Talk with Scout in Hindi, English, or both"}
+              style={onCall ? { boxShadow: `0 0 0 ${2 + Math.round(call.level * 8)}px rgba(34, 197, 94, 0.35)` } : undefined}
+              onClick={call.onToggle}
+            >
+              {onCall ? <PhoneOff size={18} /> : <Phone size={18} />}
+            </button>
+          ) : null}
+        </div>
         {busy ? (
           <button className="send" type="button" aria-label="Stop" title="Stop" onClick={onStop}>
             <Square size={14} fill="currentColor" />
