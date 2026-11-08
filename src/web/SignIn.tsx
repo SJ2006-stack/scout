@@ -186,7 +186,7 @@ function NameStep({ onAdvance }: { onAdvance: () => void }) {
 function AboutStep({ onAdvance }: { onAdvance: () => void }) {
   const [city, setCity] = useState("");
   const [pincode, setPincode] = useState("");
-  const [diet, setDiet] = useState("");
+  const [diets, setDiets] = useState<string[]>([]);
   const [interests, setInterests] = useState<string[]>([]);
   const [language, setLanguage] = useState("");
   const { busy, save, errorLine } = useSave(onAdvance);
@@ -200,7 +200,7 @@ function AboutStep({ onAdvance }: { onAdvance: () => void }) {
       step={4}
       title="Help Scout know you"
       lead="Every scout uses these, so you are asked less later. Pick what fits and skip the rest. You can change them by telling Scout."
-      onSubmit={(event) => { event.preventDefault(); void save("/api/onboarding/about", { city, pincode, diet, interests, language }, "Those could not be saved."); }}
+      onSubmit={(event) => { event.preventDefault(); void save("/api/onboarding/about", { city, pincode, diet: diets, interests, language }, "Those could not be saved."); }}
     >
       <fieldset className="about-group">
         <legend>Your city</legend>
@@ -226,7 +226,7 @@ function AboutStep({ onAdvance }: { onAdvance: () => void }) {
         <legend>Food</legend>
         <div className="about-chips">
           {DIETS.map((option) => (
-            <button key={option.id} type="button" className={diet === option.id ? "chip on" : "chip"} aria-pressed={diet === option.id} onClick={() => setDiet(diet === option.id ? "" : option.id)}>
+            <button key={option.id} type="button" className={diets.includes(option.id) ? "chip on" : "chip"} aria-pressed={diets.includes(option.id)} onClick={() => setDiets((current) => current.includes(option.id) ? current.filter((item) => item !== option.id) : [...current, option.id])}>
               {option.label}
             </button>
           ))}

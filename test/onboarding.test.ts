@@ -32,6 +32,9 @@ describe("onboarding", () => {
       entries: { home_area: "110016", city: "delhi", diet: "Vegetarian", event_kinds: "concert, comedy", language: "Hinglish" },
     });
     assert.deepEqual(aboutEntries({ city: "Pune", diet: "carnivore", language: "French" }), { ok: true, entries: { city: "Pune" } });
+    const diets = aboutEntries({ diet: ["non-veg", "jain", "carnivore"] });
+    assert.equal(diets.ok, true);
+    if (diets.ok) assert.equal(diets.entries.diet, "Non-veg, Jain");
     assert.deepEqual(aboutEntries({ pincode: "12345" }), { ok: false, error: "Enter a 6-digit pincode." });
     assert.deepEqual(aboutEntries({}), { ok: true, entries: {} });
   });
@@ -81,7 +84,7 @@ describe("onboarding", () => {
         assert.equal(session.name, "Asha");
         assert.equal(session.onboarded, false);
         assert.equal((await post(base, "/api/onboarding/about", { pincode: "1100" })).status, 400);
-        const about = await post(base, "/api/onboarding/about", { pincode: "560034", diet: "jain", interests: ["workshop"], language: "Hindi" });
+        const about = await post(base, "/api/onboarding/about", { pincode: "560034", diet: ["jain", "veg"], interests: ["workshop"], language: "Hindi" });
         assert.equal(about.status, 200);
         session = (await (await fetch(`${base}/api/auth/session`, { headers: { cookie } })).json()) as Record<string, unknown>;
         assert.equal(session.onboarded, true);
@@ -90,7 +93,7 @@ describe("onboarding", () => {
           profile.list(userId).map((entry) => [entry.key, entry.value, entry.source]),
           [
             ["city", "bengaluru", "explicit"],
-            ["diet", "Jain", "explicit"],
+            ["diet", "Vegetarian, Jain", "explicit"],
             ["event_kinds", "workshop", "explicit"],
             ["home_area", "560034", "explicit"],
             ["language", "Hindi", "explicit"],

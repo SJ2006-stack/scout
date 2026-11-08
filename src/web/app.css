@@ -34,6 +34,15 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* The chat shell stays locked. Sign-in and about are taller than a phone, so those pages scroll. */
+html:has(.auth-screen),
+body:has(.auth-screen) {
+  height: auto;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 button, textarea, input {
   font: inherit;
   color: inherit;
@@ -1137,8 +1146,8 @@ textarea:focus { outline: none; }
 
 .auth-screen {
   min-height: 100dvh;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
   padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
   background: var(--bg);
 }
@@ -1147,6 +1156,7 @@ textarea:focus { outline: none; }
 
 .auth-card {
   width: min(400px, 100%);
+  margin: auto;
   display: grid;
   gap: 12px;
 }
@@ -1561,7 +1571,7 @@ a:focus-visible {
   .profile { grid-template-columns: auto minmax(0, 1fr); }
   .pair-card img { width: 100%; max-width: 240px; height: auto; aspect-ratio: 1; }
 
-  .auth-screen { align-items: end; padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
+  .auth-screen { padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
   .auth-card h1 { font-size: 2rem; }
   .auth-submit { min-height: 52px; border-radius: 16px; }
 }

@@ -85,7 +85,7 @@ export const EVENT_INTERESTS: readonly { id: Exclude<EventKind, "other">; label:
 
 export const REPLY_LANGUAGES = ["English", "Hinglish", "Hindi"] as const;
 
-export type AboutAnswers = { city?: string; pincode?: string; diet?: string; interests?: string[]; language?: string };
+export type AboutAnswers = { city?: string; pincode?: string; diet?: string | readonly string[]; interests?: string[]; language?: string };
 
 /** Profile entries Scout keeps from the about step. Unknown or empty answers are dropped. */
 export type AboutEntries = Partial<Record<"city" | "home_area" | "diet" | "event_kinds" | "language", string>>;
@@ -102,8 +102,9 @@ export function aboutEntries(answers: AboutAnswers): { ok: true; entries: AboutE
   const known = cityText.length > 0 ? cityFromText(cityText) : cityFromPincode(pincode);
   if (known) entries.city = known.id;
   else if (cityText.length > 0) entries.city = cityText;
-  const diet = DIETS.find((option) => option.id === answers.diet);
-  if (diet) entries.diet = diet.label;
+  const chosen = Array.isArray(answers.diet) ? answers.diet : answers.diet ? [answers.diet] : [];
+  const diets = DIETS.filter((option) => chosen.includes(option.id));
+  if (diets.length > 0) entries.diet = diets.map((option) => option.label).join(", ");
   const interests = EVENT_INTERESTS.filter((option) => answers.interests?.includes(option.id));
   if (interests.length > 0) entries.event_kinds = interests.map((option) => option.id).join(", ");
   const language = REPLY_LANGUAGES.find((option) => option === answers.language);

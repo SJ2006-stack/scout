@@ -550,6 +550,14 @@ async function routeOnboarding(request: IncomingMessage, response: ServerRespons
   sendJson(response, 200, { name });
 }
 
+/** Food choices from the about step. A single string still works. */
+function dietAnswers(record: Record<string, unknown>): string[] | undefined {
+  const raw = record.diet;
+  const ids = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw.filter((item): item is string => typeof item === "string") : [];
+  const chosen = ids.map((item) => item.trim()).filter((item) => item.length > 0);
+  return chosen.length > 0 ? chosen : undefined;
+}
+
 /** Saves the about step as explicit preferences, so every scout reads them from the first chat. An empty body skips. */
 function saveAbout(response: ServerResponse, account: Account, record: Record<string, unknown>, deps: ApiDeps, directory: UserDirectory): void {
   if (account.name == null) {
@@ -560,7 +568,7 @@ function saveAbout(response: ServerResponse, account: Account, record: Record<st
   const answers: AboutAnswers = {
     city: text("city"),
     pincode: text("pincode"),
-    diet: text("diet"),
+    diet: dietAnswers(record),
     language: text("language"),
     interests: Array.isArray(record.interests) ? record.interests.filter((item): item is string => typeof item === "string") : undefined,
   };
