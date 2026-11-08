@@ -134,7 +134,7 @@ function plannerPrompt(today: string, weekday: string, timezone: string): string
     "You split one message to Main Scout into errands for its specialists. Use the plan_errands tool once.",
     `Today is ${weekday} ${today} in ${timezone}.`,
     "groceries: things to buy, or a price to check, on Blinkit, Zepto, or Instamart. 'The price of tea in the quick commerce apps' is groceries, with the item tea. One item per thing; quantity is the count they said, else 1. Keep a brand or size only if they said it.",
-    "For an item too vague to pick well (jam, bread, chips, juice), set clarify to a short question with 2 to 4 common choices, such as 'Which jam?' with 'Mixed fruit', 'Strawberry', 'Any'. Otherwise clarify is null.",
+    "For an item too vague to pick well (tea, bread, butter, salt, jam, milk, chips, juice), set clarify to a short question with 2 to 4 common choices, such as 'Which bread?' with 'White bread', 'Brown bread', 'Any'. A brand or a size means clarify is null.",
     "events: things to do, events, movies, or shows. city is one of bengaluru, mumbai, delhi, hyderabad, or null if they did not name one. when is today, tomorrow, weekend, or week, or null.",
     "whatsapp: a message to send someone on WhatsApp. contact is the name or number exactly as they wrote it. message is the text to send. If the message also contains text read from an attached photo (lines after their request, such as a menu), use that text as message. If what they want to send is in a photo or document they have not attached yet (the mess menu, a bill, a screenshot), message is null and messageFromPhoto is true. Keep a message under 450 characters; when a menu covers several days or meals and they asked for the current one, keep only today's part.",
     "bus: a bus trip. from and to are city names; from is null unless they said it. date is YYYY-MM-DD worked out from today. timeOfDay is any, morning, afternoon, evening, or night, or null if they did not say.",
@@ -198,7 +198,7 @@ function groceryFromQuestion(summary: string, request: string): GroceryItem | nu
   const raw = PRICE_OF.exec(summary)?.[1] ?? ITEM_PRICES.exec(summary)?.[1] ?? (asksPrice ? null : LOOK_FOR.exec(summary)?.[1]) ?? null;
   const query = raw?.replace(/\s+/g, " ").trim() ?? "";
   if (query.length < 2 || query.length > 40 || NOT_GROCERY.test(query) || !isLiveShopQuery(query)) return null;
-  return { query, quantity: 1, clarify: null };
+  return { query, quantity: 1, clarify: vagueGrocery(query) };
 }
 
 /**
@@ -322,7 +322,26 @@ function readItem(raw: unknown): GroceryItem | null {
   const clarify = row.clarify && typeof row.clarify === "object" ? (row.clarify as { prompt?: unknown; options?: unknown }) : null;
   const prompt = clarify ? text(clarify.prompt, 120) : null;
   const options = clarify && Array.isArray(clarify.options) ? clarify.options.map((option) => text(option, 40)).filter((option): option is string => option != null).slice(0, 4) : [];
-  return { query, quantity, clarify: prompt && options.length >= 2 ? { prompt, options } : null };
+  return { query, quantity, clarify: prompt && options.length >= 2 ? { prompt, options } : vagueGrocery(query) };
+}
+
+/** A bare staple has too many matches. Scout asks before the shops are opened. A brand or size skips this. */
+const VAGUE_GROCERIES: Readonly<Record<string, { prompt: string; options: readonly string[] }>> = {
+  tea: { prompt: "Which tea?", options: ["Tata Tea", "Red Label", "Green tea", "Any"] },
+  bread: { prompt: "Which bread?", options: ["White bread", "Brown bread", "Whole wheat", "Any"] },
+  butter: { prompt: "Which butter?", options: ["Amul butter", "Britannia", "White butter", "Any"] },
+  salt: { prompt: "Which salt?", options: ["Tata Salt", "Rock salt", "Any"] },
+  jam: { prompt: "Which jam?", options: ["Mixed fruit", "Strawberry", "Any"] },
+  milk: { prompt: "Which milk?", options: ["Toned milk", "Full cream", "Any"] },
+  chips: { prompt: "Which chips?", options: ["Lays", "Uncle Chipps", "Any"] },
+  juice: { prompt: "Which juice?", options: ["Real", "Tropicana", "Any"] },
+};
+
+function vagueGrocery(query: string): { prompt: string; options: string[] } | null {
+  const words = query.toLowerCase().replace(/[^a-z\s]/g, " ").trim().split(/\s+/).filter((word) => word.length > 0);
+  if (words.length !== 1) return null;
+  const hit = VAGUE_GROCERIES[words[0] ?? ""];
+  return hit ? { prompt: hit.prompt, options: [...hit.options] } : null;
 }
 
 /** The question bank: what each errand needs before it can run, asked all at once. */

@@ -6,7 +6,7 @@ import type { CommerceEvent } from "../shared/commerce.ts";
 import { withEmoji } from "../shared/emoji.ts";
 import type { ChatTurn } from "./chatRun.ts";
 import { askedUser, askPicks, askReply, blockText, contentBlocks, transcript } from "./toolLoop.ts";
-import { isChatter, isLiveShopQuery, payResultLine, shopCompareView, shopSearchPlaces } from "./browser/shelf.ts";
+import { isChatter, isLiveShopQuery, payResultLine, shopCompareView } from "./browser/shelf.ts";
 import { postSarvam } from "./sarvamChat.ts";
 import { scoutPurpose, talkDuty } from "./scoutPrompt.ts";
 import { assistantPrompt, assistantTools, isAssistantTool, runAssistantTool, type AssistantToolName } from "./assistantTools.ts";
@@ -322,7 +322,6 @@ function basketItems(input: unknown): BasketItem[] {
 
 /** Main Scout's grocery errand: the same compare as Shop Scout, kept as the basket "buy it" fills. */
 export async function shopErrand(turn: ChatTurn, items: readonly BasketItem[], emit: (event: ChatEvent) => void): Promise<string> {
-  for (const item of items) emit({ type: "places", places: shopSearchPlaces(item.query) });
   const only = items.length === 1 ? items[0] : null;
   if (only) return shopSentence(await shopComparison({ ...turn, agent: "shop" }, only.query, emit));
   const ran = await basketComparison({ ...turn, agent: "shop" }, { items }, emit, 1);

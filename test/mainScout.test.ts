@@ -40,12 +40,16 @@ describe("Main Scout errands", () => {
     assert.deepEqual(plan.errands.map((errand) => errand.kind), ["groceries", "events", "whatsapp", "bus"]);
     const questions = questionsFor(plan, { city: "delhi" });
     assert.deepEqual(questions.map((question) => [question.id, question.kind]), [
+      ["0.item.0", "choice"],
+      ["0.item.1", "choice"],
       ["0.item.2", "choice"],
       ["2.message", "photo"],
       ["3.from", "choice"],
       ["3.time", "choice"],
     ]);
-    assert.deepEqual(questions[2]?.options, ["Delhi"]);
+    assert.equal(questions[0]?.prompt, "Which bread?");
+    assert.equal(questions[1]?.prompt, "Which butter?");
+    assert.deepEqual(questions[4]?.options, ["Delhi"]);
   });
 
   it("fills the errands from the answers", () => {
@@ -101,22 +105,33 @@ describe("Main Scout errands", () => {
     });
     const grounded = planned ? groundPlan(planned, request) : null;
     assert.equal(grounded?.errands[1]?.kind, "groceries");
-    assert.deepEqual(grounded?.errands[1]?.kind === "groceries" ? grounded.errands[1].items : [], [{ query: "tea", quantity: 1, clarify: null }]);
+    assert.deepEqual(grounded?.errands[1]?.kind === "groceries" ? grounded.errands[1].items : [], [{ query: "tea", quantity: 1, clarify: { prompt: "Which tea?", options: ["Tata Tea", "Red Label", "Green tea", "Any"] } }]);
 
     const looked: string[] = [];
     const planner = (async () => Response.json({ content: [{ type: "tool_use", id: "t", name: "plan_errands", input: planned }] })) as unknown as typeof fetch;
     const events: ChatEvent[] = [];
-    await runMainScout(turn({
+    const base = turn({
       text: request,
       fetchImpl: planner,
       compareShop: async (query) => {
         looked.push(query);
-        return { offers: [], cheapest: null, pay: null, summary: "Blinkit is cheapest: tea at ₹99. Zepto from ₹110. Instamart from ₹120.", signIn: null };
+        return { offers: [], cheapest: null, pay: null, summary: "Blinkit is cheapest: Tata Tea at ₹99. Zepto from ₹110. Instamart from ₹120.", signIn: null };
       },
-    }), (event) => events.push(event), async () => ({ message: "15 in Delhi for today.", count: 15, drives: async () => undefined }));
-    assert.deepEqual(looked, ["tea"]);
-    const replies = events.filter((event) => event.type === "question").map((event) => event.type === "question" ? event.message : "").join("\n");
-    assert.match(replies, /price of tea[\s\S]*Blinkit is cheapest: tea at ₹99/);
+    });
+    await runMainScout(base, (event) => events.push(event), async () => ({ message: "15 in Delhi for today.", count: 15, drives: async () => undefined }));
+    assert.deepEqual(looked, []);
+    const form = events.find((event) => event.type === "form");
+    assert.equal(form?.type, "form");
+    if (form?.type !== "form") return;
+    const saved = pendingForms.take(base.sessionId, form.form.id);
+    assert.equal(saved?.kind, "errands");
+    if (saved?.kind !== "errands") return;
+    const answered: ChatEvent[] = [];
+    await runAnsweredErrands(saved.plan, { "1.item.0": "Tata Tea" }, base, (event) => answered.push(event), async () => ({ message: "15 in Delhi for today.", count: 15, drives: async () => undefined }));
+    assert.deepEqual(looked, ["Tata Tea"]);
+    const replies = answered.filter((event) => event.type === "question").map((event) => event.type === "question" ? event.message : "").join("\n");
+    assert.match(replies, /Blinkit is cheapest: Tata Tea at ₹99/);
+    assert.equal(answered.some((event) => event.type === "places"), false);
   });
 
   it("starts the shop lookup and the event search before either one finishes", async () => {
@@ -130,7 +145,7 @@ describe("Main Scout errands", () => {
     const planned = readPlan({
       errands: [
         { ...blank, kind: "events", summary: "What's happening in Delhi", city: "delhi", when: "today" },
-        { ...blank, kind: "groceries", summary: "Price of tea", items: [{ query: "tea", quantity: 1, clarify: null }] },
+        { ...blank, kind: "groceries", summary: "Price of Amul butter", items: [{ query: "amul butter 500g", quantity: 1, clarify: null }] },
       ],
     });
     const planner = (async () => Response.json({ content: [{ type: "tool_use", id: "t", name: "plan_errands", input: planned }] })) as unknown as typeof fetch;
@@ -153,12 +168,12 @@ describe("Main Scout errands", () => {
     await running;
   });
 
-  it("saves the WhatsApp chat and the three shop searches so they can be opened again", async () => {
+  it("saves the WhatsApp chat and does not replace a shop compare with search links", async () => {
     const request = "text 919876543210 that I am on my way, and the price of tea on blinkit";
     const planned = readPlan({
       errands: [
         { ...blank, kind: "whatsapp", summary: "Text Priya", contact: "919876543210", message: "On my way" },
-        { ...blank, kind: "groceries", summary: "Price of tea", items: [{ query: "tea", quantity: 1, clarify: null }] },
+        { ...blank, kind: "groceries", summary: "Price of Amul butter", items: [{ query: "amul butter 500g", quantity: 1, clarify: null }] },
       ],
     });
     const planner = (async () => Response.json({ content: [{ type: "tool_use", id: "t", name: "plan_errands", input: planned }] })) as unknown as typeof fetch;
@@ -170,12 +185,7 @@ describe("Main Scout errands", () => {
       compareShop: async () => ({ offers: [], cheapest: null, pay: null, summary: "Blinkit is cheapest: tea at ₹99.", signIn: null }),
     }), (event) => events.push(event), async () => ({ message: "", count: 0, drives: async () => undefined }));
     const places = events.filter((event) => event.type === "places").flatMap((event) => event.type === "places" ? event.places : []);
-    assert.deepEqual(places.map((place) => place.url).sort(), [
-      "https://blinkit.com/s/?q=tea",
-      "https://wa.me/919876543210",
-      "https://www.swiggy.com/instamart/search?query=tea",
-      "https://www.zepto.com/search?query=tea",
-    ]);
+    assert.deepEqual(places.map((place) => place.url), ["https://wa.me/919876543210"]);
     const device = events.find((event) => event.type === "device");
     assert.equal(device?.type === "device" && device.action.name, "send_whatsapp");
   });
