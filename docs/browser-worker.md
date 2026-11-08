@@ -67,7 +67,7 @@ Do not point `BROWSER_STATE_DIR` at a directory you commit. Do not log the JSON 
 
 ## Phone
 
-The Android app in `scout.apk` opens the same Scout page as this computer. With the phone plugged in, `adb reverse tcp:8787 tcp:8787` makes `http://127.0.0.1:8787` on the phone reach Scout on this Mac. Chats saved in the browser are also stored for that local server, so the phone can show them. If the computer cannot be reached, the app opens `https://sj-scout.azurewebsites.net`.
+The Android app in `android/` opens `https://scout.shrianshjaiswal.me`, the Azure site. To point it at this Mac instead, follow the WebView shell note in `android/README.md`.
 
 ## Deployment
 

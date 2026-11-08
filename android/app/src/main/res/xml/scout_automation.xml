@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- isAccessibilityTool: Swiggy hides its screens from services without it (one empty node). -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeTouchInteractionStart"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canPerformGestures="true"
+    android:isAccessibilityTool="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/automation_service_description"
+    android:notificationTimeout="50"
+    android:packageNames="com.grofers.customerapp,com.zeptoconsumerapp,in.swiggy.android,com.bt.bms,com.application.zomato.district,com.luma.mobile" />

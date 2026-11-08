@@ -1,0 +1,18 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+.DS_Store
+*.apk
+*.aab
+*.ap_
+*.dex
+firebase-debug.log
+.firebase/
+
+# Firebase client config. Download it from the Firebase console (project scout-b4da3).
+app/google-services.json

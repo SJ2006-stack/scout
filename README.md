@@ -4,7 +4,7 @@ A voice-first personal assistant for India. Ask in Hindi, English, or Hinglish, 
 
 **Live:** [scout.shrianshjaiswal.me](https://scout.shrianshjaiswal.me)
 
-This repository is the server and the web app. The Android companion app (microphone, phone actions, UPI handoff, push) lives in a separate project, `scout.apk`.
+This repository is the server and the web app. The Android companion app (microphone, phone actions, UPI handoff, push) is the Gradle project in `android/`, with its own README. It is not part of the Docker image.
 
 ## What it does
 

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Scout</string>
+    <string name="azure_origin">https://scout.shrianshjaiswal.me</string>
+    <string name="sign_in_subtitle">Sign in with Google. Then add your phone number and the name Scout should use.</string>
+    <string name="sign_in_google">Continue with Google</string>
+    <string name="sign_out">Sign out</string>
+    <string name="sign_in_failed">Google sign-in failed. Try again.</string>
+    <string name="sign_in_cancelled">Sign-in cancelled.</string>
+    <string name="profile_save_failed">Signed in, but your profile could not be saved.</string>
+    <string name="mic_title">Allow the microphone</string>
+    <string name="mic_body">Scout needs the microphone to hear you.</string>
+    <string name="mic_allow">Allow</string>
+    <string name="mic_later">Not now</string>
+    <string name="settings_open">Settings</string>
+    <string name="permissions_title">Permissions</string>
+    <string name="permissions_done">Done</string>
+    <string name="perm_microphone">Microphone</string>
+    <string name="perm_location">Location</string>
+    <string name="perm_camera">Camera</string>
+    <string name="perm_notifications">Notifications</string>
+    <string name="perm_automation">Automation (Accessibility)</string>
+    <string name="perm_open_settings">Open settings</string>
+    <string name="automation_notice">Scout is adding items… tap to stop</string>
+    <string name="automation_service_description">Scout adds items to a cart you approved. It does not place orders or pay.</string>
+    <string name="perm_enable">Enable</string>
+    <string name="perm_change">Change</string>
+    <string name="perm_allowed">Allowed</string>
+    <string name="perm_blocked">Not allowed</string>
+</resources>
