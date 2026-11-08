@@ -24,9 +24,8 @@ import { ChatMemoryStore } from "./chatMemory.ts";
 import { DeskStore } from "./desk.ts";
 import { createCommerceHub } from "./commerce/hub.ts";
 import { ListingCache, listingCacheTtlMs } from "./listingCache.ts";
-import { agentMailFromEnv } from "./auth/agentMail.ts";
 import { distributionFromEnv } from "./invites/appRelease.ts";
-import { EmailAuth } from "./auth/emailAuth.ts";
+import { Accounts } from "./auth/accounts.ts";
 import { scoutDbPath, UserDirectory } from "./db/userDirectory.ts";
 import { createArcGisGeocoder, createGoogleGeocoder } from "./geocode.ts";
 import { fcmFromEnv, FcmSender } from "./notify/fcm.ts";
@@ -54,7 +53,7 @@ export function loadLocalEnv(): void {
 export function createDeps(): ApiDeps {
   const timeoutMs = Number(process.env.GEOCODER_TIMEOUT_MS ?? 8_000);
   const directory = new UserDirectory(scoutDbPath(root));
-  const auth = new EmailAuth(directory, agentMailFromEnv(process.env), Date.now);
+  const auth = new Accounts(directory, Date.now);
   const dbPath = scoutDbPath(root);
   const listingCache = new ListingCache(listingCacheTtlMs(process.env.LISTING_CACHE_TTL_MS), Date.now);
   const connectorTimeoutMs = Number(process.env.CONNECTOR_TIMEOUT_MS ?? 8_000);

@@ -32,11 +32,12 @@ sealed class BridgeCall {
     data object ScreenTake : BridgeCall()
     data class ScreenFile(val id: String) : BridgeCall()
     data class ScreenDone(val id: String) : BridgeCall()
+    data object SignOut : BridgeCall()
 }
 
 fun isScreenCall(call: BridgeCall): Boolean = when (call) {
     BridgeCall.ScreenState, BridgeCall.ScreenStart, BridgeCall.ScreenStop, BridgeCall.ScreenFrame, BridgeCall.ScreenTake, is BridgeCall.ScreenFile, is BridgeCall.ScreenDone -> true
-    BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone, BridgeCall.Location, BridgeCall.Microphone, BridgeCall.Camera, is BridgeCall.Qr, BridgeCall.Notification, is BridgeCall.Share, BridgeCall.Biometric, BridgeCall.Permissions, is BridgeCall.Checkout -> false
+    BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone, BridgeCall.Location, BridgeCall.Microphone, BridgeCall.Camera, is BridgeCall.Qr, BridgeCall.Notification, is BridgeCall.Share, BridgeCall.Biometric, BridgeCall.Permissions, is BridgeCall.Checkout, BridgeCall.SignOut -> false
 }
 
 sealed class BridgeDecision {
@@ -78,6 +79,7 @@ fun allowBridge(host: String?, json: String, now: Long): BridgeDecision {
         "screen_take" -> BridgeDecision.Allow(BridgeCall.ScreenTake)
         "screen_file" -> screenFileCall(json)
         "screen_done" -> screenDoneCall(json)
+        "sign_out" -> BridgeDecision.Allow(BridgeCall.SignOut)
         else -> BridgeDecision.Deny
     }
 }

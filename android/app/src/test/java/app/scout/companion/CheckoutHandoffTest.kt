@@ -16,6 +16,13 @@ class CheckoutHandoffTest {
     }
 
     @Test
+    fun signOutIsOnlyForScoutPages() {
+        val decision = allowBridge("scout.shrianshjaiswal.me", """{"op":"sign_out"}""", 0L)
+        assertEquals(BridgeCall.SignOut, (decision as BridgeDecision.Allow).call)
+        assertTrue(allowBridge("evil.example", """{"op":"sign_out"}""", 0L) is BridgeDecision.Deny)
+    }
+
+    @Test
     fun rejectsCheckoutFromOutsideAndUnknownApps() {
         assertTrue(allowBridge("evil.example", """{"op":"open_checkout","app":"zepto"}""", 0L) is BridgeDecision.Deny)
         assertTrue(allowBridge("127.0.0.1", """{"op":"open_checkout","app":"chrome"}""", 0L) is BridgeDecision.Deny)

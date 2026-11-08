@@ -1040,6 +1040,7 @@ class MainActivity : AppCompatActivity() {
             BridgeCall.Biometric -> confirmPresence()
             BridgeCall.Permissions -> openPermissions()
             is BridgeCall.Checkout -> beginCheckout(this, call.app)
+            BridgeCall.SignOut -> signOut()
         }
     }
 

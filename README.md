@@ -15,8 +15,8 @@ This repository is the server and the web app. The Android companion app (microp
 - **Memory:** remembers your name, city, diet, budget, and other preferences, and shares them with every agent. Refuses to store OTPs, PINs, passwords, and card numbers.
 - **Scout Watch:** recurring event checks that send only new matches to your inbox and phone.
 - **Phone actions:** alarms, timers, reminders, flashlight, volume, maps, sharing, and opening apps, carried out by the Android app.
+- **Screen Intelligence:** in the Android app, Understand my screen asks for MediaProjection, captures one JPEG, and uploads it only after you send the preview. `POST /api/screen/understand` returns structured facts. `/api/ocr` is unchanged. The reading is chat context, not a tool to run.
 - **Scout Drop (on Azure since Nov 8, 2026):** share text, a link, or up to 4 images from any Android app to Scout. Once the signed-in chat is showing, a "Shared to Scout" card sits above the message field (`src/web/ScoutDropCard.tsx`, `src/web/scoutDrop.ts`, checks in `src/shared/scoutDrop.ts`). The text can be edited, links are shown but not opened, and images can be removed. Send reads each image through the existing `/api/ocr` (`readAttachment`), adds that text after the note, and sends it as a normal chat message. Discard deletes it. Nothing is uploaded before Send, and the share is held in memory only, never in local storage. The Android side is described in `android/README.md`.
-- **Screen Intelligence (local only, not on Azure):** in the Android app, Understand my screen asks Android for MediaProjection, holds one share session under a stoppable notice, and captures a single JPEG when the person taps Capture. A preview sits above the message field. Send for analysis posts to `POST /api/screen/understand` (separate from `/api/ocr`) and then the chat with that structured reading as context, not as a tool to run. Discard deletes the frame. Details are in `android/README.md`.
 
 ## Agents
 
@@ -107,7 +107,8 @@ A central-browser layout (one Chromium for all six sites, with admission limits 
 
 ### Accounts and storage
 
-- Sign-in on the web is an email code from an AgentMail inbox. The phone signs in with Google: `POST /api/auth/google` checks the Firebase ID token (`FIREBASE_PROJECT_ID`, default `scout-b4da3`) and opens that Gmail's account. Phone number and preferred name still come from `/api/onboarding/phone` and `/api/onboarding/name`.
+- Sign-in is Google only; the email-code routes are gone. The page opens a Google popup through the Firebase web app "Scout Web" (`VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_APP_ID`). The Android app uses its own Google sign-in, and the page inside the app sends "Continue with Google" and Sign out back to it through the `sign_out` bridge op. Both post the Firebase ID token to `POST /api/auth/google`, which checks it (`FIREBASE_PROJECT_ID`, default `scout-b4da3`) and opens that Gmail's account. Google only lets the popup run on the authorized domains in Firebase Auth. Right now that is `localhost` and the Firebase domains, so use `http://localhost:8787` locally, not `127.0.0.1`.
+- Onboarding after Google: `/api/onboarding/phone`, then `/api/onboarding/name`, then `/api/onboarding/about`. The about step takes city, home pincode, food (veg, eggetarian, non-veg, vegan, Jain), what they go out for (music, comedy, movies, theatre, workshops), and reply language (English, Hinglish, Hindi). Every answer is optional, and an empty body skips. Answers are saved as explicit preferences (`city`, `home_area`, `diet`, `event_kinds`, `language`), which every scout reads in its prompt. A pincode with no city fills in the city when it is a known one. When a chat arrives with no location, the saved home pincode is used instead. The session reports `onboarded`, set once the step is saved or skipped. Accounts made before this see the step once.
 - Users, chat memory, the profile, Scout Watch, the inbox, push devices, and browser sessions live in SQLite (`SCOUT_DB_PATH`, default `.data/scout.sqlite`).
 - Saved addresses, rate limits, the simulated commerce hub, payment approvals, and pair tickets are in memory and reset on restart.
 
@@ -139,7 +140,7 @@ Every setting is listed with comments in [`.env.example`](.env.example). The mai
 
 | Variable | Meaning |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Reads text from an attached image with Claude Haiku, reads a screenshot into structured facts (`/api/screen/understand`), and is Main Scout's first-choice errand planner. Empty leaves attachments and screenshots unread and plans with Sarvam |
+| `ANTHROPIC_API_KEY` | Reads text from an attached image with Claude Haiku, and is Main Scout's first-choice errand planner. Empty leaves attachments unread and plans with Sarvam |
 | `GNANI_API_KEY` | Mic transcription with Gnani Prisma `prisma-v3.0`. Empty and the mic stays quiet |
 | `SARVAM_API_KEY` | Conversation chat (`sarvam-105b`) and spoken replies (`bulbul:v3`). Empty chat uses the keyword parser and spoken replies stay quiet |
 | `BOLNA_API_KEY`, `BOLNA_LLM_KEY`, `BOLNA_AGENT_ID` | Live voice calls. All three are needed |
@@ -148,8 +149,8 @@ Every setting is listed with comments in [`.env.example`](.env.example). The mai
 | `SCOUT_ROLE` | `browser` runs the Chromium-only process |
 | `BROWSER_WORKER_ENABLED` | `1` starts the browser worker |
 | `BROWSER_PROFILE_KEY` | 64 hex characters for encrypted sign-in |
-| `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` | Email sign-in codes |
-| `FIREBASE_PROJECT_ID` | Firebase project for the phone's Google sign-in. Defaults to `scout-b4da3` |
+| `FIREBASE_PROJECT_ID` | Firebase project whose Google sign-in tokens are accepted. Defaults to `scout-b4da3` |
+| `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_APP_ID` | Firebase web app config for the page's Google popup. Read at `npm run build`, so set them before building the image. Public client values, kept out of git |
 | `FIREBASE_DISTRIBUTION_*` | Android install invite from the landing page |
 | `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` | Push for Scout Watch |
 | `RELAY_CAP_MB` | Bytes one phone relay connection may carry. Default 300 |
@@ -171,7 +172,7 @@ Never commit `.env`, keys, or publish profiles.
 | `POST /api/bolna/v1/chat/completions`, `GET /api/bolna/v1/models` | Scout as Bolna's LLM (bearer `BOLNA_LLM_KEY`) |
 | `/api/profile`, `/api/watches`, `/api/inbox`, `/api/devices`, `/api/actions/result` | Memory, Scout Watch, notifications, push devices, phone action results |
 | `POST /api/ocr` | Read text from an attached image with Claude Haiku |
-| `POST /api/screen/understand` | Read a screenshot into structured facts (products, menus, events, forms, travel, app screens). Does not change `/api/ocr`. Local only; not on Azure |
+| `POST /api/screen/understand` | Read one screenshot into structured facts. Does not change `/api/ocr` |
 | `/api/auth/*`, `/api/onboarding/*` | Email code sign-in, Google sign-in from the phone (`POST /api/auth/google`), name and phone |
 | `/api/addresses`, `/api/location/reverse-geocode` | Saved addresses and address lookup |
 | `/api/browser/*` | Browser sessions, handoff, codes, profile, budget |
@@ -193,7 +194,8 @@ az webapp config container set -g ledger-rg -n <app> \
 ```
 
 - The image copies the prebuilt `dist/`, so run `npm run build` first. Build from a clean checkout so uncommitted work stays out.
-- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `drop1-20261108`, built on Nov 8, 2026 from a clean checkout of `2c650ed` (Scout Drop on top of `607030f`).
+- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `drop1-20261108`, built on Nov 8, 2026 from a clean checkout of `2c650ed` (Scout Drop on top of `607030f`). That build still has email-code sign-in and no about step.
+- Before deploying the Google-only page, add `scout.shrianshjaiswal.me` and each `sj-*.azurewebsites.net` host to Firebase Auth's authorized domains (Firebase console, Authentication, Settings), or the popup refuses with "not allowed on this address". Build with `VITE_FIREBASE_*` set in `.env`. `AGENTMAIL_*` app settings are no longer read.
 - The relay needs WebSockets on: `az webapp config set -g ledger-rg -n <app> --web-sockets-enabled true` (on for all six apps).
 - Do not zip deploy. It switches the apps to the Node stack, which has no Chromium.
 - `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the image is manual.
@@ -232,4 +234,3 @@ scout-landing/     Public landing page served by the server
 - State kept in memory is lost on restart, so the server cannot run as more than one instance.
 - Browser operations run one at a time per process.
 - The central browser layout is a design with estimates, not deployed or measured.
-- Screen Intelligence is local only. Azure still has no `/api/screen/understand` and no Understand my screen control. The Anthropic account is out of credit, so analysis will 502 until that is topped up. Not tried on the phone.

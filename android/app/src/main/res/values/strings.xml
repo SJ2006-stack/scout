@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Scout</string>
     <string name="azure_origin">https://scout.shrianshjaiswal.me</string>
-    <string name="sign_in_subtitle">Sign in with Google. Then add your phone number and the name Scout should use.</string>
+    <string name="sign_in_subtitle">Sign in with Google. Then add your phone number, your name, and a few things Scout should know about you.</string>
     <string name="sign_in_google">Continue with Google</string>
     <string name="sign_out">Sign out</string>
     <string name="sign_in_failed">Google sign-in failed. Try again.</string>

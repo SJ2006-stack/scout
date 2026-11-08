@@ -25,6 +25,8 @@ export type StoredUser = {
   lastSeenAt: number;
 };
 
+export type Account = { id: string; email: string; phone: string | null; name: string | null; onboarded: boolean };
+
 export type StoredBrowser = BrowserLink & {
   profileState: ProfileState;
   profileExpiresAt: number | null;
@@ -62,13 +64,7 @@ export class UserDirectory {
         updated_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS login_codes (
-        email TEXT PRIMARY KEY,
-        salt TEXT NOT NULL,
-        code_hash TEXT NOT NULL,
-        expires_at INTEGER NOT NULL,
-        attempts INTEGER NOT NULL
-      );
+      DROP TABLE IF EXISTS login_codes;
     `);
     try {
       this.db.exec("ALTER TABLE users ADD COLUMN email TEXT");
@@ -80,6 +76,7 @@ export class UserDirectory {
     addColumn(this.db, "users", "phone", "TEXT");
     addColumn(this.db, "users", "preferred_name", "TEXT");
     addColumn(this.db, "users", "phone_verified_at", "INTEGER");
+    addColumn(this.db, "users", "onboarded_at", "INTEGER");
   }
 
   touch(userId: string, now: number): void {
@@ -155,10 +152,10 @@ export class UserDirectory {
     }));
   }
 
-  account(userId: string): { id: string; email: string; phone: string | null; name: string | null } | null {
+  account(userId: string): Account | null {
     if (!USER_ID.test(userId)) return null;
-    const row = this.db.prepare("SELECT id, email, phone, preferred_name FROM users WHERE id = ?").get(userId) as
-      | { id: string; email: string | null; phone: string | null; preferred_name: string | null }
+    const row = this.db.prepare("SELECT id, email, phone, preferred_name, onboarded_at FROM users WHERE id = ?").get(userId) as
+      | { id: string; email: string | null; phone: string | null; preferred_name: string | null; onboarded_at: number | null }
       | undefined;
     if (!row || row.email == null || row.email.length === 0) return null;
     return {
@@ -166,7 +163,16 @@ export class UserDirectory {
       email: row.email,
       phone: row.phone != null && row.phone.length > 0 ? row.phone : null,
       name: row.preferred_name != null && row.preferred_name.length > 0 ? row.preferred_name : null,
+      onboarded: row.onboarded_at != null,
     };
+  }
+
+  /** The about step was saved or skipped. Needs the phone and name first. */
+  finishOnboarding(userId: string, now: number): boolean {
+    if (!USER_ID.test(userId)) return false;
+    return this.db.prepare(
+      "UPDATE users SET onboarded_at = ?, last_seen_at = ? WHERE id = ? AND phone IS NOT NULL AND preferred_name IS NOT NULL",
+    ).run(now, now, userId).changes > 0;
   }
 
   setPhone(userId: string, phone: string, now: number): boolean {
@@ -212,29 +218,6 @@ export class UserDirectory {
     const id = randomUserId();
     this.db.prepare("INSERT INTO users (id, created_at, last_seen_at, email) VALUES (?, ?, ?, ?)").run(id, now, now, email);
     return { id, email };
-  }
-
-  saveCode(email: string, salt: string, codeHash: string, expiresAt: number): void {
-    this.db.prepare(
-      `INSERT INTO login_codes (email, salt, code_hash, expires_at, attempts) VALUES (?, ?, ?, ?, 0)
-       ON CONFLICT(email) DO UPDATE SET salt = excluded.salt, code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0`,
-    ).run(email, salt, codeHash, expiresAt);
-  }
-
-  codeFor(email: string): { salt: string; codeHash: string; expiresAt: number; attempts: number } | null {
-    const row = this.db.prepare("SELECT salt, code_hash, expires_at, attempts FROM login_codes WHERE email = ?").get(email) as
-      | { salt: string; code_hash: string; expires_at: number; attempts: number }
-      | undefined;
-    if (!row) return null;
-    return { salt: row.salt, codeHash: row.code_hash, expiresAt: row.expires_at, attempts: row.attempts };
-  }
-
-  bumpCode(email: string): void {
-    this.db.prepare("UPDATE login_codes SET attempts = attempts + 1 WHERE email = ?").run(email);
-  }
-
-  clearCode(email: string): void {
-    this.db.prepare("DELETE FROM login_codes WHERE email = ?").run(email);
   }
 
   private upsertBrowser(session: BrowserLink): void {

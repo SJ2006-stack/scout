@@ -1,4 +1,7 @@
-export type OnboardingStep = "email" | "phone" | "name" | "ready";
+import { CITIES, cityFromPincode, cityFromText } from "./cities.ts";
+import type { EventKind } from "./event.ts";
+
+export type OnboardingStep = "google" | "phone" | "name" | "about" | "ready";
 
 /** A site Scout signs in to for the user. id is the browser skill, domain the vault key. */
 export type Connector = {
@@ -54,9 +57,56 @@ export function preferredName(raw: string): string | null {
   return name;
 }
 
-export function onboardingStep(profile: { signedIn: boolean; phone: string | null; name: string | null }): OnboardingStep {
-  if (!profile.signedIn) return "email";
+export function onboardingStep(profile: { signedIn: boolean; phone: string | null; name: string | null; onboarded: boolean }): OnboardingStep {
+  if (!profile.signedIn) return "google";
   if (profile.phone == null || profile.phone.length === 0) return "phone";
   if (profile.name == null || profile.name.length === 0) return "name";
+  if (!profile.onboarded) return "about";
   return "ready";
+}
+
+export const ABOUT_CITIES: readonly { id: string; name: string }[] = CITIES.map((city) => ({ id: city.id, name: city.name }));
+
+export const DIETS = [
+  { id: "veg", label: "Vegetarian" },
+  { id: "eggetarian", label: "Eggetarian" },
+  { id: "non-veg", label: "Non-veg" },
+  { id: "vegan", label: "Vegan" },
+  { id: "jain", label: "Jain" },
+] as const;
+
+export const EVENT_INTERESTS: readonly { id: Exclude<EventKind, "other">; label: string }[] = [
+  { id: "concert", label: "Music" },
+  { id: "comedy", label: "Comedy" },
+  { id: "movie", label: "Movies" },
+  { id: "theatre", label: "Theatre" },
+  { id: "workshop", label: "Workshops" },
+];
+
+export const REPLY_LANGUAGES = ["English", "Hinglish", "Hindi"] as const;
+
+export type AboutAnswers = { city?: string; pincode?: string; diet?: string; interests?: string[]; language?: string };
+
+/** Profile entries Scout keeps from the about step. Unknown or empty answers are dropped. */
+export type AboutEntries = Partial<Record<"city" | "home_area" | "diet" | "event_kinds" | "language", string>>;
+
+export function aboutEntries(answers: AboutAnswers): { ok: true; entries: AboutEntries } | { ok: false; error: string } {
+  const entries: AboutEntries = {};
+  const pincode = (answers.pincode ?? "").replace(/\s/g, "");
+  if (pincode.length > 0) {
+    if (!/^[1-9]\d{5}$/.test(pincode)) return { ok: false, error: "Enter a 6-digit pincode." };
+    entries.home_area = pincode;
+  }
+  const cityText = (answers.city ?? "").trim().replace(/\s+/g, " ");
+  if (cityText.length > 40 || (cityText.length > 0 && !/^[\p{L}][\p{L} .'-]*$/u.test(cityText))) return { ok: false, error: "Enter a city name." };
+  const known = cityText.length > 0 ? cityFromText(cityText) : cityFromPincode(pincode);
+  if (known) entries.city = known.id;
+  else if (cityText.length > 0) entries.city = cityText;
+  const diet = DIETS.find((option) => option.id === answers.diet);
+  if (diet) entries.diet = diet.label;
+  const interests = EVENT_INTERESTS.filter((option) => answers.interests?.includes(option.id));
+  if (interests.length > 0) entries.event_kinds = interests.map((option) => option.id).join(", ");
+  const language = REPLY_LANGUAGES.find((option) => option === answers.language);
+  if (language) entries.language = language;
+  return { ok: true, entries };
 }

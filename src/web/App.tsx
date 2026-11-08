@@ -6,7 +6,8 @@ import type { ChatEvent } from "../shared/chatEvents.ts";
 import type { CommerceEvent } from "../shared/commerce.ts";
 import { matchesCardFilter, type CardFilter, type Listing } from "../shared/event.ts";
 import type { AgentId } from "../shared/hosts.ts";
-import { onboardingStep, PLAN_PROMPT } from "../shared/onboarding.ts";
+import { onboardingStep, PLAN_PROMPT, type OnboardingStep } from "../shared/onboarding.ts";
+import { screenAgent, type ScreenReading } from "../shared/screenReading.ts";
 import { speechCue } from "../shared/speech.ts";
 import { matchControl, readBrowseCommand, type BrowserControl, type BrowseCommand } from "../shared/browse.ts";
 import type { BrowserTaskEvent } from "../shared/browser.ts";
@@ -16,7 +17,6 @@ import { ScoutDropCard } from "./ScoutDropCard.tsx";
 import { useSharedDrop } from "./scoutDrop.ts";
 import { ScreenCard } from "./ScreenCard.tsx";
 import { useScreenCapture } from "./scoutScreen.ts";
-import { screenAgent, type ScreenReading } from "../shared/screenReading.ts";
 import { apiUrl, backendHeaders, forgetSignedInUser, rememberSignedInUser } from "./backend.ts";
 import { CartCard, PayCard, QuoteCard, ReceiptCard } from "./CommerceCard.tsx";
 import { ScoutTaskCard } from "./ScoutTaskCard.tsx";
@@ -24,7 +24,8 @@ import { Composer } from "./Composer.tsx";
 import { deleteConversation } from "./conversationList.ts";
 import { conversationsFromStorage, emptyConversation, loadConversations, mergeConversations, saveConversations, type Conversation, type Turn } from "./conversations.ts";
 import { siteAgentFromHealth, siteAgentFromLocation } from "./site.ts";
-import { PreferredName, SignIn, Splash } from "./SignIn.tsx";
+import { Onboarding, Splash } from "./SignIn.tsx";
+import { nativeSignOut } from "./nativeApp.ts";
 import { BrowserTasks } from "./BrowserTasks.tsx";
 import { EventCard, MoreListings } from "./EventCard.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
@@ -97,7 +98,7 @@ export function App() {
   const [voiceReplies, setVoiceReplies] = useState(voiceRepliesEnabled);
   const voiceRepliesRef = useRef(voiceReplies);
   voiceRepliesRef.current = voiceReplies;
-  const [gate, setGate] = useState<"checking" | "out" | "phone" | "name" | "in">("checking");
+  const [gate, setGate] = useState<Gate>("checking");
   const [link, setLink] = useState<BookingLink>("checking");
 
   useEffect(() => {
@@ -135,49 +136,21 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void fetch(apiUrl("/api/auth/session"), { credentials: "include" })
-      .then(async (response) => {
-        if (!response.ok) return { signedIn: false, userId: "" } as SessionBody;
-        return (await response.json()) as SessionBody;
-      })
-      .then((body) => {
-        if (cancelled) return;
-        const userId = typeof body.userId === "string" ? body.userId : "";
-        setAccount(accountFromSession(body));
-        const signedIn = body.signedIn === true && userId.length > 0;
-        if (signedIn) rememberSignedInUser(userId);
-        const step = onboardingStep({
-          signedIn,
-          phone: typeof body.phone === "string" ? body.phone : null,
-          name: typeof body.name === "string" ? body.name : null,
-        });
-        switch (step) {
-          case "email":
-            setGate("out");
-            return;
-          case "phone":
-            setGate("phone");
-            return;
-          case "name":
-            setGate("name");
-            return;
-          case "ready":
-            setGate("in");
-            return;
-          default: {
-            const neverStep: never = step;
-            setGate("out");
-            return neverStep;
-          }
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setGate("out");
-      });
+    void readSession().then((body) => {
+      if (cancelled) return;
+      if (body) setAccount(accountFromSession(body));
+      setGate(gateFromSession(body));
+    });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  async function advanceOnboarding(): Promise<void> {
+    const body = await readSession();
+    if (body) setAccount(accountFromSession(body));
+    setGate(gateFromSession(body));
+  }
 
   useEffect(() => {
     if (gate !== "in") return;
@@ -803,21 +776,13 @@ export function App() {
   async function signOut(): Promise<void> {
     await fetch(apiUrl("/api/auth/signout"), { method: "POST", credentials: "include" });
     forgetSignedInUser();
-    setGate("out");
+    if (nativeSignOut()) return;
+    setGate("google");
     setLink("checking");
   }
 
-  async function finishOnboarding(): Promise<void> {
-    const next = await loadAccount();
-    if (next) setAccount(next);
-    setGate("in");
-  }
-
   if (gate === "checking") return <Splash />;
-  if (gate === "out" || gate === "phone") {
-    return <SignIn start={gate === "phone" ? "phone" : "email"} onSignedIn={() => setGate("name")} />;
-  }
-  if (gate === "name") return <PreferredName onNamed={() => void finishOnboarding()} />;
+  if (gate !== "in") return <Onboarding step={gate} onAdvance={() => void advanceOnboarding()} />;
 
   const recent = conversations
     .filter((item) => item.agent === siteAgent && hasUserTurn(item))
@@ -945,7 +910,31 @@ export function App() {
   );
 }
 
-type SessionBody = { signedIn?: boolean; userId?: string; email?: string | null; phone?: string | null; name?: string | null };
+type SessionBody = { signedIn?: boolean; userId?: string; email?: string | null; phone?: string | null; name?: string | null; onboarded?: boolean };
+type Gate = "checking" | Exclude<OnboardingStep, "ready"> | "in";
+
+async function readSession(): Promise<SessionBody | null> {
+  try {
+    const response = await fetch(apiUrl("/api/auth/session"), { credentials: "include" });
+    if (!response.ok) return null;
+    return (await response.json()) as SessionBody;
+  } catch {
+    return null;
+  }
+}
+
+function gateFromSession(body: SessionBody | null): Gate {
+  const userId = typeof body?.userId === "string" ? body.userId : "";
+  const signedIn = body?.signedIn === true && userId.length > 0;
+  if (signedIn) rememberSignedInUser(userId);
+  const step = onboardingStep({
+    signedIn,
+    phone: typeof body?.phone === "string" ? body.phone : null,
+    name: typeof body?.name === "string" ? body.name : null,
+    onboarded: body?.onboarded === true,
+  });
+  return step === "ready" ? "in" : step;
+}
 
 function accountFromSession(body: SessionBody): Account {
   return {
@@ -953,16 +942,6 @@ function accountFromSession(body: SessionBody): Account {
     email: typeof body.email === "string" && body.email.length > 0 ? body.email : null,
     phone: typeof body.phone === "string" && body.phone.length > 0 ? body.phone : null,
   };
-}
-
-async function loadAccount(): Promise<Account | null> {
-  try {
-    const response = await fetch(apiUrl("/api/auth/session"), { credentials: "include" });
-    if (!response.ok) return null;
-    return accountFromSession((await response.json()) as SessionBody);
-  } catch {
-    return null;
-  }
 }
 
 function StageTitle({ screen, conversation, siteAgent }: { screen: Screen; conversation: Conversation | null; siteAgent: AgentId }) {

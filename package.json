@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@bolna/web-call": "^3.0.1",
+    "firebase": "^12.19.0",
     "html5-qrcode": "^2.3.8",
     "jsqr": "^1.4.0",
     "lucide-react": "^1.61.0",

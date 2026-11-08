@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import type { EmailAuth } from "../src/server/auth/emailAuth.ts";
+import type { Accounts } from "../src/server/auth/accounts.ts";
 import {
   admit,
   capacityAudit,
@@ -538,14 +538,14 @@ async function openWorker(options: {
   };
 }
 
-function rejectingAuth(): { auth: EmailAuth; calls: () => number } {
+function rejectingAuth(): { auth: Accounts; calls: () => number } {
   let calls = 0;
   const auth = {
     account: () => {
       calls += 1;
       return null;
     },
-  } as unknown as EmailAuth;
+  } as unknown as Accounts;
   return { auth, calls: () => calls };
 }
 

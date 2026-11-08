@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { describe, it } from "node:test";
-import { EmailAuth, type AuthMailer } from "../src/server/auth/emailAuth.ts";
+import { Accounts } from "../src/server/auth/accounts.ts";
 import { UserDirectory } from "../src/server/db/userDirectory.ts";
 import { AppReleaseInvite, googleAccessToken, inviteEmail } from "../src/server/invites/appRelease.ts";
 import { withApi } from "./helpers.ts";
@@ -67,8 +67,7 @@ describe("app install invite", () => {
 
   it("lets a signed-out visitor request the install link", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scout-invite-"));
-    const mailer: AuthMailer = { configured: true, async send() {} };
-    const auth = new EmailAuth(new UserDirectory(join(dir, "scout.sqlite")), mailer, () => 1);
+    const auth = new Accounts(new UserDirectory(join(dir, "scout.sqlite")), () => 1);
     const sent: string[] = [];
     try {
       await withApi({

@@ -1195,12 +1195,23 @@ textarea:focus { outline: none; }
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
-.code-input {
-  text-align: center;
-  font-size: 1.6rem !important;
-  letter-spacing: 0.5em;
-  font-variant-numeric: tabular-nums;
+.about-group {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
 }
+
+.about-group legend {
+  margin-bottom: 8px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.about-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .phone-field {
   display: flex;
@@ -1237,6 +1248,19 @@ textarea:focus { outline: none; }
 
 .auth-submit:hover:not(:disabled) { background: var(--accent-strong); }
 .auth-submit:disabled { background: var(--selected); color: var(--muted); }
+
+.auth-submit.google {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--ink);
+}
+
+.auth-submit.google:hover:not(:disabled) { background: var(--hover); }
+.google-mark { width: 18px; height: 18px; flex: none; }
 
 .auth-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
 

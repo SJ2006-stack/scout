@@ -25,7 +25,7 @@ import { RELAY_PATH } from "../shared/relay.ts";
 import { isTerminalState } from "../shared/scoutTask.ts";
 import type { BrowserRuntimeConfig } from "./browser/runtimeTicket.ts";
 import type { BrowserWorker } from "./browser/worker.ts";
-import type { EmailAuth } from "./auth/emailAuth.ts";
+import type { Accounts } from "./auth/accounts.ts";
 import { verifyFirebaseIdToken } from "./auth/firebaseToken.ts";
 import { CommerceHub, createCommerceHub, type CommerceRequest } from "./commerce/hub.ts";
 import { isAgentId } from "../shared/hosts.ts";
@@ -34,9 +34,9 @@ import { readErrandAnswers, type ErrandAnswers } from "../shared/errands.ts";
 import { isLiveShopQuery, parsePayRequest, runListingPay, runShopSearch } from "./shopRun.ts";
 import { listingPlatform } from "./events/pageText.ts";
 import { DeskStore } from "./desk.ts";
-import type { UserDirectory } from "./db/userDirectory.ts";
+import type { Account, UserDirectory } from "./db/userDirectory.ts";
 import { PairTickets } from "./pairTickets.ts";
-import { indianMobile, preferredName } from "../shared/onboarding.ts";
+import { aboutEntries, indianMobile, preferredName, type AboutAnswers } from "../shared/onboarding.ts";
 import { ocrResponse } from "./ocr.ts";
 import { OCR_BYTES } from "../shared/ocr.ts";
 import { readScreenReading, SCREEN_BYTES, type ScreenReading } from "../shared/screenReading.ts";
@@ -48,7 +48,7 @@ import { writeEvents } from "./sseWriter.ts";
 import { isAssistantRoute, routeAssistant } from "./assistantRoutes.ts";
 import type { InboxStore } from "./notify/inbox.ts";
 import type { CartBillStore } from "./cartBills.ts";
-import type { ProfileStore } from "./profile/profileStore.ts";
+import { isProfileKey, type ProfileStore } from "./profile/profileStore.ts";
 import type { WatchRunner } from "./watch/watchRunner.ts";
 import type { WatchStore } from "./watch/watchStore.ts";
 import type { ChatTurn } from "./chatRun.ts";
@@ -56,6 +56,8 @@ import type { AgentId } from "../shared/hosts.ts";
 import type { BolnaConfig } from "./voice/bolna.ts";
 import { isBolnaLlmRoute, routeBolnaLlm, routeBolnaSession, routeVoiceLive, type TurnBuilder } from "./voice/bolnaRoutes.ts";
 import type { LiveRelay } from "./voice/liveRelay.ts";
+
+const SIGN_IN_FIRST = "Sign in with Google first.";
 
 export type ApiDeps = {
   liveConnectors: Connector[];
@@ -80,7 +82,7 @@ export type ApiDeps = {
   browserRuntime?: BrowserRuntimeConfig;
   desk?: DeskStore;
   directory?: UserDirectory;
-  auth?: EmailAuth;
+  auth?: Accounts;
   invite?: AppInvite;
   sarvamApiKey?: string;
   gnaniApiKey?: string;
@@ -155,13 +157,13 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     return;
   }
   if (deps.auth && !browserRuntimeMaySkipSignIn(request, url.pathname, deps.browser) && !deps.auth.account(currentSessionId(request))) {
-    sendJson(response, 401, { error: "Sign in with the code from your email." });
+    sendJson(response, 401, { error: SIGN_IN_FIRST });
     return;
   }
   if (url.pathname === "/api/relay/status" && request.method === "GET") {
     const account = deps.auth?.account(currentSessionId(request));
     if (!account) {
-      sendJson(response, 401, { error: "Sign in with the code from your email." });
+      sendJson(response, 401, { error: SIGN_IN_FIRST });
       return;
     }
     sendJson(response, 200, deps.relay ? deps.relay.status(account.id) : { connected: false, since: null, bytes: 0, streams: 0 });
@@ -171,7 +173,7 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     await routePhone(request, response, deps);
     return;
   }
-  if (url.pathname === "/api/onboarding/phone" || url.pathname === "/api/onboarding/name") {
+  if (url.pathname === "/api/onboarding/phone" || url.pathname === "/api/onboarding/name" || url.pathname === "/api/onboarding/about") {
     await routeOnboarding(request, response, url, deps);
     return;
   }
@@ -312,9 +314,11 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
 
 type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null; phone?: PhoneAutomation | null; answers?: ErrandAnswers | null; screen?: ScreenReading | null };
 
-function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortSignal): ChatTurn {
+function chatTurn(deps: ApiDeps, owner: string, given: TurnInput, signal: AbortSignal): ChatTurn {
   if (!deps.commerce) deps.commerce = createCommerceHub(deps.now);
   const browser = deps.browser;
+  const homePincode = deps.profile?.get(owner, "home_area")?.value ?? "";
+  const input = given.pincode === "" && given.lat == null && /^\d{6}$/.test(homePincode) ? { ...given, pincode: homePincode } : given;
   return {
     sessionId: owner,
     text: input.text,
@@ -385,15 +389,13 @@ async function routeInvite(request: IncomingMessage, response: ServerResponse, d
 async function routeSignIn(request: IncomingMessage, response: ServerResponse, url: URL, deps: ApiDeps): Promise<void> {
   const auth = deps.auth;
   if (!auth) {
-    sendJson(response, 503, { error: "Email sign-in is not connected." });
+    sendJson(response, 503, { error: "Sign-in is not connected." });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/auth/session") {
     const account = auth.account(currentSessionId(request));
     if (account) setSessionCookie(response, account.id);
-    sendJson(response, 200, account
-      ? { signedIn: true, email: account.email, userId: account.id, phone: account.phone, name: account.name }
-      : { signedIn: false });
+    sendJson(response, 200, account ? sessionBody(account) : { signedIn: false });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/auth/signout") {
@@ -402,38 +404,13 @@ async function routeSignIn(request: IncomingMessage, response: ServerResponse, u
     sendJson(response, 200, { signedIn: false });
     return;
   }
-  if (request.method !== "POST") {
-    sendJson(response, 404, { error: "Not found" });
-    return;
-  }
-  const body = await readJson(request);
-  if (!body.ok) {
-    sendJson(response, 400, { error: body.error });
-    return;
-  }
-  const record = body.value && typeof body.value === "object" ? body.value as Record<string, unknown> : {};
-  const email = typeof record.email === "string" ? record.email : "";
-  if (url.pathname === "/api/auth/email") {
-    const result = await auth.requestCode(email);
-    if (!result.ok) {
-      sendJson(response, result.status, { error: result.error });
+  if (request.method === "POST" && url.pathname === "/api/auth/google") {
+    const body = await readJson(request);
+    if (!body.ok) {
+      sendJson(response, 400, { error: body.error });
       return;
     }
-    sendJson(response, 200, { sent: true });
-    return;
-  }
-  if (url.pathname === "/api/auth/verify") {
-    const code = typeof record.code === "string" ? record.code : "";
-    const result = auth.verify(email, code);
-    if (!result.ok || result.kind !== "session") {
-      sendJson(response, result.ok ? 400 : result.status, { error: result.ok ? "Enter the 6-digit code from your email." : result.error });
-      return;
-    }
-    setSessionCookie(response, result.userId);
-    sendJson(response, 200, { signedIn: true, email: result.email, userId: result.userId });
-    return;
-  }
-  if (url.pathname === "/api/auth/google") {
+    const record = body.value && typeof body.value === "object" ? body.value as Record<string, unknown> : {};
     const idToken = typeof record.idToken === "string" ? record.idToken : "";
     const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || "scout-b4da3";
     const verified = await verifyFirebaseIdToken(idToken, { projectId, now: deps.now() });
@@ -442,22 +419,21 @@ async function routeSignIn(request: IncomingMessage, response: ServerResponse, u
       return;
     }
     const result = auth.sessionForVerifiedGmail(verified.email);
-    if (!result.ok || result.kind !== "session") {
-      sendJson(response, result.ok ? 400 : result.status, { error: result.ok ? "Use a Gmail address." : result.error });
+    if (!result.ok) {
+      sendJson(response, result.status, { error: result.error });
       return;
     }
     setSessionCookie(response, result.userId);
     const account = auth.account(result.userId);
-    sendJson(response, 200, {
-      signedIn: true,
-      email: result.email,
-      userId: result.userId,
-      phone: account?.phone ?? null,
-      name: account?.name ?? null,
-    });
+    sendJson(response, 200, account ? sessionBody(account) : { signedIn: true, email: result.email, userId: result.userId, phone: null, name: null, onboarded: false });
     return;
   }
+  await drain(request);
   sendJson(response, 404, { error: "Not found" });
+}
+
+function sessionBody(account: Account): Record<string, unknown> {
+  return { signedIn: true, email: account.email, userId: account.id, phone: account.phone, name: account.name, onboarded: account.onboarded };
 }
 
 const CART_WAIT_MS = 120_000;
@@ -493,7 +469,7 @@ async function routePhone(request: IncomingMessage, response: ServerResponse, de
   const account = deps.auth?.account(currentSessionId(request));
   const directory = deps.directory;
   if (!account || !directory) {
-    sendJson(response, 401, { error: "Sign in with the code from your email." });
+    sendJson(response, 401, { error: SIGN_IN_FIRST });
     return;
   }
   if (request.method === "GET") {
@@ -532,7 +508,7 @@ async function routeOnboarding(request: IncomingMessage, response: ServerRespons
   }
   const account = auth.account(currentSessionId(request));
   if (!account) {
-    sendJson(response, 401, { error: "Sign in with the code from your email." });
+    sendJson(response, 401, { error: SIGN_IN_FIRST });
     return;
   }
   const body = await readJson(request);
@@ -558,6 +534,10 @@ async function routeOnboarding(request: IncomingMessage, response: ServerRespons
     sendJson(response, 400, { error: "Add an Indian mobile number first." });
     return;
   }
+  if (url.pathname === "/api/onboarding/about") {
+    saveAbout(response, account, record, deps, directory);
+    return;
+  }
   const name = preferredName(typeof record.name === "string" ? record.name : "");
   if (!name) {
     sendJson(response, 400, { error: "Enter the name Scout should use." });
@@ -568,6 +548,34 @@ async function routeOnboarding(request: IncomingMessage, response: ServerRespons
     return;
   }
   sendJson(response, 200, { name });
+}
+
+/** Saves the about step as explicit preferences, so every scout reads them from the first chat. An empty body skips. */
+function saveAbout(response: ServerResponse, account: Account, record: Record<string, unknown>, deps: ApiDeps, directory: UserDirectory): void {
+  if (account.name == null) {
+    sendJson(response, 400, { error: "Add the name Scout should use first." });
+    return;
+  }
+  const text = (key: string) => (typeof record[key] === "string" ? record[key] : undefined);
+  const answers: AboutAnswers = {
+    city: text("city"),
+    pincode: text("pincode"),
+    diet: text("diet"),
+    language: text("language"),
+    interests: Array.isArray(record.interests) ? record.interests.filter((item): item is string => typeof item === "string") : undefined,
+  };
+  const parsed = aboutEntries(answers);
+  if (!parsed.ok) {
+    sendJson(response, 400, { error: parsed.error });
+    return;
+  }
+  if (deps.profile) {
+    for (const [key, value] of Object.entries(parsed.entries)) {
+      if (isProfileKey(key) && value) deps.profile.set(account.id, key, value, "explicit", deps.now());
+    }
+  }
+  directory.finishOnboarding(account.id, deps.now());
+  sendJson(response, 200, { saved: Object.keys(parsed.entries) });
 }
 
 async function deskRoute(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
