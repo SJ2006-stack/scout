@@ -194,8 +194,8 @@ az webapp config container set -g ledger-rg -n <app> \
 ```
 
 - The image copies the prebuilt `dist/`, so run `npm run build` first. Build from a clean checkout so uncommitted work stays out.
-- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `drop1-20261108`, built on Nov 8, 2026 from a clean checkout of `2c650ed` (Scout Drop on top of `607030f`). That build still has email-code sign-in and no about step.
-- Before deploying the Google-only page, add `scout.shrianshjaiswal.me` and each `sj-*.azurewebsites.net` host to Firebase Auth's authorized domains (Firebase console, Authentication, Settings), or the popup refuses with "not allowed on this address". Build with `VITE_FIREBASE_*` set in `.env`. `AGENTMAIL_*` app settings are no longer read.
+- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `all1-20261108` (`sjscoutacr.azurecr.io/scout-site:all1-20261108`), built on Nov 8, 2026 from commit `75b7c71`. That image has Google sign-in, the about-you step, Scout Drop, and `POST /api/screen/understand`.
+- The website Google popup still refuses on Azure until `scout.shrianshjaiswal.me` and each `sj-*.azurewebsites.net` host are added to Firebase Auth's authorized domains (Firebase console, Authentication, Settings). The Android app does not use that popup. Build with `VITE_FIREBASE_*` set in `.env`. `AGENTMAIL_*` app settings are no longer read.
 - The relay needs WebSockets on: `az webapp config set -g ledger-rg -n <app> --web-sockets-enabled true` (on for all six apps).
 - Do not zip deploy. It switches the apps to the Node stack, which has no Chromium.
 - `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the image is manual.
