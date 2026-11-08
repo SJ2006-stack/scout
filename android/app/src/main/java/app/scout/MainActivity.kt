@@ -32,6 +32,7 @@ import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -49,6 +50,14 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
+import app.scout.drop.DropInbox
+import app.scout.drop.DropReceipt
+import app.scout.drop.ResolverSource
+import app.scout.drop.dropForPage
+import app.scout.drop.rawShare
+import app.scout.drop.receiveShare
+import app.scout.drop.shareKey
+import app.scout.drop.shouldImport
 import app.scout.relay.PhoneRelay
 import com.google.android.gms.auth.api.phone.SmsRetriever
 import com.google.android.gms.common.api.CommonStatusCodes
@@ -89,6 +98,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.util.Base64
 
 class MainActivity : AppCompatActivity() {
     private lateinit var desk: WebView
@@ -117,6 +128,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var profiles: UserProfile
     private lateinit var credentialManager: CredentialManager
     private var deskLoaded = false
+    private var handledShare: String? = null
     private var boundUid: String? = null
     @Volatile private var deskHost: String? = null
     private var otpReceiver: BroadcastReceiver? = null
@@ -295,6 +307,77 @@ class MainActivity : AppCompatActivity() {
         cameraEnable.setOnClickListener { enablePermission(Manifest.permission.CAMERA) }
         noticeEnable.setOnClickListener { enablePermission(Manifest.permission.POST_NOTIFICATIONS) }
         automationEnable.setOnClickListener { openAccessibilitySettings() }
+        takeShare(intent, savedInstanceState?.getString(SHARE_KEY))
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        takeShare(intent, null)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        handledShare?.let { outState.putString(SHARE_KEY, it) }
+    }
+
+    /** Copies a share into the private inbox off the main thread. The page shows it for review; nothing is sent here. */
+    private fun takeShare(intent: Intent?, savedKey: String?) {
+        val raw = rawShare(intent)
+        if (!shouldImport(raw, savedKey)) {
+            if (savedKey != null) handledShare = savedKey
+            return
+        }
+        handledShare = shareKey(raw)
+        val app = application as ScoutApp
+        val owner = auth.currentUser?.uid
+        val source = ResolverSource(contentResolver)
+        app.dropWork.execute {
+            val receipt = receiveShare(raw, packageName, owner, app.drops, source, System::currentTimeMillis, DropInbox::newId)
+            runOnUiThread { shareReceived(receipt) }
+        }
+    }
+
+    private fun shareReceived(receipt: DropReceipt) {
+        if (isDestroyed) return
+        when (receipt) {
+            is DropReceipt.Ready -> {
+                val uid = auth.currentUser?.uid
+                if (uid == null) {
+                    Toast.makeText(this, "Sign in to Scout to review what you shared.", Toast.LENGTH_LONG).show()
+                    return
+                }
+                (application as ScoutApp).drops.claim(uid)
+                replyNative("""{"op":"drop"}""")
+            }
+            is DropReceipt.Failed -> Toast.makeText(this, receipt.message, Toast.LENGTH_LONG).show()
+            DropReceipt.Ignored -> Unit
+        }
+    }
+
+    private fun dropReply(call: BridgeCall): String {
+        val inbox = (application as ScoutApp).drops
+        val uid = auth.currentUser?.uid?.takeIf { it == boundUid }
+        return try {
+            when (call) {
+                BridgeCall.DropTake -> JSONObject()
+                    .put("accepted", true)
+                    .put("drop", inbox.take(uid)?.let(::dropForPage) ?: JSONObject.NULL)
+                    .toString()
+                is BridgeCall.DropImage -> {
+                    val image = inbox.image(uid, call.dropId, call.imageId) ?: return DROP_REFUSED
+                    JSONObject()
+                        .put("accepted", true)
+                        .put("mime", image.mime)
+                        .put("data", Base64.getEncoder().encodeToString(image.file.readBytes()))
+                        .toString()
+                }
+                is BridgeCall.DropDone -> JSONObject().put("accepted", inbox.done(uid, call.dropId)).toString()
+                else -> DROP_REFUSED
+            }
+        } catch (_: IOException) {
+            DROP_REFUSED
+        }
     }
 
     public override fun onStart() {
@@ -665,6 +748,7 @@ class MainActivity : AppCompatActivity() {
         boundUid = null
         deskLoaded = false
         (application as ScoutApp).otp.discard()
+        (application as ScoutApp).drops.discard()
         if (uid != null) lifecycleScope.launch { (application as ScoutApp).runtime.logout(uid) }
         clearWebSession {
             desk.loadUrl("about:blank")
@@ -674,6 +758,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Ties this Google account to its own Scout user, then opens the chief chat. */
     private fun bindScout(user: FirebaseUser) {
+        (application as ScoutApp).drops.claim(user.uid)
         if (boundUid == user.uid && deskLoaded) {
             showDesk(user)
             return
@@ -824,6 +909,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun performBridge(call: BridgeCall) {
         when (call) {
+            BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone -> Unit
             BridgeCall.Location -> requestBridgeLocation()
             BridgeCall.Microphone -> beginSpeech()
             BridgeCall.Camera -> requestBridgeMedia(audio = false)
@@ -1030,6 +1116,7 @@ class MainActivity : AppCompatActivity() {
             val decision = allowBridge(deskHost, json, System.currentTimeMillis())
             val call = (decision as? BridgeDecision.Allow)?.call
             if (call is BridgeCall.Checkout) return beginCheckout(this@MainActivity, call.app)
+            if (call == BridgeCall.DropTake || call is BridgeCall.DropImage || call is BridgeCall.DropDone) return dropReply(call)
             if (decision is BridgeDecision.Allow) runOnUiThread { performBridge(decision.call) }
             return bridgeResponse(decision)
         }
@@ -1086,5 +1173,7 @@ class MainActivity : AppCompatActivity() {
         const val MIC_NOTICE = 17
         const val ACCOUNT_PREFS = "scout-account"
         const val ACCOUNT_UID = "uid"
+        const val SHARE_KEY = "scout-drop-handled"
+        const val DROP_REFUSED = """{"accepted":false}"""
     }
 }

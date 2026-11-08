@@ -12,12 +12,20 @@ import app.scout.data.DataPreferences
 import app.scout.data.RoomDesk
 import app.scout.data.ScoutMessaging
 import app.scout.data.ScoutRoom
+import app.scout.drop.DropInbox
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class ScoutApp : Application() {
     lateinit var runtime: CompanionRepository
         private set
     val feed = RealtimeFeed()
     val otp = OtpHandoff(now = { System.currentTimeMillis() })
+    /** Shares waiting for review. Lives here so it survives the Activity being recreated. */
+    val drops by lazy { DropInbox(File(cacheDir, "scout-drop"), System::currentTimeMillis) }
+    /** One thread, so two quick shares are copied one after another. */
+    val dropWork: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun onCreate() {
         super.onCreate()

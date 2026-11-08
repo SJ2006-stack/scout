@@ -1,0 +1,80 @@
+.drop-card {
+  flex: none;
+  width: min(720px, calc(100% - 32px));
+  margin: 0 auto 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  display: grid;
+  gap: 10px;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+.drop-head { display: grid; gap: 2px; }
+.drop-head .muted { font-size: 13px; }
+
+.drop-card .drop-text {
+  min-height: 64px;
+  max-height: 160px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--fill);
+}
+
+.drop-links, .drop-images, .drop-notes { list-style: none; margin: 0; padding: 0; }
+
+.drop-links { display: grid; gap: 4px; }
+.drop-links li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.drop-links svg { flex: none; color: var(--accent); }
+
+.drop-images { display: flex; gap: 8px; flex-wrap: wrap; }
+.drop-images li { position: relative; }
+.drop-images img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.drop-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #ffffff;
+}
+
+.drop-notes { color: var(--muted); font-size: 12px; display: grid; gap: 2px; }
+
+.drop-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.drop-send {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.drop-send:disabled { background: var(--fill); color: var(--muted); }
+
+@media (max-width: 800px) {
+  .drop-card { width: auto; margin: 0 12px 8px; }
+}

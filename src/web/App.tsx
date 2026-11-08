@@ -12,6 +12,8 @@ import { matchControl, readBrowseCommand, type BrowserControl, type BrowseComman
 import type { BrowserTaskEvent } from "../shared/browser.ts";
 import { commerceAgent } from "./agentRoute.ts";
 import { agentById } from "./agents.ts";
+import { ScoutDropCard } from "./ScoutDropCard.tsx";
+import { useSharedDrop } from "./scoutDrop.ts";
 import { apiUrl, backendHeaders, forgetSignedInUser, rememberSignedInUser } from "./backend.ts";
 import { CartCard, PayCard, QuoteCard, ReceiptCard } from "./CommerceCard.tsx";
 import { ScoutTaskCard } from "./ScoutTaskCard.tsx";
@@ -248,6 +250,7 @@ export function App() {
   const active = screen.kind === "chat" ? conversations.find((item) => item.id === screen.conversationId) ?? null : null;
   const voiceChatRef = useRef<string | null>(null);
   const voiceCall = useVoiceCall({ agent: siteAgent, sessionId: active?.sessionId, onLive: onVoiceLive, onToast: showToast });
+  const [sharedDrop, setSharedDrop] = useSharedDrop(gate === "in");
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
   useEffect(() => watchDeviceResults((result, line) => {
@@ -887,6 +890,16 @@ export function App() {
           ) : null}
         </section>
         {screen.kind === "chat" && active ? <PayTray runs={phoneRunsFromTurns(active.turns)} /> : null}
+        {sharedDrop ? (
+          <ScoutDropCard
+            key={sharedDrop.id}
+            drop={sharedDrop}
+            busy={busy}
+            onSend={(message) => void submit(screen.kind === "chat" && active ? active : startConversation(), message)}
+            onClose={() => setSharedDrop(null)}
+            onToast={showToast}
+          />
+        ) : null}
         {showComposer ? (
           <Composer
             value={draft}

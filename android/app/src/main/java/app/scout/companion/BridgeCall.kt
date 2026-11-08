@@ -1,5 +1,6 @@
 package app.scout.companion
 
+import app.scout.drop.DROP_ID
 import app.scout.isScoutHost
 import app.scout.leavesScout
 import app.scout.readPairPayload
@@ -11,6 +12,9 @@ sealed class QrRead {
 }
 
 sealed class BridgeCall {
+    data object DropTake : BridgeCall()
+    data class DropImage(val dropId: String, val imageId: String) : BridgeCall()
+    data class DropDone(val dropId: String) : BridgeCall()
     data object Location : BridgeCall()
     data object Microphone : BridgeCall()
     data object Camera : BridgeCall()
@@ -42,6 +46,9 @@ fun allowBridge(host: String?, json: String, now: Long): BridgeDecision {
     val op = jsonField(json, "op") ?: return BridgeDecision.Deny
     if (op in BLOCKED) return BridgeDecision.Deny
     return when (op) {
+        "drop_take" -> BridgeDecision.Allow(BridgeCall.DropTake)
+        "drop_file" -> dropImageCall(json)
+        "drop_done" -> dropDoneCall(json)
         "location" -> BridgeDecision.Allow(BridgeCall.Location)
         "microphone" -> BridgeDecision.Allow(BridgeCall.Microphone)
         "camera" -> BridgeDecision.Allow(BridgeCall.Camera)
@@ -80,6 +87,17 @@ private fun checkoutCall(json: String): BridgeDecision {
     val app = jsonField(json, "app") ?: return BridgeDecision.Deny
     if (checkoutTarget(app) == null) return BridgeDecision.Deny
     return BridgeDecision.Allow(BridgeCall.Checkout(app))
+}
+
+private fun dropImageCall(json: String): BridgeDecision {
+    val dropId = jsonField(json, "id")?.takeIf { DROP_ID.matches(it) } ?: return BridgeDecision.Deny
+    val imageId = jsonField(json, "image")?.takeIf { DROP_ID.matches(it) } ?: return BridgeDecision.Deny
+    return BridgeDecision.Allow(BridgeCall.DropImage(dropId, imageId))
+}
+
+private fun dropDoneCall(json: String): BridgeDecision {
+    val dropId = jsonField(json, "id")?.takeIf { DROP_ID.matches(it) } ?: return BridgeDecision.Deny
+    return BridgeDecision.Allow(BridgeCall.DropDone(dropId))
 }
 
 fun jsonField(json: String, key: String): String? {
