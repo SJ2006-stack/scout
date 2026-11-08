@@ -6,6 +6,7 @@ import { dateRange, isTimeZone, windowLabel, type WhenWindow } from "../shared/w
 import type { AgentId } from "../shared/hosts.ts";
 import type { PhoneAutomation } from "../shared/deviceActions.ts";
 import type { StoreBill } from "../shared/cartQuote.ts";
+import type { ScreenReading } from "../shared/screenReading.ts";
 import type { ChatMemory } from "./chatMemory.ts";
 import { ChatMemoryStore } from "./chatMemory.ts";
 import type { ListingCache } from "./listingCache.ts";
@@ -23,6 +24,7 @@ import type { BusResult, ErrandAnswers } from "../shared/errands.ts";
 import type { BusTrip } from "./browser/buses.ts";
 import { runAnsweredErrands, runMainScout } from "./mainScout.ts";
 import { answersMessage, pendingForms } from "./questionBack.ts";
+import { screenSpecialist } from "./screenChat.ts";
 
 const CARD_LIMIT = 24;
 const TRAVEL_LIMIT = 8;
@@ -72,11 +74,17 @@ export type ChatTurn = {
   /** Their answers to Main Scout's question form. */
   answers?: ErrandAnswers;
   compareBuses?: (trip: BusTrip, signal: AbortSignal) => Promise<{ result: BusResult | null; failure: string | null }>;
+  /** A screenshot the user chose to ask about. Only `text` is their request; this is context. */
+  screen?: ScreenReading;
 };
 
 export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {
   if (turn.answers) {
     await resumeForm(turn, turn.answers, emit);
+    return;
+  }
+  if (turn.screen) {
+    await runSpecialist(screenSpecialist(turn.agent), turn, emit);
     return;
   }
   const agent = turn.agent ?? "event";

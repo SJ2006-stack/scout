@@ -39,6 +39,8 @@ import { PairTickets } from "./pairTickets.ts";
 import { indianMobile, preferredName } from "../shared/onboarding.ts";
 import { ocrResponse } from "./ocr.ts";
 import { OCR_BYTES } from "../shared/ocr.ts";
+import { readScreenReading, SCREEN_BYTES, type ScreenReading } from "../shared/screenReading.ts";
+import { screenResponse } from "./screenUnderstanding.ts";
 import { voiceResponse } from "./voice/sarvam.ts";
 import type { AppInvite } from "./invites/appRelease.ts";
 import { clearSessionCookie, currentSessionId, sessionId, setSessionCookie } from "./session.ts";
@@ -199,6 +201,16 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     sendJson(response, result.status, result.body);
     return;
   }
+  if (url.pathname === "/api/screen/understand") {
+    const raw = await readBytes(request, SCREEN_BYTES);
+    if (!raw.ok) {
+      sendJson(response, 413, { error: "That screenshot is too large." });
+      return;
+    }
+    const result = await screenResponse(request.method ?? "GET", raw.bytes, request.headers["content-type"] ?? "", deps);
+    sendJson(response, result.status, result.body);
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/pair") {
     const ticket = currentPairTicket(deps);
     const secondsLeft = Math.max(0, Math.ceil((ticket.expiresAt - deps.now()) / 1000));
@@ -298,7 +310,7 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
   sendJson(response, 404, { error: "Not found" });
 }
 
-type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null; phone?: PhoneAutomation | null; answers?: ErrandAnswers | null };
+type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null; phone?: PhoneAutomation | null; answers?: ErrandAnswers | null; screen?: ScreenReading | null };
 
 function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortSignal): ChatTurn {
   if (!deps.commerce) deps.commerce = createCommerceHub(deps.now);
@@ -324,6 +336,7 @@ function chatTurn(deps: ApiDeps, owner: string, input: TurnInput, signal: AbortS
     ...(deps.watches ? { watches: deps.watches } : {}),
     ...(input.phone ? { phone: input.phone } : {}),
     ...(input.answers ? { answers: input.answers } : {}),
+    ...(input.screen ? { screen: input.screen } : {}),
     anthropicApiKey: deps.anthropicApiKey ?? "",
     compareBuses: browser ? (trip, busSignal) => browser.compareBuses(trip, busSignal, owner) : undefined,
     compareShop: browser ? (query, shopSignal, onStatus) => browser.compareShop(query, shopSignal, owner, onStatus) : undefined,
@@ -610,6 +623,7 @@ function parseChatRequest(value: unknown): {
   agent: "main" | "event" | "travel" | "food" | "shop" | "home" | "appointments";
   phone: PhoneAutomation | null;
   answers: ErrandAnswers | null;
+  screen: ScreenReading | null;
 } | { ok: false; error: string } {
   if (!value || typeof value !== "object") return { ok: false, error: "Send a message." };
   const body = value as Record<string, unknown>;
@@ -620,7 +634,7 @@ function parseChatRequest(value: unknown): {
   const lat = readOptionalCoord(body.lat, -90, 90);
   const lon = readOptionalCoord(body.lon, -180, 180);
   if (lat === "bad" || lon === "bad") return { ok: false, error: "Coordinates are not a valid point." };
-  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon, agent: isAgentId(body.agent) ? body.agent : "event", phone: readPhoneAutomation(body.phone), answers: readErrandAnswers(body.answers) };
+  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon, agent: isAgentId(body.agent) ? body.agent : "event", phone: readPhoneAutomation(body.phone), answers: readErrandAnswers(body.answers), screen: readScreenReading(body.screen) };
 }
 
 function readOptionalCoord(value: unknown, min: number, max: number): number | null | "bad" {

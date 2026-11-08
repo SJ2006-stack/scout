@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -123,6 +124,10 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+        <service
+            android:name=".screen.ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
         <service
             android:name=".companion.automation.ScoutAutomationService"
             android:exported="true"

@@ -13,6 +13,8 @@ import app.scout.data.RoomDesk
 import app.scout.data.ScoutMessaging
 import app.scout.data.ScoutRoom
 import app.scout.drop.DropInbox
+import app.scout.screen.ScreenSession
+import app.scout.screen.ScreenShots
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -26,6 +28,8 @@ class ScoutApp : Application() {
     val drops by lazy { DropInbox(File(cacheDir, "scout-drop"), System::currentTimeMillis) }
     /** One thread, so two quick shares are copied one after another. */
     val dropWork: ExecutorService = Executors.newSingleThreadExecutor()
+    val screen = ScreenSession(System::currentTimeMillis, ScreenShots::newId)
+    val shots by lazy { ScreenShots(File(cacheDir, "scout-screen"), System::currentTimeMillis) }
 
     override fun onCreate() {
         super.onCreate()

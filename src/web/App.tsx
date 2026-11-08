@@ -14,6 +14,9 @@ import { commerceAgent } from "./agentRoute.ts";
 import { agentById } from "./agents.ts";
 import { ScoutDropCard } from "./ScoutDropCard.tsx";
 import { useSharedDrop } from "./scoutDrop.ts";
+import { ScreenCard } from "./ScreenCard.tsx";
+import { useScreenCapture } from "./scoutScreen.ts";
+import { screenAgent, type ScreenReading } from "../shared/screenReading.ts";
 import { apiUrl, backendHeaders, forgetSignedInUser, rememberSignedInUser } from "./backend.ts";
 import { CartCard, PayCard, QuoteCard, ReceiptCard } from "./CommerceCard.tsx";
 import { ScoutTaskCard } from "./ScoutTaskCard.tsx";
@@ -251,6 +254,7 @@ export function App() {
   const voiceChatRef = useRef<string | null>(null);
   const voiceCall = useVoiceCall({ agent: siteAgent, sessionId: active?.sessionId, onLive: onVoiceLive, onToast: showToast });
   const [sharedDrop, setSharedDrop] = useSharedDrop(gate === "in");
+  const screenCapture = useScreenCapture(gate === "in");
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
   useEffect(() => watchDeviceResults((result, line) => {
@@ -361,7 +365,7 @@ export function App() {
     }));
   }
 
-  async function submit(conversation: Conversation, text: string): Promise<void> {
+  async function submit(conversation: Conversation, text: string, screenReading?: ScreenReading): Promise<void> {
     const trimmed = text.trim();
     if (trimmed.length === 0 || busyId != null) return;
     setDraft("");
@@ -379,11 +383,11 @@ export function App() {
         updatedAt: Date.now(),
       };
     });
-    if (browse) {
+    if (browse && !screenReading) {
       await sendBrowser(conversation, browse);
       return;
     }
-    await sendEventChat(conversation, trimmed);
+    await sendEventChat(conversation, trimmed, screenReading ? { screen: screenReading, agent: screenAgent(screenReading.kind) } : undefined);
   }
 
   async function answerForm(conversation: Conversation, form: ErrandForm, values: Record<string, string>): Promise<void> {
@@ -402,7 +406,7 @@ export function App() {
       ),
       updatedAt: Date.now(),
     }));
-    await sendEventChat(conversation, text, { formId: form.id, values });
+    await sendEventChat(conversation, text, { answers: { formId: form.id, values } });
   }
 
   function confirmReview(conversation: Conversation, quoteId: string): void {
@@ -570,7 +574,7 @@ export function App() {
     });
   }
 
-  async function sendEventChat(conversation: Conversation, trimmed: string, answers?: ErrandAnswers): Promise<void> {
+  async function sendEventChat(conversation: Conversation, trimmed: string, extra?: { answers?: ErrandAnswers; screen?: ScreenReading; agent?: AgentId }): Promise<void> {
     const controller = new AbortController();
     abortRef.current = controller;
     setBusyId(conversation.id);
@@ -580,13 +584,14 @@ export function App() {
         headers: backendHeaders({ "content-type": "application/json" }, conversation.sessionId),
         body: JSON.stringify({
           text: trimmed,
-          agent: conversation.agent,
+          agent: extra?.agent ?? conversation.agent,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           pincode,
           lat: place?.lat ?? null,
           lon: place?.lon ?? null,
           phone: phoneAutomation(),
-          ...(answers ? { answers } : {}),
+          ...(extra?.answers ? { answers: extra.answers } : {}),
+          ...(extra?.screen ? { screen: extra.screen } : {}),
         }),
         signal: controller.signal,
       });
@@ -900,6 +905,19 @@ export function App() {
             onToast={showToast}
           />
         ) : null}
+        {screenCapture.view.phase !== "closed" ? (
+          <ScreenCard
+            view={screenCapture.view as Exclude<typeof screenCapture.view, { phase: "closed" }>}
+            busy={busy}
+            onStart={screenCapture.start}
+            onStop={screenCapture.stop}
+            onCapture={screenCapture.capture}
+            onDiscard={screenCapture.discard}
+            onClose={screenCapture.close}
+            onSend={(message, reading) => void submit(screen.kind === "chat" && active ? active : startConversation(), message, reading)}
+            onToast={showToast}
+          />
+        ) : null}
         {showComposer ? (
           <Composer
             value={draft}
@@ -912,6 +930,7 @@ export function App() {
             onVoiceReplies={allowVoice}
             onStop={stop}
             onToast={showToast}
+            onScreen={screenCapture.available ? screenCapture.open : undefined}
             call={{ state: voiceCall.state, level: voiceCall.level, onToggle: voiceCall.toggle }}
           />
         ) : null}

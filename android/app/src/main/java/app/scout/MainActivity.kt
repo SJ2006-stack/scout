@@ -13,8 +13,12 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.MediaRecorder
+import android.media.projection.MediaProjectionConfig
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import android.os.Bundle
 import android.os.Message
 import android.os.SystemClock
@@ -59,6 +63,12 @@ import app.scout.drop.receiveShare
 import app.scout.drop.shareKey
 import app.scout.drop.shouldImport
 import app.scout.relay.PhoneRelay
+import app.scout.screen.SCREEN_REFUSED
+import app.scout.screen.ScreenCaptureService
+import app.scout.screen.ScreenEnd
+import app.scout.screen.frameSizeFor
+import app.scout.screen.screenStateJson
+import app.scout.screen.shotForPage
 import com.google.android.gms.auth.api.phone.SmsRetriever
 import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.Status
@@ -88,6 +98,7 @@ import app.scout.companion.SpeechResult
 import app.scout.companion.allowBridge
 import app.scout.companion.beginCheckout
 import app.scout.companion.bridgeResponse
+import app.scout.companion.isScreenCall
 import app.scout.companion.planRequest
 import app.scout.companion.speechUrl
 import app.scout.data.androidDeviceId
@@ -219,6 +230,12 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode != RESULT_OK || message == null || !trustedDesk()) return@registerForActivityResult
         deliverOtp(message)
     }
+    private val screenNotices = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) askScreenConsent() else (application as ScoutApp).screen.stop(null, ScreenEnd.NOTICES)
+    }
+    private val screenConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        takeScreenConsent(result.resultCode, result.data)
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -267,6 +284,7 @@ class MainActivity : AppCompatActivity() {
         desk.addJavascriptInterface(OtpBridge(), "ScoutOtp")
         desk.addJavascriptInterface(PayBridge(), "ScoutPay")
         desk.addJavascriptInterface(NativeBridge(), "ScoutNative")
+        (application as ScoutApp).screen.listen { notice -> runOnUiThread { replyNative(notice.json()) } }
         desk.webChromeClient = DeskChrome()
         desk.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -378,6 +396,93 @@ class MainActivity : AppCompatActivity() {
         } catch (_: IOException) {
             DROP_REFUSED
         }
+    }
+
+    private fun screenReply(call: BridgeCall): String {
+        val app = application as ScoutApp
+        val uid = auth.currentUser?.uid?.takeIf { it == boundUid }
+        return try {
+            when (call) {
+                BridgeCall.ScreenState -> screenStateJson(app.screen.state(), app.screen.lastNotice(), app.screen.currentId(), app.shots.take(uid)?.let(::shotForPage))
+                BridgeCall.ScreenStart -> startScreen(uid)
+                BridgeCall.ScreenStop -> {
+                    app.screen.stop(null, ScreenEnd.STOPPED)
+                    """{"accepted":true}"""
+                }
+                BridgeCall.ScreenFrame -> {
+                    val id = app.screen.currentId() ?: return SCREEN_REFUSED
+                    if (!app.screen.shoot(id, displaySize()) { _, _ -> }) return SCREEN_REFUSED
+                    """{"accepted":true}"""
+                }
+                BridgeCall.ScreenTake -> JSONObject()
+                    .put("accepted", true)
+                    .put("shot", app.shots.take(uid)?.let(::shotForPage) ?: JSONObject.NULL)
+                    .toString()
+                is BridgeCall.ScreenFile -> {
+                    val bytes = app.shots.bytes(uid, call.id) ?: return SCREEN_REFUSED
+                    JSONObject()
+                        .put("accepted", true)
+                        .put("mime", "image/jpeg")
+                        .put("data", Base64.getEncoder().encodeToString(bytes))
+                        .toString()
+                }
+                is BridgeCall.ScreenDone -> JSONObject().put("accepted", app.shots.done(uid, call.id)).toString()
+                else -> SCREEN_REFUSED
+            }
+        } catch (_: IOException) {
+            SCREEN_REFUSED
+        }
+    }
+
+    private fun startScreen(uid: String?): String {
+        if (uid == null) return SCREEN_REFUSED
+        if ((application as ScoutApp).screen.begin(uid) == null) return SCREEN_REFUSED
+        runOnUiThread {
+            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                screenNotices.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                askScreenConsent()
+            }
+        }
+        return """{"accepted":true}"""
+    }
+
+    private fun askScreenConsent() {
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        if (manager == null) {
+            (application as ScoutApp).screen.stop(null, ScreenEnd.FAILED, "This phone cannot share its screen.")
+            return
+        }
+        val intent = if (Build.VERSION.SDK_INT >= 34) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        try {
+            screenConsent.launch(intent)
+        } catch (_: RuntimeException) {
+            (application as ScoutApp).screen.stop(null, ScreenEnd.FAILED, "Android could not open the screen-capture prompt.")
+        }
+    }
+
+    private fun takeScreenConsent(code: Int, data: Intent?) {
+        val id = (application as ScoutApp).screen.asking() ?: return
+        if (code != RESULT_OK || data == null) {
+            (application as ScoutApp).screen.answer(id, false)
+            return
+        }
+        if (!(application as ScoutApp).screen.answer(id, true)) return
+        ContextCompat.startForegroundService(this, ScreenCaptureService.start(this, id, code, data))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun displaySize() = if (Build.VERSION.SDK_INT >= 30) {
+        val bounds = getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
+        frameSizeFor(bounds.width(), bounds.height(), resources.displayMetrics.densityDpi)
+    } else {
+        val metrics = DisplayMetrics()
+        getSystemService(WindowManager::class.java).defaultDisplay.getRealMetrics(metrics)
+        frameSizeFor(metrics.widthPixels, metrics.heightPixels, metrics.densityDpi)
     }
 
     public override fun onStart() {
@@ -739,6 +844,7 @@ class MainActivity : AppCompatActivity() {
         pendingLocationOrigin = null
         otpReceiver?.let { unregisterReceiver(it) }
         otpReceiver = null
+        (application as ScoutApp).screen.listen(null)
         super.onDestroy()
     }
 
@@ -749,6 +855,8 @@ class MainActivity : AppCompatActivity() {
         deskLoaded = false
         (application as ScoutApp).otp.discard()
         (application as ScoutApp).drops.discard()
+        (application as ScoutApp).screen.stop(null, ScreenEnd.SIGNED_OUT)
+        (application as ScoutApp).shots.discard()
         if (uid != null) lifecycleScope.launch { (application as ScoutApp).runtime.logout(uid) }
         clearWebSession {
             desk.loadUrl("about:blank")
@@ -759,6 +867,9 @@ class MainActivity : AppCompatActivity() {
     /** Ties this Google account to its own Scout user, then opens the chief chat. */
     private fun bindScout(user: FirebaseUser) {
         (application as ScoutApp).drops.claim(user.uid)
+        (application as ScoutApp).shots.claim(user.uid)
+        val screenOwner = (application as ScoutApp).screen.owner()
+        if (screenOwner != null && screenOwner != user.uid) (application as ScoutApp).screen.stop(null, ScreenEnd.SIGNED_OUT)
         if (boundUid == user.uid && deskLoaded) {
             showDesk(user)
             return
@@ -910,6 +1021,7 @@ class MainActivity : AppCompatActivity() {
     private fun performBridge(call: BridgeCall) {
         when (call) {
             BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone -> Unit
+            BridgeCall.ScreenState, BridgeCall.ScreenStart, BridgeCall.ScreenStop, BridgeCall.ScreenFrame, BridgeCall.ScreenTake, is BridgeCall.ScreenFile, is BridgeCall.ScreenDone -> Unit
             BridgeCall.Location -> requestBridgeLocation()
             BridgeCall.Microphone -> beginSpeech()
             BridgeCall.Camera -> requestBridgeMedia(audio = false)
@@ -1117,6 +1229,7 @@ class MainActivity : AppCompatActivity() {
             val call = (decision as? BridgeDecision.Allow)?.call
             if (call is BridgeCall.Checkout) return beginCheckout(this@MainActivity, call.app)
             if (call == BridgeCall.DropTake || call is BridgeCall.DropImage || call is BridgeCall.DropDone) return dropReply(call)
+            if (call != null && isScreenCall(call)) return screenReply(call)
             if (decision is BridgeDecision.Allow) runOnUiThread { performBridge(decision.call) }
             return bridgeResponse(decision)
         }

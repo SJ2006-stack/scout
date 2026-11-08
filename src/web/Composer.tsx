@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, Mic, Phone, PhoneOff, Plus, Square, Volume2, VolumeX } from "lucide-react";
+import { ArrowUp, Mic, Monitor, Phone, PhoneOff, Plus, Square, Volume2, VolumeX } from "lucide-react";
 import { readNativeSpeech, requestNativeMicrophone } from "../shared/nativeSpeech.ts";
 import { attachOcrText } from "../shared/ocr.ts";
 import { readAttachment } from "./ocr.ts";
@@ -19,6 +19,7 @@ type ComposerProps = {
   onVoiceReplies: (enabled: boolean) => void;
   onStop: () => void;
   onToast: (message: string) => void;
+  onScreen?: () => void;
   call?: { state: VoiceCallState; level: number; onToggle: () => void };
 };
 
@@ -33,6 +34,7 @@ export function Composer({
   onVoiceReplies,
   onStop,
   onToast,
+  onScreen,
   call,
 }: ComposerProps) {
   const onCall = call != null && call.state !== "idle" && call.state !== "ended";
@@ -217,6 +219,17 @@ export function Composer({
           onKeyDown={onKeyDown}
         />
         <div className="composer-tools">
+          {onScreen ? (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Understand my screen"
+              title="Understand my screen"
+              onClick={onScreen}
+            >
+              <Monitor size={18} />
+            </button>
+          ) : null}
           <button
             className={voiceReplies ? "icon-button speak on" : "icon-button speak"}
             type="button"

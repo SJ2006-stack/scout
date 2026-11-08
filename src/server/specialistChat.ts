@@ -11,6 +11,7 @@ import { postSarvam } from "./sarvamChat.ts";
 import { scoutPurpose, talkDuty } from "./scoutPrompt.ts";
 import { assistantPrompt, assistantTools, isAssistantTool, runAssistantTool, type AssistantToolName } from "./assistantTools.ts";
 import { assistantContext, voicePrompt } from "./eventChat.ts";
+import { screenPrompt, screenToolAllowed, screenTools } from "./screenChat.ts";
 
 const ROUND_LIMIT = 4;
 
@@ -122,7 +123,8 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
   const spoken: string[] = [];
   let started = false;
   let toolSummary = "";
-  const forced = agent === "shop" ? serverBasketCall(turn) : null;
+  const basketCall = agent === "shop" ? serverBasketCall(turn) : null;
+  const forced = basketCall && (!turn.screen || screenToolAllowed(basketCall.name)) ? basketCall : null;
   if (forced) {
     started = true;
     const ran = await runTool(turn, forced, emit);
@@ -136,8 +138,8 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
       apiKey: turn.sarvamApiKey,
       fetchImpl: turn.fetchImpl,
       signal: turn.signal,
-      system: `${instructions(agent)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}`,
-      tools: [...toolsFor(agent), ...assistantTools(assistantContext(turn))],
+      system: `${instructions(agent)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}${screenPrompt(turn.screen)}`,
+      tools: screenTools(turn.screen, [...toolsFor(agent), ...assistantTools(assistantContext(turn))]),
       messages,
       ...(turn.onSpeech ? { onText: turn.onSpeech } : {}),
     });
@@ -149,7 +151,7 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
     const blocks = contentBlocks(body.content);
     const text = blockText(blocks);
     if (text.length > 0 && !spoken.includes(text)) spoken.push(text);
-    const calls = blocks.filter((block) => isToolUse(agent, block));
+    const calls = blocks.filter((block) => isToolUse(agent, block)).filter((call) => !turn.screen || screenToolAllowed(call.name));
     if (calls.length === 0) return finish(turn, agent, text.length > 0 ? text : spoken.join("\n\n"), emit, toolSummary);
     started = true;
     messages.push({ role: "assistant", content: blocks });

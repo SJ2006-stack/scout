@@ -4,6 +4,7 @@ import app.scout.drop.DROP_ID
 import app.scout.isScoutHost
 import app.scout.leavesScout
 import app.scout.readPairPayload
+import app.scout.screen.SHOT_ID
 
 sealed class QrRead {
     data class Page(val url: String) : QrRead()
@@ -24,6 +25,18 @@ sealed class BridgeCall {
     data object Biometric : BridgeCall()
     data object Permissions : BridgeCall()
     data class Checkout(val app: String) : BridgeCall()
+    data object ScreenState : BridgeCall()
+    data object ScreenStart : BridgeCall()
+    data object ScreenStop : BridgeCall()
+    data object ScreenFrame : BridgeCall()
+    data object ScreenTake : BridgeCall()
+    data class ScreenFile(val id: String) : BridgeCall()
+    data class ScreenDone(val id: String) : BridgeCall()
+}
+
+fun isScreenCall(call: BridgeCall): Boolean = when (call) {
+    BridgeCall.ScreenState, BridgeCall.ScreenStart, BridgeCall.ScreenStop, BridgeCall.ScreenFrame, BridgeCall.ScreenTake, is BridgeCall.ScreenFile, is BridgeCall.ScreenDone -> true
+    BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone, BridgeCall.Location, BridgeCall.Microphone, BridgeCall.Camera, is BridgeCall.Qr, BridgeCall.Notification, is BridgeCall.Share, BridgeCall.Biometric, BridgeCall.Permissions, is BridgeCall.Checkout -> false
 }
 
 sealed class BridgeDecision {
@@ -58,6 +71,13 @@ fun allowBridge(host: String?, json: String, now: Long): BridgeDecision {
         "share" -> shareCall(json)
         "qr" -> qrCall(json, now)
         "open_checkout" -> checkoutCall(json)
+        "screen_state" -> BridgeDecision.Allow(BridgeCall.ScreenState)
+        "screen_start" -> BridgeDecision.Allow(BridgeCall.ScreenStart)
+        "screen_stop" -> BridgeDecision.Allow(BridgeCall.ScreenStop)
+        "screen_frame" -> BridgeDecision.Allow(BridgeCall.ScreenFrame)
+        "screen_take" -> BridgeDecision.Allow(BridgeCall.ScreenTake)
+        "screen_file" -> screenFileCall(json)
+        "screen_done" -> screenDoneCall(json)
         else -> BridgeDecision.Deny
     }
 }
@@ -98,6 +118,16 @@ private fun dropImageCall(json: String): BridgeDecision {
 private fun dropDoneCall(json: String): BridgeDecision {
     val dropId = jsonField(json, "id")?.takeIf { DROP_ID.matches(it) } ?: return BridgeDecision.Deny
     return BridgeDecision.Allow(BridgeCall.DropDone(dropId))
+}
+
+private fun screenFileCall(json: String): BridgeDecision {
+    val id = jsonField(json, "id")?.takeIf { SHOT_ID.matches(it) } ?: return BridgeDecision.Deny
+    return BridgeDecision.Allow(BridgeCall.ScreenFile(id))
+}
+
+private fun screenDoneCall(json: String): BridgeDecision {
+    val id = jsonField(json, "id")?.takeIf { SHOT_ID.matches(it) } ?: return BridgeDecision.Deny
+    return BridgeDecision.Allow(BridgeCall.ScreenDone(id))
 }
 
 fun jsonField(json: String, key: String): String? {

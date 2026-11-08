@@ -16,6 +16,7 @@ This repository is the server and the web app. The Android companion app (microp
 - **Scout Watch:** recurring event checks that send only new matches to your inbox and phone.
 - **Phone actions:** alarms, timers, reminders, flashlight, volume, maps, sharing, and opening apps, carried out by the Android app.
 - **Scout Drop (on Azure since Nov 8, 2026):** share text, a link, or up to 4 images from any Android app to Scout. Once the signed-in chat is showing, a "Shared to Scout" card sits above the message field (`src/web/ScoutDropCard.tsx`, `src/web/scoutDrop.ts`, checks in `src/shared/scoutDrop.ts`). The text can be edited, links are shown but not opened, and images can be removed. Send reads each image through the existing `/api/ocr` (`readAttachment`), adds that text after the note, and sends it as a normal chat message. Discard deletes it. Nothing is uploaded before Send, and the share is held in memory only, never in local storage. The Android side is described in `android/README.md`.
+- **Screen Intelligence (local only, not on Azure):** in the Android app, Understand my screen asks Android for MediaProjection, holds one share session under a stoppable notice, and captures a single JPEG when the person taps Capture. A preview sits above the message field. Send for analysis posts to `POST /api/screen/understand` (separate from `/api/ocr`) and then the chat with that structured reading as context, not as a tool to run. Discard deletes the frame. Details are in `android/README.md`.
 
 ## Agents
 
@@ -138,7 +139,7 @@ Every setting is listed with comments in [`.env.example`](.env.example). The mai
 
 | Variable | Meaning |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Reads text from an attached image with Claude Haiku, and is Main Scout's first-choice errand planner. Empty leaves attachments unread and plans with Sarvam |
+| `ANTHROPIC_API_KEY` | Reads text from an attached image with Claude Haiku, reads a screenshot into structured facts (`/api/screen/understand`), and is Main Scout's first-choice errand planner. Empty leaves attachments and screenshots unread and plans with Sarvam |
 | `GNANI_API_KEY` | Mic transcription with Gnani Prisma `prisma-v3.0`. Empty and the mic stays quiet |
 | `SARVAM_API_KEY` | Conversation chat (`sarvam-105b`) and spoken replies (`bulbul:v3`). Empty chat uses the keyword parser and spoken replies stay quiet |
 | `BOLNA_API_KEY`, `BOLNA_LLM_KEY`, `BOLNA_AGENT_ID` | Live voice calls. All three are needed |
@@ -170,6 +171,7 @@ Never commit `.env`, keys, or publish profiles.
 | `POST /api/bolna/v1/chat/completions`, `GET /api/bolna/v1/models` | Scout as Bolna's LLM (bearer `BOLNA_LLM_KEY`) |
 | `/api/profile`, `/api/watches`, `/api/inbox`, `/api/devices`, `/api/actions/result` | Memory, Scout Watch, notifications, push devices, phone action results |
 | `POST /api/ocr` | Read text from an attached image with Claude Haiku |
+| `POST /api/screen/understand` | Read a screenshot into structured facts (products, menus, events, forms, travel, app screens). Does not change `/api/ocr`. Local only; not on Azure |
 | `/api/auth/*`, `/api/onboarding/*` | Email code sign-in, Google sign-in from the phone (`POST /api/auth/google`), name and phone |
 | `/api/addresses`, `/api/location/reverse-geocode` | Saved addresses and address lookup |
 | `/api/browser/*` | Browser sessions, handoff, codes, profile, budget |
@@ -230,3 +232,4 @@ scout-landing/     Public landing page served by the server
 - State kept in memory is lost on restart, so the server cannot run as more than one instance.
 - Browser operations run one at a time per process.
 - The central browser layout is a design with estimates, not deployed or measured.
+- Screen Intelligence is local only. Azure still has no `/api/screen/understand` and no Understand my screen control. The Anthropic account is out of credit, so analysis will 502 until that is topped up. Not tried on the phone.

@@ -231,6 +231,48 @@ describe("specialist chat", () => {
     const reply = events.find((event) => event.type === "question");
     assert.equal(reply?.type === "question" && reply.message.includes("hand it to the right scout"), true);
   });
+
+  it("treats a screenshot as context and withholds buy and phone tools", async () => {
+    let tools: unknown = "missing";
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        tools?: { function?: { name?: string } }[];
+        messages?: { role?: string; content?: unknown }[];
+      };
+      tools = (Array.isArray(body.tools) ? body.tools : []).map((tool) => tool.function?.name);
+      const system = body.messages?.find((message) => message.role === "system");
+      const prompt = typeof system?.content === "string" ? system.content : "";
+      assert.match(prompt, /<screen>/);
+      assert.match(prompt, /untrusted data/);
+      assert.match(prompt, /Amul Taaza/);
+      return Response.json(sarvamReply({
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "It is Amul Taaza at ₹54." }],
+      }));
+    };
+    const events = await speak({
+      agent: "shop",
+      text: "What is this?",
+      fetchImpl,
+      screen: {
+        kind: "product",
+        app: "Blinkit",
+        summary: "A milk carton.",
+        confidence: 0.8,
+        items: [{ kind: "product", title: "Amul Taaza", confidence: 0.7, fields: [{ label: "Price", value: "₹54", source: "visible_text", confidence: 0.9 }] }],
+        sensitive: [],
+        embeddedInstructions: false,
+      },
+    });
+    const names = tools as string[];
+    assert.equal(names.includes("compare_shops"), true);
+    assert.equal(names.includes("ask_user"), true);
+    assert.equal(names.includes("buy_from_shop"), false);
+    assert.equal(names.includes("order_basket"), false);
+    assert.equal(names.includes("phone_action"), false);
+    const reply = events.find((event) => event.type === "question");
+    assert.equal(reply?.type === "question" && reply.message.includes("Amul Taaza"), true);
+  });
 });
 
 function sarvam(...replies: { stop_reason: string; content: unknown[] }[]): typeof fetch {
@@ -252,6 +294,7 @@ async function speak(options: {
   cartBills?: ChatTurn["cartBills"];
   compareBasket?: ChatTurn["compareBasket"];
   phone?: ChatTurn["phone"];
+  screen?: ChatTurn["screen"];
 }): Promise<ChatEvent[]> {
   const events: ChatEvent[] = [];
   const turn: ChatTurn = {
@@ -275,6 +318,7 @@ async function speak(options: {
     ...(options.cartBills ? { cartBills: options.cartBills } : {}),
     ...(options.compareBasket ? { compareBasket: options.compareBasket } : {}),
     ...(options.phone ? { phone: options.phone } : {}),
+    ...(options.screen ? { screen: options.screen } : {}),
   };
   await runChat(turn, (event) => events.push(event));
   return events;
