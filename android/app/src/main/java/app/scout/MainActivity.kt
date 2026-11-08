@@ -821,7 +821,7 @@ class MainActivity : AppCompatActivity() {
         desk.visibility = View.VISIBLE
         if (!deskLoaded) {
             deskLoaded = true
-            desk.loadUrl(getString(R.string.azure_origin))
+            desk.loadUrl(deskStartUrl(getString(R.string.azure_origin)))
         }
         registerDevice(user.uid)
         profiles.save(user) { error ->

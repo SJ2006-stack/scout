@@ -14,6 +14,12 @@ fun webViewSessionCookie(setCookie: String?): String? {
     return "$pair; $maxAge; Path=/"
 }
 
+/** The main host serves the public landing page at `/`, so the app opens the chat on its own path. */
+fun deskStartUrl(origin: String): String = origin.trimEnd('/') + "/chat"
+
+/** Azure's front end adds its own ARRAffinity cookies, so the session is picked out of every Set-Cookie header. */
+fun sessionFromSetCookies(headers: List<String>): String? = headers.firstNotNullOfOrNull { webViewSessionCookie(it) }
+
 fun googleSignInBody(idToken: String): String {
     val escaped = buildString(idToken.length) {
         for (char in idToken) {
@@ -40,7 +46,7 @@ fun exchangeGoogleSession(origin: String, idToken: String): String? {
     return try {
         connection.outputStream.use { it.write(googleSignInBody(idToken).toByteArray()) }
         if (connection.responseCode !in 200..299) return null
-        webViewSessionCookie(connection.getHeaderField("Set-Cookie"))
+        sessionFromSetCookies(connection.headerFields.entries.filter { it.key.equals("Set-Cookie", ignoreCase = true) }.flatMap { it.value })
     } catch (_: Exception) {
         null
     } finally {

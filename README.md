@@ -15,7 +15,7 @@ This repository is the server and the web app. The Android companion app (microp
 - **Memory:** remembers your name, city, diet, budget, and other preferences, and shares them with every agent. Refuses to store OTPs, PINs, passwords, and card numbers.
 - **Scout Watch:** recurring event checks that send only new matches to your inbox and phone.
 - **Phone actions:** alarms, timers, reminders, flashlight, volume, maps, sharing, and opening apps, carried out by the Android app.
-- **Scout Drop (local, not deployed):** share text, a link, or up to 4 images from any Android app to Scout. Once the signed-in chat is showing, a "Shared to Scout" card sits above the message field (`src/web/ScoutDropCard.tsx`, `src/web/scoutDrop.ts`, checks in `src/shared/scoutDrop.ts`). The text can be edited, links are shown but not opened, and images can be removed. Send reads each image through the existing `/api/ocr` (`readAttachment`), adds that text after the note, and sends it as a normal chat message. Discard deletes it. Nothing is uploaded before Send, and the share is held in memory only, never in local storage. The Android side is described in `android/README.md`.
+- **Scout Drop (on Azure since Nov 8, 2026):** share text, a link, or up to 4 images from any Android app to Scout. Once the signed-in chat is showing, a "Shared to Scout" card sits above the message field (`src/web/ScoutDropCard.tsx`, `src/web/scoutDrop.ts`, checks in `src/shared/scoutDrop.ts`). The text can be edited, links are shown but not opened, and images can be removed. Send reads each image through the existing `/api/ocr` (`readAttachment`), adds that text after the note, and sends it as a normal chat message. Discard deletes it. Nothing is uploaded before Send, and the share is held in memory only, never in local storage. The Android side is described in `android/README.md`.
 
 ## Agents
 
@@ -191,7 +191,7 @@ az webapp config container set -g ledger-rg -n <app> \
 ```
 
 - The image copies the prebuilt `dist/`, so run `npm run build` first. Build from a clean checkout so uncommitted work stays out.
-- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `chief1-20261108`, built on Nov 8, 2026 from the tree committed as `607030f`.
+- The apps are pinned to a tag, not `latest`, so a restart alone keeps the old build. Now all six run `drop1-20261108`, built on Nov 8, 2026 from a clean checkout of `2c650ed` (Scout Drop on top of `607030f`).
 - The relay needs WebSockets on: `az webapp config set -g ledger-rg -n <app> --web-sockets-enabled true` (on for all six apps).
 - Do not zip deploy. It switches the apps to the Node stack, which has no Chromium.
 - `.github/workflows/deploy.yml` only installs, tests, and builds. Pushing the image is manual.
