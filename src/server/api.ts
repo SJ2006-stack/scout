@@ -39,6 +39,7 @@ import { PairTickets } from "./pairTickets.ts";
 import { aboutEntries, indianMobile, preferredName, type AboutAnswers } from "../shared/onboarding.ts";
 import { ocrResponse } from "./ocr.ts";
 import { OCR_BYTES } from "../shared/ocr.ts";
+import { readHistory, type HistoryLine } from "../shared/chatHistory.ts";
 import { readScreenReading, SCREEN_BYTES, type ScreenReading } from "../shared/screenReading.ts";
 import { screenResponse } from "./screenUnderstanding.ts";
 import { voiceResponse } from "./voice/sarvam.ts";
@@ -52,10 +53,8 @@ import { isProfileKey, type ProfileStore } from "./profile/profileStore.ts";
 import type { WatchRunner } from "./watch/watchRunner.ts";
 import type { WatchStore } from "./watch/watchStore.ts";
 import type { ChatTurn } from "./chatRun.ts";
+import { googleRedirectUri, routeGoogle, type GoogleAccounts } from "./googleAccount.ts";
 import type { AgentId } from "../shared/hosts.ts";
-import type { BolnaConfig } from "./voice/bolna.ts";
-import { isBolnaLlmRoute, routeBolnaLlm, routeBolnaSession, routeVoiceLive, type TurnBuilder } from "./voice/bolnaRoutes.ts";
-import type { LiveRelay } from "./voice/liveRelay.ts";
 
 const SIGN_IN_FIRST = "Sign in with Google first.";
 
@@ -72,7 +71,6 @@ export type ApiDeps = {
   listingCache?: ListingCache;
   fetchImpl?: typeof fetch;
   mapsApiKey?: string;
-  anthropicApiKey?: string;
   commerce?: CommerceHub;
   pairTickets?: PairTickets;
   browser?: BrowserWorker;
@@ -91,8 +89,7 @@ export type ApiDeps = {
   watchRunner?: WatchRunner;
   inbox?: InboxStore;
   cartBills?: CartBillStore;
-  bolna?: BolnaConfig | null;
-  liveRelay?: LiveRelay;
+  google?: GoogleAccounts;
 };
 
 export function createApiServer(deps: ApiDeps): Server {
@@ -104,7 +101,6 @@ export function createApiServer(deps: ApiDeps): Server {
     listingCache: deps.listingCache ?? new ListingCache(60_000, deps.now),
     fetchImpl: deps.fetchImpl ?? fetch,
     mapsApiKey: deps.mapsApiKey ?? "",
-    anthropicApiKey: deps.anthropicApiKey ?? "",
     commerce: deps.commerce ?? createCommerceHub(deps.now),
   };
   return createServer((request, response) => {
@@ -148,12 +144,13 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     await routeSignIn(request, response, url, deps);
     return;
   }
-  if (isBolnaLlmRoute(url.pathname)) {
-    await routeBolnaLlm(request, response, url, deps, voiceTurn(deps));
-    return;
-  }
   if (request.method === "POST" && url.pathname === "/api/invite") {
     await routeInvite(request, response, deps);
+    return;
+  }
+  if (url.pathname.startsWith("/api/google/")) {
+    const account = deps.auth?.account(currentSessionId(request)) ?? null;
+    await routeGoogle(request, response, url, deps.google, account);
     return;
   }
   if (deps.auth && !browserRuntimeMaySkipSignIn(request, url.pathname, deps.browser) && !deps.auth.account(currentSessionId(request))) {
@@ -173,11 +170,11 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     await routePhone(request, response, deps);
     return;
   }
-  if (url.pathname === "/api/onboarding/phone" || url.pathname === "/api/onboarding/name" || url.pathname === "/api/onboarding/about") {
+  if (url.pathname === "/api/onboarding/phone" || url.pathname === "/api/onboarding/name" || url.pathname === "/api/onboarding/about" || url.pathname === "/api/onboarding/accounts") {
     await routeOnboarding(request, response, url, deps);
     return;
   }
-  if (url.pathname === "/api/voice/stt" || url.pathname === "/api/voice/tts") {
+  if (url.pathname === "/api/voice/stt") {
     const raw = await readBytes(request, 4_000_000);
     if (!raw.ok) {
       sendJson(response, 400, { error: raw.error });
@@ -239,18 +236,10 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
     deps.directory?.touch(owner, deps.now());
     await writeEvents(response, (emit, signal) =>
       runChat(
-        chatTurn(deps, owner, { ...parsed, agent: parsed.agent ?? "event" }, signal),
+        chatTurn(deps, owner, { ...parsed, agent: parsed.agent ?? "event" }, signal, googleRedirectUri(request, process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim() ?? "")),
         emit,
       ),
     );
-    return;
-  }
-  if (request.method === "POST" && url.pathname === "/api/voice/bolna/session") {
-    await routeBolnaSession(request, response, sessionId(request, response), deps);
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/api/voice/live") {
-    await routeVoiceLive(request, response, sessionId(request, response), deps);
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/commerce") {
@@ -312,9 +301,9 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
   sendJson(response, 404, { error: "Not found" });
 }
 
-type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null; phone?: PhoneAutomation | null; answers?: ErrandAnswers | null; screen?: ScreenReading | null };
+type TurnInput = { text: string; agent: AgentId; timezone: string; pincode: string; lat: number | null; lon: number | null; phone?: PhoneAutomation | null; answers?: ErrandAnswers | null; screen?: ScreenReading | null; history?: HistoryLine[] | null };
 
-function chatTurn(deps: ApiDeps, owner: string, given: TurnInput, signal: AbortSignal): ChatTurn {
+function chatTurn(deps: ApiDeps, owner: string, given: TurnInput, signal: AbortSignal, googleRedirect = ""): ChatTurn {
   if (!deps.commerce) deps.commerce = createCommerceHub(deps.now);
   const browser = deps.browser;
   const homePincode = deps.profile?.get(owner, "home_area")?.value ?? "";
@@ -341,8 +330,10 @@ function chatTurn(deps: ApiDeps, owner: string, given: TurnInput, signal: AbortS
     ...(input.phone ? { phone: input.phone } : {}),
     ...(input.answers ? { answers: input.answers } : {}),
     ...(input.screen ? { screen: input.screen } : {}),
-    anthropicApiKey: deps.anthropicApiKey ?? "",
+    ...(input.history ? { history: input.history } : {}),
+    ...(deps.google ? { google: deps.google, googleRedirect } : {}),
     compareBuses: browser ? (trip, busSignal) => browser.compareBuses(trip, busSignal, owner) : undefined,
+    compareFlights: browser ? (from, to, date, timeOfDay, flightSignal) => browser.compareFlights(from, to, date, timeOfDay, flightSignal, owner) : undefined,
     compareShop: browser ? (query, shopSignal, onStatus) => browser.compareShop(query, shopSignal, owner, onStatus) : undefined,
     compareBasket: browser ? (queries, shopSignal, onStatus) => browser.compareBasket(queries, shopSignal, owner, onStatus) : undefined,
     ...(deps.cartBills ? { cartBills: () => deps.cartBills?.recent(owner) ?? [] } : {}),
@@ -357,11 +348,6 @@ function chatTurn(deps: ApiDeps, owner: string, given: TurnInput, signal: AbortS
         }
       : undefined,
   };
-}
-
-function voiceTurn(deps: ApiDeps): TurnBuilder {
-  return (userId, agent, text, signal) =>
-    chatTurn(deps, userId, { text, agent, timezone: "Asia/Kolkata", pincode: "", lat: null, lon: null }, signal);
 }
 
 async function routeInvite(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
@@ -425,7 +411,7 @@ async function routeSignIn(request: IncomingMessage, response: ServerResponse, u
     }
     setSessionCookie(response, result.userId);
     const account = auth.account(result.userId);
-    sendJson(response, 200, account ? sessionBody(account) : { signedIn: true, email: result.email, userId: result.userId, phone: null, name: null, onboarded: false });
+    sendJson(response, 200, account ? sessionBody(account) : { signedIn: true, email: result.email, userId: result.userId, phone: null, name: null, aboutDone: false, onboarded: false });
     return;
   }
   await drain(request);
@@ -433,7 +419,7 @@ async function routeSignIn(request: IncomingMessage, response: ServerResponse, u
 }
 
 function sessionBody(account: Account): Record<string, unknown> {
-  return { signedIn: true, email: account.email, userId: account.id, phone: account.phone, name: account.name, onboarded: account.onboarded };
+  return { signedIn: true, email: account.email, userId: account.id, phone: account.phone, name: account.name, aboutDone: account.aboutDone, onboarded: account.onboarded };
 }
 
 const CART_WAIT_MS = 120_000;
@@ -538,6 +524,18 @@ async function routeOnboarding(request: IncomingMessage, response: ServerRespons
     saveAbout(response, account, record, deps, directory);
     return;
   }
+  if (url.pathname === "/api/onboarding/accounts") {
+    if (!account.aboutDone) {
+      sendJson(response, 400, { error: "Tell Scout a bit about you first." });
+      return;
+    }
+    if (!directory.finishOnboarding(account.id, deps.now())) {
+      sendJson(response, 400, { error: "Add your name first." });
+      return;
+    }
+    sendJson(response, 200, { onboarded: true });
+    return;
+  }
   const name = preferredName(typeof record.name === "string" ? record.name : "");
   if (!name) {
     sendJson(response, 400, { error: "Enter the name Scout should use." });
@@ -582,7 +580,10 @@ function saveAbout(response: ServerResponse, account: Account, record: Record<st
       if (isProfileKey(key) && value) deps.profile.set(account.id, key, value, "explicit", deps.now());
     }
   }
-  directory.finishOnboarding(account.id, deps.now());
+  if (!directory.markAbout(account.id, deps.now())) {
+    sendJson(response, 400, { error: "Add the name Scout should use first." });
+    return;
+  }
   sendJson(response, 200, { saved: Object.keys(parsed.entries) });
 }
 
@@ -640,6 +641,7 @@ function parseChatRequest(value: unknown): {
   phone: PhoneAutomation | null;
   answers: ErrandAnswers | null;
   screen: ScreenReading | null;
+  history: HistoryLine[] | null;
 } | { ok: false; error: string } {
   if (!value || typeof value !== "object") return { ok: false, error: "Send a message." };
   const body = value as Record<string, unknown>;
@@ -650,7 +652,9 @@ function parseChatRequest(value: unknown): {
   const lat = readOptionalCoord(body.lat, -90, 90);
   const lon = readOptionalCoord(body.lon, -180, 180);
   if (lat === "bad" || lon === "bad") return { ok: false, error: "Coordinates are not a valid point." };
-  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon, agent: isAgentId(body.agent) ? body.agent : "event", phone: readPhoneAutomation(body.phone), answers: readErrandAnswers(body.answers), screen: readScreenReading(body.screen) };
+  const history = readHistory(body.history);
+  if (history === "bad") return { ok: false, error: "Chat history was not a list." };
+  return { ok: true, text: body.text.trim(), timezone, pincode, lat, lon, agent: isAgentId(body.agent) ? body.agent : "event", phone: readPhoneAutomation(body.phone), answers: readErrandAnswers(body.answers), screen: readScreenReading(body.screen), history };
 }
 
 function readOptionalCoord(value: unknown, min: number, max: number): number | null | "bad" {

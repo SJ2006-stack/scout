@@ -11,6 +11,7 @@ export type ScreenShotMeta = {
   bytes: number;
   width: number;
   height: number;
+  frames: number;
 };
 
 const SHOT_ID = /^[a-f0-9]{24}$/;
@@ -40,7 +41,8 @@ export function readScreenShot(value: unknown): ScreenShotMeta | null {
   if (typeof record.bytes !== "number" || !Number.isFinite(record.bytes) || record.bytes <= 0 || record.bytes > SCREEN_BYTES) return null;
   if (typeof record.width !== "number" || typeof record.height !== "number") return null;
   if (record.width < 1 || record.height < 1) return null;
-  return { id: record.id, mime: "image/jpeg", bytes: record.bytes, width: record.width, height: record.height };
+  const frames = typeof record.frames === "number" && Number.isInteger(record.frames) && record.frames >= 1 && record.frames <= 6 ? record.frames : 1;
+  return { id: record.id, mime: "image/jpeg", bytes: record.bytes, width: record.width, height: record.height, frames };
 }
 
 export function screenState(): { state: string; reason: string | null; message: string | null; shot: ScreenShotMeta | null } | null {
@@ -83,6 +85,23 @@ export function screenShotFile(shot: ScreenShotMeta): File | null {
   } catch {
     return null;
   }
+}
+
+export function fillOpenScreen(input: { name: string; email: string; phone: string; note: string; submit: boolean }): { filled: number; submitted: boolean; message: string } | null {
+  const reply = ask({
+    op: "screen_fill",
+    name: input.name.slice(0, 80),
+    email: input.email.slice(0, 80),
+    phone: input.phone.slice(0, 20),
+    note: input.note.slice(0, 500),
+    submit: input.submit ? "yes" : "no",
+  });
+  if (!reply) return null;
+  return {
+    filled: typeof reply.filled === "number" ? reply.filled : 0,
+    submitted: reply.submitted === true,
+    message: typeof reply.message === "string" ? reply.message : "",
+  };
 }
 
 export function finishScreenShot(shot: ScreenShotMeta): void {

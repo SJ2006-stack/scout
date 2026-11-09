@@ -1,7 +1,11 @@
 import { readScreenReading, SCREEN_BYTES, SCREEN_KINDS, SCREEN_SOURCES, SENSITIVE_KINDS, type ScreenReading } from "../shared/screenReading.ts";
 
-const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
-const VISION_MODEL = "claude-haiku-5-5";
+const CHAT_URL = "https://api.sarvam.ai/v2/chat/completions";
+/**
+ * sarvam-105b is text only, so a screenshot sent to it is rejected.
+ * gemma4 is on the same Sarvam key, accepts an inline image, calls tools, and does not reason unless asked.
+ */
+const VISION_MODEL = "gemma4";
 const SCREEN_TIMEOUT_MS = 30_000;
 const SCREEN_TYPES: Record<string, string> = {
   "image/jpeg": "image/jpeg",
@@ -11,7 +15,7 @@ const SCREEN_TYPES: Record<string, string> = {
 };
 
 export type ScreenDeps = {
-  anthropicApiKey?: string;
+  sarvamApiKey?: string;
   fetchImpl?: typeof fetch;
 };
 
@@ -77,34 +81,39 @@ export async function screenResponse(
   deps: ScreenDeps,
 ): Promise<{ status: number; body: { reading: ScreenReading } | { error: string } }> {
   if (method !== "POST") return { status: 405, body: { error: "Send the screenshot with POST." } };
-  const key = deps.anthropicApiKey?.trim() ?? "";
-  if (key.length === 0) return { status: 503, body: { error: "Screen reading is off until ANTHROPIC_API_KEY is set." } };
+  const key = deps.sarvamApiKey?.trim() ?? "";
+  if (key.length === 0) return { status: 503, body: { error: "Screen reading is off until SARVAM_API_KEY is set." } };
   const mediaType = SCREEN_TYPES[contentType.split(";")[0]?.trim().toLowerCase() ?? ""];
   if (!mediaType) return { status: 415, body: { error: "Send the screenshot as JPEG, PNG, or WebP." } };
   if (raw.byteLength === 0) return { status: 400, body: { error: "That screenshot was empty." } };
   if (raw.byteLength > SCREEN_BYTES) return { status: 413, body: { error: "That screenshot is too large." } };
   let response: Response;
   try {
-    response = await (deps.fetchImpl ?? fetch)(MESSAGES_URL, {
+    response = await (deps.fetchImpl ?? fetch)(CHAT_URL, {
       method: "POST",
       headers: {
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
+        "api-subscription-key": key,
         "content-type": "application/json",
         accept: "application/json",
       },
       body: JSON.stringify({
         model: VISION_MODEL,
-        max_tokens: 3000,
-        thinking: { type: "disabled" },
-        system: SCREEN_SYSTEM,
-        tools: [REPORT_TOOL],
-        tool_choice: { type: "tool", name: REPORT_TOOL.name },
+        max_tokens: 1500,
+        tools: [{
+          type: "function",
+          function: {
+            name: REPORT_TOOL.name,
+            description: REPORT_TOOL.description,
+            parameters: REPORT_TOOL.input_schema,
+          },
+        }],
+        tool_choice: "required",
         messages: [
+          { role: "system", content: SCREEN_SYSTEM },
           {
             role: "user",
             content: [
-              { type: "image", source: { type: "base64", media_type: mediaType, data: Buffer.from(raw).toString("base64") } },
+              { type: "image_url", image_url: { url: `data:${mediaType};base64,${Buffer.from(raw).toString("base64")}` } },
               { type: "text", text: "Report what this screenshot shows." },
             ],
           },
@@ -128,12 +137,23 @@ export async function screenResponse(
 }
 
 function reportInput(payload: unknown): unknown {
-  const content = payload && typeof payload === "object" ? (payload as { content?: unknown }).content : undefined;
-  if (!Array.isArray(content)) return null;
-  for (const block of content) {
-    if (!block || typeof block !== "object") continue;
-    const record = block as { type?: unknown; name?: unknown; input?: unknown };
-    if (record.type === "tool_use" && record.name === REPORT_TOOL.name) return record.input;
+  const choices = payload && typeof payload === "object" ? (payload as { choices?: unknown }).choices : undefined;
+  const choice = Array.isArray(choices) ? choices[0] : undefined;
+  const message = choice && typeof choice === "object" ? (choice as { message?: unknown }).message : undefined;
+  const calls = message && typeof message === "object" ? (message as { tool_calls?: unknown }).tool_calls : undefined;
+  if (!Array.isArray(calls)) return null;
+  for (const call of calls) {
+    if (!call || typeof call !== "object") continue;
+    const fn = (call as { function?: unknown }).function;
+    if (!fn || typeof fn !== "object") continue;
+    const name = (fn as { name?: unknown }).name;
+    const args = (fn as { arguments?: unknown }).arguments;
+    if (name !== REPORT_TOOL.name || typeof args !== "string") continue;
+    try {
+      return JSON.parse(args) as unknown;
+    } catch {
+      return null;
+    }
   }
   return null;
 }

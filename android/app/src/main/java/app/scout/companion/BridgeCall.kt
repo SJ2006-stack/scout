@@ -24,6 +24,7 @@ sealed class BridgeCall {
     data class Share(val text: String) : BridgeCall()
     data object Biometric : BridgeCall()
     data object Permissions : BridgeCall()
+    data object Accessibility : BridgeCall()
     data class Checkout(val app: String) : BridgeCall()
     data object ScreenState : BridgeCall()
     data object ScreenStart : BridgeCall()
@@ -32,12 +33,13 @@ sealed class BridgeCall {
     data object ScreenTake : BridgeCall()
     data class ScreenFile(val id: String) : BridgeCall()
     data class ScreenDone(val id: String) : BridgeCall()
+    data class ScreenFill(val name: String, val email: String, val phone: String, val note: String, val submit: Boolean) : BridgeCall()
     data object SignOut : BridgeCall()
 }
 
 fun isScreenCall(call: BridgeCall): Boolean = when (call) {
-    BridgeCall.ScreenState, BridgeCall.ScreenStart, BridgeCall.ScreenStop, BridgeCall.ScreenFrame, BridgeCall.ScreenTake, is BridgeCall.ScreenFile, is BridgeCall.ScreenDone -> true
-    BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone, BridgeCall.Location, BridgeCall.Microphone, BridgeCall.Camera, is BridgeCall.Qr, BridgeCall.Notification, is BridgeCall.Share, BridgeCall.Biometric, BridgeCall.Permissions, is BridgeCall.Checkout, BridgeCall.SignOut -> false
+    BridgeCall.ScreenState, BridgeCall.ScreenStart, BridgeCall.ScreenStop, BridgeCall.ScreenFrame, BridgeCall.ScreenTake, is BridgeCall.ScreenFile, is BridgeCall.ScreenDone, is BridgeCall.ScreenFill -> true
+    BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone, BridgeCall.Location, BridgeCall.Microphone, BridgeCall.Camera, is BridgeCall.Qr, BridgeCall.Notification, is BridgeCall.Share, BridgeCall.Biometric, BridgeCall.Permissions, BridgeCall.Accessibility, is BridgeCall.Checkout, BridgeCall.SignOut -> false
 }
 
 sealed class BridgeDecision {
@@ -69,6 +71,7 @@ fun allowBridge(host: String?, json: String, now: Long): BridgeDecision {
         "notification" -> BridgeDecision.Allow(BridgeCall.Notification)
         "biometric" -> BridgeDecision.Allow(BridgeCall.Biometric)
         "permissions" -> BridgeDecision.Allow(BridgeCall.Permissions)
+        "accessibility" -> BridgeDecision.Allow(BridgeCall.Accessibility)
         "share" -> shareCall(json)
         "qr" -> qrCall(json, now)
         "open_checkout" -> checkoutCall(json)
@@ -79,6 +82,7 @@ fun allowBridge(host: String?, json: String, now: Long): BridgeDecision {
         "screen_take" -> BridgeDecision.Allow(BridgeCall.ScreenTake)
         "screen_file" -> screenFileCall(json)
         "screen_done" -> screenDoneCall(json)
+        "screen_fill" -> screenFillCall(json)
         "sign_out" -> BridgeDecision.Allow(BridgeCall.SignOut)
         else -> BridgeDecision.Deny
     }
@@ -125,6 +129,16 @@ private fun dropDoneCall(json: String): BridgeDecision {
 private fun screenFileCall(json: String): BridgeDecision {
     val id = jsonField(json, "id")?.takeIf { SHOT_ID.matches(it) } ?: return BridgeDecision.Deny
     return BridgeDecision.Allow(BridgeCall.ScreenFile(id))
+}
+
+private fun screenFillCall(json: String): BridgeDecision {
+    val name = jsonField(json, "name").orEmpty()
+    val email = jsonField(json, "email").orEmpty()
+    val phone = jsonField(json, "phone").orEmpty()
+    val note = jsonField(json, "note").orEmpty()
+    if (name.length > 80 || email.length > 80 || phone.length > 20 || note.length > 500) return BridgeDecision.Deny
+    val submit = jsonField(json, "submit") == "yes"
+    return BridgeDecision.Allow(BridgeCall.ScreenFill(name, email, phone, note, submit))
 }
 
 private fun screenDoneCall(json: String): BridgeDecision {

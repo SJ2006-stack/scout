@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import type { ErrandForm, ErrandQuestion } from "../shared/errands.ts";
 import type { AgentId } from "../shared/hosts.ts";
+import type { ShopOffer } from "./browser/shelf.ts";
 import type { ErrandPlan } from "./errands.ts";
 
 const FORM_TTL_MS = 30 * 60 * 1000;
@@ -13,7 +14,8 @@ const OPTION_LIMIT = 4;
 /** A question form on screen, waiting for answers: Main Scout's errand plan, or any scout's ask_user. */
 export type PendingForm =
   | { kind: "errands"; plan: ErrandPlan }
-  | { kind: "ask"; agent: AgentId; questions: ErrandQuestion[] };
+  | { kind: "ask"; agent: AgentId; questions: ErrandQuestion[] }
+  | { kind: "shelf"; offer: ShopOffer; query: string; choices?: readonly { label: string; offer: ShopOffer }[] };
 
 export class PendingForms {
   private readonly users = new Map<string, Map<string, { at: number; form: PendingForm }>>();
@@ -87,6 +89,42 @@ export function askUser(userId: string, agent: AgentId, input: unknown, emit: (e
   pendingForms.save(userId, form.id, { kind: "ask", agent, questions });
   emit({ type: "form", form });
   return { ok: true, content: "The form is on their screen. Do not answer the task yet. End this turn with one short line saying what you need; their answers come back as the next message." };
+}
+
+/** Yes or No for the only listing a shop search returned. */
+export function askShelf(userId: string, offer: ShopOffer, query: string, emit: (event: ChatEvent) => void): void {
+  const form: ErrandForm = {
+    id: randomBytes(12).toString("hex"),
+    tasks: [`${offer.merchant}: ${offer.title}, ₹${offer.rupees}`],
+    questions: [{ id: "match", prompt: "Is that what you're looking for?", kind: "choice", options: ["Yes", "No"] }],
+  };
+  pendingForms.save(userId, form.id, { kind: "shelf", offer, query });
+  emit({ type: "form", form });
+}
+
+/** A pick of the packs the stores listed, when the asked product was not an exact match. */
+export function askShelfChoices(userId: string, offers: readonly ShopOffer[], query: string, emit: (event: ChatEvent) => void): void {
+  const choices = shelfOptionLabels(offers);
+  const first = choices[0];
+  if (!first) return;
+  const form: ErrandForm = {
+    id: randomBytes(12).toString("hex"),
+    tasks: choices.map((choice) => choice.label),
+    questions: [{ id: "match", prompt: "Which pack?", kind: "choice", options: choices.map((choice) => choice.label) }],
+  };
+  pendingForms.save(userId, form.id, { kind: "shelf", offer: first.offer, query, choices });
+  emit({ type: "form", form });
+}
+
+export function shelfOptionLabels(offers: readonly ShopOffer[]): { label: string; offer: ShopOffer }[] {
+  const used = new Set<string>();
+  return offers.slice(0, 4).map((offer) => {
+    const plain = `${offer.title} ₹${offer.rupees}`.replace(/\s+/g, " ").trim();
+    const withStore = `${offer.merchant}: ${plain}`;
+    const label = (used.has(plain) ? withStore : plain).slice(0, 60);
+    used.add(plain);
+    return { label, offer };
+  });
 }
 
 /** Their answers as one message to the scout that asked, so the chat carries the questions too. */

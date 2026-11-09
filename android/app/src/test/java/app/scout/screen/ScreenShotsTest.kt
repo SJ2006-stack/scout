@@ -51,13 +51,26 @@ class ScreenShotsTest {
     }
 
     @Test
-    fun aNewerFrameReplacesTheOlderOneAndExpiryDropsIt() {
+    fun aClipKeepsFramesUntilTheCapAndExpiryDropsIt() {
         val shots = ScreenShots(folder.newFolder(), { clock })
         val first = "aaaaaaaaaaaaaaaaaaaaaaaa"
         val second = "bbbbbbbbbbbbbbbbbbbbbbbb"
         shots.put("u1", first, byteArrayOf(1), 10, 10)
         shots.put("u1", second, byteArrayOf(2, 3), 10, 10)
         assertEquals(second, shots.take("u1")?.id)
+        assertEquals(2, shots.take("u1")?.frames)
+        assertArrayEquals(byteArrayOf(1), shots.bytes("u1", first))
+        listOf(
+            "c11111111111111111111111",
+            "c22222222222222222222222",
+            "c33333333333333333333333",
+            "c44444444444444444444444",
+            "c55555555555555555555555",
+        ).forEachIndexed { index, id ->
+            shots.put("u1", id, byteArrayOf(index.toByte()), 10, 10)
+        }
+        assertEquals(ScreenShots.CLIP_FRAMES, shots.take("u1")?.frames)
+        assertNull(shots.bytes("u1", first))
         clock += ScreenShots.TTL_MS + 1
         assertNull(shots.take("u1"))
     }

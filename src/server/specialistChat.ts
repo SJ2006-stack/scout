@@ -6,11 +6,12 @@ import type { CommerceEvent } from "../shared/commerce.ts";
 import { withEmoji } from "../shared/emoji.ts";
 import type { ChatTurn } from "./chatRun.ts";
 import { askedUser, askPicks, askReply, blockText, contentBlocks, transcript } from "./toolLoop.ts";
-import { isChatter, isLiveShopQuery, payResultLine, shopCompareView } from "./browser/shelf.ts";
+import { isChatter, isLiveShopQuery, payResultLine, shopCompareView, type ShopOffer } from "./browser/shelf.ts";
+import { askShelf, askShelfChoices } from "./questionBack.ts";
 import { postSarvam } from "./sarvamChat.ts";
 import { scoutPurpose, talkDuty } from "./scoutPrompt.ts";
 import { assistantPrompt, assistantTools, isAssistantTool, runAssistantTool, type AssistantToolName } from "./assistantTools.ts";
-import { assistantContext, voicePrompt } from "./eventChat.ts";
+import { assistantContext } from "./eventChat.ts";
 import { screenPrompt, screenToolAllowed, screenTools } from "./screenChat.ts";
 
 const ROUND_LIMIT = 4;
@@ -119,12 +120,12 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
   if (turn.sarvamApiKey.trim().length === 0) return false;
   const memoryId = specialistMemoryId(turn.sessionId, agent);
   const previous = turn.memory.get(memoryId);
-  const messages = transcript(previous.lines, turn.text);
+  const messages = transcript(turn.history ?? previous.lines, turn.text);
   const spoken: string[] = [];
   let started = false;
   let toolSummary = "";
   const basketCall = agent === "shop" ? serverBasketCall(turn) : null;
-  const forced = basketCall && (!turn.screen || screenToolAllowed(basketCall.name)) ? basketCall : null;
+  const forced = basketCall && (!turn.screen || screenToolAllowed(basketCall.name, turn.text)) ? basketCall : null;
   if (forced) {
     started = true;
     const ran = await runTool(turn, forced, emit);
@@ -138,10 +139,9 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
       apiKey: turn.sarvamApiKey,
       fetchImpl: turn.fetchImpl,
       signal: turn.signal,
-      system: `${instructions(agent)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}${screenPrompt(turn.screen)}`,
-      tools: screenTools(turn.screen, [...toolsFor(agent), ...assistantTools(assistantContext(turn))]),
+      system: `${instructions(agent)} ${assistantPrompt(assistantContext(turn))}${screenPrompt(turn.screen, turn.text)}`,
+      tools: screenTools(turn.screen, [...toolsFor(agent), ...assistantTools(assistantContext(turn))], turn.text),
       messages,
-      ...(turn.onSpeech ? { onText: turn.onSpeech } : {}),
     });
     if (body == null) {
       if (!started) return false;
@@ -151,7 +151,7 @@ export async function converseSpecialist(agent: SpecialistAgent, turn: ChatTurn,
     const blocks = contentBlocks(body.content);
     const text = blockText(blocks);
     if (text.length > 0 && !spoken.includes(text)) spoken.push(text);
-    const calls = blocks.filter((block) => isToolUse(agent, block)).filter((call) => !turn.screen || screenToolAllowed(call.name));
+    const calls = blocks.filter((block) => isToolUse(agent, block)).filter((call) => !turn.screen || screenToolAllowed(call.name, turn.text));
     if (calls.length === 0) return finish(turn, agent, text.length > 0 ? text : spoken.join("\n\n"), emit, toolSummary);
     started = true;
     messages.push({ role: "assistant", content: blocks });
@@ -214,7 +214,7 @@ function finish(turn: ChatTurn, agent: SpecialistAgent, reply: string, emit: (ev
   const memoryId = specialistMemoryId(turn.sessionId, agent);
   const previous = turn.memory.get(memoryId);
   const remembered = spoken.length > 0 ? spoken : "I checked.";
-  const lines = [...previous.lines, { role: "user" as const, text: turn.text }, { role: "assistant" as const, text: remembered }].slice(-12);
+  const lines = turn.history ? previous.lines : [...previous.lines, { role: "user" as const, text: turn.text }, { role: "assistant" as const, text: remembered }].slice(-12);
   turn.memory.save(memoryId, { ...previous, lines });
   emit({ type: "done", count: 0 });
   return true;
@@ -256,6 +256,7 @@ const comparing = new WeakMap<ChatTurn, { query: string; result: Promise<string>
 
 async function shopComparison(turn: ChatTurn, query: string, emit: (event: ChatEvent) => void): Promise<string> {
   const needle = query.trim();
+  if (readBuy(needle)) return "That asks to order the last comparison, not to search those words.";
   if (!isLiveShopQuery(needle)) return "That is not a grocery item. Answer them in words and do not search the shops.";
   if (needle.length < 2) return "Ask which item to compare before opening the shops.";
   if (!turn.compareShop) return "The browser worker is not enabled on this server.";
@@ -278,7 +279,19 @@ async function speakShop(turn: ChatTurn, query: string, emit: (event: ChatEvent)
     emit({ type: "status", message: payResultLine(shop.pay) });
     emit({ type: "pay", pay: shop.pay });
   }
-  const quote = quoteOffers(shop.offers, turn.cartBills?.() ?? []);
+  const choices = shop.choices ?? [];
+  if (choices.length > 1) {
+    askShelfChoices(turn.sessionId, choices, query, emit);
+    return JSON.stringify({ summary: shop.summary, choices: choices.map((offer) => shopCompareView(offer)) });
+  }
+  if (shop.guess) {
+    askShelf(turn.sessionId, shop.guess, query, emit);
+    return JSON.stringify({ summary: shop.summary, guess: shopCompareView(shop.guess) });
+  }
+  const bills = turn.cartBills?.() ?? [];
+  const quote = quoteOffers(shop.offers, bills);
+  const plan = planBasket([{ query, quantity: 1 }], { lines: [{ query, offers: shop.offers }], opened: 1, signIn: shop.signIn }, bills);
+  if (Object.values(plan.carts).some((cart) => cart != null && cart.items.length > 0)) baskets.save(turn.sessionId, plan);
   const estimate = quoteLine(quote);
   if (estimate) {
     emit({ type: "status", message: estimate });
@@ -320,10 +333,44 @@ function basketItems(input: unknown): BasketItem[] {
   return items;
 }
 
+/** Yes keeps that listing as the one "order" fills. No leaves the cart empty. */
+export function confirmShelfGuess(offer: ShopOffer, query: string, values: Readonly<Record<string, string>>, turn: ChatTurn, emit: (event: ChatEvent) => void, choices?: readonly { label: string; offer: ShopOffer }[]): void {
+  const answer = Object.values(values)[0]?.trim() ?? "";
+  const picked = choices?.find((choice) => choice.label.toLowerCase() === answer.toLowerCase());
+  if (picked) {
+    keepShelfOffer(picked.offer, query, turn, emit);
+    return;
+  }
+  if (!answer.toLowerCase().startsWith("y")) {
+    emit({ type: "question", message: withEmoji("Okay. Tell me the name or the size on the pack.") });
+    emit({ type: "done", count: 0 });
+    return;
+  }
+  keepShelfOffer(offer, query, turn, emit);
+}
+
+function keepShelfOffer(offer: ShopOffer, query: string, turn: ChatTurn, emit: (event: ChatEvent) => void): void {
+  const plan = planBasket([{ query, quantity: 1 }], { lines: [{ query, offers: [offer] }], opened: 1, signIn: null }, turn.cartBills?.() ?? []);
+  const store = plan.quote.best;
+  const cart = store ? plan.carts[store] : undefined;
+  if (!store || !cart || cart.items.length === 0) {
+    emit({ type: "question", message: withEmoji(`${offer.merchant} listed ${offer.title} at ₹${offer.rupees}. I can't add that one from here. Tell me the pack you see.`) });
+    emit({ type: "done", count: 0 });
+    return;
+  }
+  baskets.save(turn.sessionId, plan);
+  emit({ type: "question", message: withEmoji(`${offer.merchant} has ${offer.title} at ₹${offer.rupees}. Say "order" and the phone opens ${storeName(store)} and fills the cart.`) });
+  emit({ type: "done", count: 0 });
+}
+
 /** Main Scout's grocery errand: the same compare as Shop Scout, kept as the basket "buy it" fills. */
 export async function shopErrand(turn: ChatTurn, items: readonly BasketItem[], emit: (event: ChatEvent) => void): Promise<string> {
   const only = items.length === 1 ? items[0] : null;
-  if (only) return shopSentence(await shopComparison({ ...turn, agent: "shop" }, only.query, emit));
+  if (only) {
+    const said = shopSentence(await shopComparison({ ...turn, agent: "shop" }, only.query, emit));
+    const best = baskets.get(turn.sessionId)?.quote.best;
+    return best ? `${said} Say "order" and the phone opens ${storeName(best)} and fills the cart.` : said;
+  }
   const ran = await basketComparison({ ...turn, agent: "shop" }, { items }, emit, 1);
   if (!ran.ok) return ran.content;
   const best = baskets.get(turn.sessionId)?.quote.best;
@@ -496,6 +543,7 @@ function instructions(agent: SpecialistAgent): string {
         "If they have not named an item, answer them and wait. A greeting, who you are, or what you can do is not an item. Do not call a tool for it. Use the earlier messages in this chat.",
         "When they name two or more items in one message, call compare_basket once with all of them and their quantities, then tell them the best store, its estimated total, any missing item, and the phone time. When they then ask to order or buy the basket, call order_basket with store best, or the store they name; it fills every item in one phone run.",
         "When they name one item to find or compare, call compare_shops with the item words only. Tell them the summary the tool returns. Do not invent a price. Blinkit, Zepto, and Instamart are the shops compared.",
+        "When they only say to order, buy, or get it from Blinkit, Zepto, or Instamart, call order_basket for that store. Do not search the words of that sentence. The phone opens the store and fills the cart, then stops before payment.",
         "compare_shops also returns estimates: each store's total with its delivery and handling fees, for one unit, and phoneSeconds, how long the phone takes to fill that cart. best is the store with the lowest estimated total. A rough basis means the fees are Scout's starting guess, not yet learned from their own bills; say about.",
         "When they ask to buy or order, and app_cart_add is available, call app_cart_add once, for the best store's cheapest offer unless they name a store: its ref, the quantity, and a maxPrice at or above the price Scout saw. Only that one cart is filled. Tell them the estimated total and that the phone takes about phoneSeconds after they tap Allow. A null Instamart link is still that offer. Call buy_from_shop only when app_cart_add is not available, once, for the best store or the store they name.",
         "Never claim an order is placed. Scout stops at the cart for their approval, then hands payment to their UPI app.",
@@ -531,7 +579,8 @@ function instructions(agent: SpecialistAgent): string {
     case "main":
       return [
         scoutPurpose("Scout", "You are the chief. You assign Event, Shop, Food, Travel, Home, and Appointments, and their results come back in this chat."),
-        "Groceries, events, WhatsApp messages, and bus trips are handed off before you speak. What reaches you is the rest: quick phone tasks (alarm, timer, reminder, open an app or maps), preferences, and event watches, which your tools run, or chat. If they have not given you a task, ask what they need and say you will assign the right scout.",
+        "Groceries, events, WhatsApp messages, bus trips, and flights are handed off before you speak. What reaches you is the rest: quick phone tasks (alarm, timer, reminder, open an app or maps), preferences, and event watches, which your tools run, or chat. If they have not given you a task, ask what they need and say you will assign the right scout.",
+        "The earlier messages are this chat only. Use them when they ask what you have been doing together. Do not say this chat has no memory.",
         "Do not tell them to open another website. Do not pretend you searched, compared a price, or booked anything.",
       ].join(" ");
     default: {

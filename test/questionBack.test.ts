@@ -5,7 +5,7 @@ import { ChatMemoryStore } from "../src/server/chatMemory.ts";
 import { runChat, type ChatTurn } from "../src/server/chatRun.ts";
 import { ListingCache } from "../src/server/listingCache.ts";
 import { runAnsweredErrands } from "../src/server/mainScout.ts";
-import { answersMessage, askUser, PendingForms } from "../src/server/questionBack.ts";
+import { answersMessage, askShelf, askShelfChoices, askUser, PendingForms } from "../src/server/questionBack.ts";
 import { askPicks, picksFromProse } from "../src/server/toolLoop.ts";
 import { sarvamReply } from "./sarvamReply.ts";
 
@@ -158,6 +158,52 @@ describe("question-back", () => {
     assert.equal(forms.take("u1", "b"), null, "the oldest form drops past four");
     now += 31 * 60 * 1000;
     assert.equal(forms.take("u1", "f"), null);
+  });
+
+  it("asks if the first shop listing is the one, and keeps it when they say yes", async () => {
+    const offer = {
+      merchant: "Blinkit" as const,
+      title: "Govardhan Pure Cow Ghee 500 ml",
+      rupees: 345,
+      pageUrl: "https://blinkit.com/",
+      ref: { store: "blinkit" as const, productId: "1", link: "https://blinkit.com/prn/ghee/prid/1", name: "Govardhan Pure Cow Ghee 500 ml", size: "500 ml", price: 345, seenAt: 0 },
+    };
+    const asked: ChatEvent[] = [];
+    askShelf("c".repeat(32), offer, "Govardhan Ghee 1L", (event) => asked.push(event));
+    const form = asked.find((event) => event.type === "form");
+    assert.equal(form?.type === "form" ? form.form.questions[0]?.prompt : "", "Is that what you're looking for?");
+    assert.deepEqual(form?.type === "form" ? form.form.questions[0]?.options : [], ["Yes", "No"]);
+    const events: ChatEvent[] = [];
+    await runChat(turn({ text: "yes", answers: { formId: form?.type === "form" ? form.form.id : "", values: { match: "Yes" } } }), (event) => events.push(event));
+    const reply = events.find((event) => event.type === "question");
+    assert.match(reply?.type === "question" ? reply.message : "", /Govardhan Pure Cow Ghee 500 ml at ₹345/);
+    assert.match(reply?.type === "question" ? reply.message : "", /Say "order"/);
+  });
+
+  it("asks which pack when several brands are listed, and keeps the one they pick", async () => {
+    const gowardhan = {
+      merchant: "Blinkit" as const,
+      title: "Gowardhan Pure Cow Ghee | Jar",
+      rupees: 439,
+      pageUrl: "https://blinkit.com/",
+      ref: { store: "blinkit" as const, productId: "1", link: "https://blinkit.com/prn/ghee/prid/1", name: "Gowardhan Pure Cow Ghee | Jar", size: "500 ml", price: 439, seenAt: 0 },
+    };
+    const patanjali = {
+      merchant: "Blinkit" as const,
+      title: "Patanjali Cow Ghee (1 l) 1 ltr",
+      rupees: 763,
+      pageUrl: "https://blinkit.com/",
+      ref: { store: "blinkit" as const, productId: "2", link: "https://blinkit.com/prn/ghee/prid/2", name: "Patanjali Cow Ghee (1 l) 1 ltr", size: "1 l", price: 763, seenAt: 0 },
+    };
+    const asked: ChatEvent[] = [];
+    askShelfChoices("c".repeat(32), [gowardhan, patanjali], "govardhan ghee", (event) => asked.push(event));
+    const form = asked.find((event) => event.type === "form");
+    assert.equal(form?.type === "form" ? form.form.questions[0]?.prompt : "", "Which pack?");
+    assert.deepEqual(form?.type === "form" ? form.form.questions[0]?.options : [], ["Gowardhan Pure Cow Ghee | Jar ₹439", "Patanjali Cow Ghee (1 l) 1 ltr ₹763"]);
+    const events: ChatEvent[] = [];
+    await runChat(turn({ text: "Patanjali", answers: { formId: form?.type === "form" ? form.form.id : "", values: { match: "Patanjali Cow Ghee (1 l) 1 ltr ₹763" } } }), (event) => events.push(event));
+    const reply = events.find((event) => event.type === "question");
+    assert.match(reply?.type === "question" ? reply.message : "", /Patanjali Cow Ghee \(1 l\) 1 ltr at ₹763/);
   });
 
   it("hands an errand no specialist owns to Main Scout's own tools", async () => {

@@ -886,7 +886,6 @@ textarea {
 textarea::placeholder { color: var(--placeholder); }
 textarea:focus { outline: none; }
 
-.icon-button.speak.on { color: var(--accent); }
 .mic { color: var(--accent); }
 .mic.listening { background: var(--accent); color: var(--accent-ink); animation: pulse 1.4s ease-in-out infinite; }
 
@@ -949,6 +948,8 @@ textarea:focus { outline: none; }
 }
 
 .thinking-steps li { margin: 0; }
+
+.thinking-brief { display: none; }
 
 @keyframes thinking-shimmer {
   from { background-position: 100% 0; }
@@ -1347,6 +1348,60 @@ a:focus-visible {
 /* ───────── Mobile ───────── */
 
 @media (max-width: 800px) {
+  .thinking-brief {
+    display: grid;
+    gap: 8px;
+    margin: 8px 0 2px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--fill);
+    min-width: 0;
+  }
+
+  .thinking-kicker {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.78rem;
+    font-weight: 650;
+  }
+
+  .thinking-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+
+  .thinking-prompt,
+  .thinking-tools {
+    max-height: 180px;
+    margin: 0;
+    overflow: auto;
+    color: var(--muted);
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .thinking-prompt {
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .thinking-tools {
+    display: grid;
+    gap: 8px;
+    padding: 0 0 0 18px;
+  }
+
+  .thinking-tools li { margin: 0; }
+
+  .thinking-tools strong {
+    display: block;
+    color: var(--ink);
+    font-weight: 650;
+  }
+
   .shell { grid-template-columns: 1fr; }
   .icon-button.menu { display: grid; margin-left: -4px; }
 

@@ -10,10 +10,8 @@ import { InboxStore } from "../src/server/notify/inbox.ts";
 import { Notifier } from "../src/server/notify/notifier.ts";
 import { ProfileStore, profilePrompt } from "../src/server/profile/profileStore.ts";
 import type { EventTool } from "../src/server/tools/types.ts";
-import { readCompletion, readVoiceTicket, signVoiceTicket, spokenText } from "../src/server/voice/bolna.ts";
 import { WatchRunner } from "../src/server/watch/watchRunner.ts";
 import { WatchStore } from "../src/server/watch/watchStore.ts";
-import { parseSse, withApi } from "./helpers.ts";
 import { sarvamReply } from "./sarvamReply.ts";
 
 const NOW = Date.parse("2026-10-31T12:00:00.000Z");
@@ -123,47 +121,6 @@ describe("scout watch", () => {
     assert.equal(inbox.list(USER).length, 2);
     assert.equal(store.update(USER, watch.id, { status: "paused" }, NOW).ok, true);
     assert.equal(store.claimDue(NOW + 10 * 3_600_000, 5).length, 0);
-  });
-});
-
-describe("bolna voice", () => {
-  it("signs a per-user ticket and reads it back from the system prompt", () => {
-    const key = "k".repeat(64);
-    const ticket = signVoiceTicket({ userId: USER, agent: "event" }, key, NOW);
-    assert.equal(readVoiceTicket(ticket, key, NOW)?.userId, USER);
-    assert.equal(readVoiceTicket(ticket, "x".repeat(64), NOW), null);
-    assert.equal(readVoiceTicket(ticket, key, NOW + 60 * 60_000), null);
-    const parsed = readCompletion({
-      stream: true,
-      messages: [
-        { role: "system", content: `You are Scout. scout_ticket: ${ticket}` },
-        { role: "user", content: "kal Delhi mein comedy show batao" },
-      ],
-    }, key, NOW);
-    assert.equal(parsed?.ticket?.agent, "event");
-    assert.equal(parsed?.text, "kal Delhi mein comedy show batao");
-    assert.equal(spokenText("🎭 **Show** at ₹499 https://lu.ma/x"), "Show at rupees 499 the link on screen");
-  });
-
-  it("streams Scout's own reply as OpenAI chunks and relays cards to the open chat", async () => {
-    const key = "k".repeat(64);
-    const ticket = signVoiceTicket({ userId: USER, agent: "main" }, key, Date.now());
-    const fetchImpl = sarvamFetch([{ stop_reason: "end_turn", content: [{ type: "text", text: "Namaste! Kya dhoondhun?" }] }]);
-    await withApi({ bolna: { apiKey: "bn-test", agentId: "agent", llmKey: key }, sarvamApiKey: "test-key", fetchImpl }, async (base) => {
-      const denied = await fetch(`${base}/api/bolna/v1/chat/completions`, { method: "POST", body: "{}" });
-      assert.equal(denied.status, 401);
-      const response = await fetch(`${base}/api/bolna/v1/chat/completions`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: "scout", stream: true, messages: [{ role: "system", content: `scout_ticket: ${ticket}` }, { role: "user", content: "hello" }] }),
-      });
-      assert.equal(response.status, 200);
-      const text = await response.text();
-      assert.match(text, /data: \[DONE\]/);
-      const chunks = parseSse<{ choices?: { delta?: { content?: string } }[] }>(text.replace("data: [DONE]", ""));
-      const spoken = chunks.map((chunk) => chunk.choices?.[0]?.delta?.content ?? "").join("");
-      assert.match(spoken, /Namaste! Kya dhoondhun\?/);
-    });
   });
 });
 

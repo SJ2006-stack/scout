@@ -7,9 +7,9 @@ import type { BasketItem } from "./basket.ts";
 import type { TimeOfDay } from "./browser/buses.ts";
 import { isLiveShopQuery } from "./browser/shelf.ts";
 import { postSarvam } from "./sarvamChat.ts";
+import { transcript } from "./toolLoop.ts";
+import type { HistoryLine } from "../shared/chatHistory.ts";
 
-const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
-const PLANNER_MODEL = "claude-haiku-5-5";
 const PLANNER_TIMEOUT_MS = 25_000;
 const ERRAND_LIMIT = 6;
 const QUESTION_LIMIT = 8;
@@ -24,79 +24,24 @@ export type Errand =
   | { kind: "events"; summary: string; city: string | null; when: WatchWhen | null; eventKind: (typeof EVENT_KINDS)[number] | null }
   | { kind: "whatsapp"; summary: string; contact: string | null; message: string | null; messageFromPhoto: boolean }
   | { kind: "bus"; summary: string; from: string | null; to: string | null; date: string | null; timeOfDay: TimeOfDay | null }
+  | { kind: "flight"; summary: string; from: string | null; to: string | null; date: string | null; timeOfDay: TimeOfDay | null }
   | { kind: "other"; summary: string };
 
 export type ErrandPlan = { errands: Errand[] };
 
-const NULLABLE = (type: string) => ({ type: [type, "null"] });
-
-const PLAN_TOOL = {
+/** Sarvam's guided decoding stalls on null unions and long required lists; readErrand fills what is left out. */
+const SARVAM_PLAN_TOOL = {
   name: "plan_errands",
   description: "Split their message into errands for Scout's specialists.",
   input_schema: {
     type: "object",
-    additionalProperties: false,
-    properties: {
-      errands: {
-        type: "array",
-        maxItems: ERRAND_LIMIT,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            kind: { type: "string", enum: ["groceries", "events", "whatsapp", "bus", "other"] },
-            summary: { type: "string", description: "A few words, such as 'Bread, butter, and jam' or 'Bus to Bareilly tomorrow'." },
-            items: {
-              type: "array",
-              maxItems: BASKET_LIMIT,
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  query: { type: "string", description: "The grocery words to search, with a brand and size only if they said one." },
-                  quantity: { type: "integer", minimum: 1, maximum: 20 },
-                  clarify: {
-                    type: ["object", "null"],
-                    additionalProperties: false,
-                    properties: { prompt: { type: "string" }, options: { type: "array", items: { type: "string" }, maxItems: 4 } },
-                    required: ["prompt", "options"],
-                  },
-                },
-                required: ["query", "quantity", "clarify"],
-              },
-            },
-            city: { type: ["string", "null"], enum: [...CITIES.map((city) => city.id), null] },
-            when: { type: ["string", "null"], enum: [...WHENS, null] },
-            eventKind: { type: ["string", "null"], enum: [...EVENT_KINDS, null] },
-            contact: NULLABLE("string"),
-            message: NULLABLE("string"),
-            messageFromPhoto: { type: "boolean" },
-            from: NULLABLE("string"),
-            to: NULLABLE("string"),
-            date: { type: ["string", "null"], description: "YYYY-MM-DD." },
-            timeOfDay: { type: ["string", "null"], enum: [...TIMES, null] },
-          },
-          required: ["kind", "summary", "items", "city", "when", "eventKind", "contact", "message", "messageFromPhoto", "from", "to", "date", "timeOfDay"],
-        },
-      },
-    },
-    required: ["errands"],
-  },
-} as const;
-
-/** Sarvam's guided decoding stalls on null unions and long required lists; readErrand fills what is left out. */
-const SARVAM_PLAN_TOOL = {
-  name: PLAN_TOOL.name,
-  description: PLAN_TOOL.description,
-  input_schema: {
-    type: "object",
     properties: {
       errands: {
         type: "array",
         items: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["groceries", "events", "whatsapp", "bus", "other"] },
+            kind: { type: "string", enum: ["groceries", "events", "whatsapp", "bus", "flight", "other"] },
             summary: { type: "string" },
             items: {
               type: "array",
@@ -135,30 +80,29 @@ function plannerPrompt(today: string, weekday: string, timezone: string): string
     `Today is ${weekday} ${today} in ${timezone}.`,
     "groceries: things to buy, or a price to check, on Blinkit, Zepto, or Instamart. 'The price of tea in the quick commerce apps' is groceries, with the item tea. One item per thing; quantity is the count they said, else 1. Keep a brand or size only if they said it.",
     "For an item too vague to pick well (tea, bread, butter, salt, jam, milk, chips, juice), set clarify to a short question with 2 to 4 common choices, such as 'Which bread?' with 'White bread', 'Brown bread', 'Any'. A brand or a size means clarify is null.",
-    "events: things to do, events, movies, or shows. city is one of bengaluru, mumbai, delhi, hyderabad, or null if they did not name one. when is today, tomorrow, weekend, or week, or null.",
-    "whatsapp: a message to send someone on WhatsApp. contact is the name or number exactly as they wrote it. message is the text to send. If the message also contains text read from an attached photo (lines after their request, such as a menu), use that text as message. If what they want to send is in a photo or document they have not attached yet (the mess menu, a bill, a screenshot), message is null and messageFromPhoto is true. Keep a message under 450 characters; when a menu covers several days or meals and they asked for the current one, keep only today's part.",
+    "events: things to do, events, movies, or shows. city is one of bengaluru, mumbai, delhi, hyderabad, or null if they did not name one. when is today, tomorrow, weekend, or week, or null. A follow-up that asks for more, for any other, or for events except ones already shown is one events errand. Do not return two copies of the same errand.",
+    "whatsapp: a message to send someone on WhatsApp. contact is the name or number exactly as they wrote it. message is the text to send. If the message also contains text read from an attached photo (lines after their request, such as a menu), use that text as message. If what they want to send is in a photo or document they have not attached yet (the mess menu, a bill, a screenshot), message is null and messageFromPhoto is true. Keep a message under 450 characters; when a menu covers several days or meals and they asked for the current one, keep only today's part. Earlier messages are this chat only. When they ask to send what you have been doing, write that from those messages.",
     "bus: a bus trip. from and to are city names; from is null unless they said it. date is YYYY-MM-DD worked out from today. timeOfDay is any, morning, afternoon, evening, or night, or null if they did not say.",
+    "flight: a flight. from and to are city names; from is null unless they said it. date is YYYY-MM-DD worked out from today. timeOfDay is any, morning, afternoon, evening, or night, or null if they did not say. A bus is not a flight.",
     "other: anything else they asked for, such as an alarm or a reminder. A price or a search on Blinkit, Zepto, Instamart, or the quick commerce apps is groceries, not other. Its summary is that request in their own words with every detail they gave (time, name, place), because Main Scout runs it from the summary alone. Do not invent contacts, cities, dates, or message text. Unused fields are null, items is empty, messageFromPhoto is false.",
   ].join(" ");
 }
 
 type PlanRequest = {
   text: string;
-  apiKey: string;
   sarvamApiKey?: string;
   now: number;
   timezone: string;
   fetchImpl: typeof fetch;
   signal: AbortSignal;
+  history?: readonly HistoryLine[];
 };
 
-/** Claude plans when the account has credit; Sarvam's tool call is the fallback. */
+/** Sarvam plans with a forced tool call and reasoning off. That stays under a few seconds. */
 export async function planErrands(options: PlanRequest): Promise<ErrandPlan | null> {
   const today = isoDay(options.now, options.timezone, 0);
   const weekday = new Intl.DateTimeFormat("en-IN", { weekday: "long", timeZone: options.timezone }).format(options.now);
   const system = plannerPrompt(today, weekday, options.timezone);
-  const claude = options.apiKey.trim().length > 0 ? await planWithClaude(options, system) : null;
-  if (claude) return groundPlan(claude, options.text);
   const sarvamKey = options.sarvamApiKey?.trim() ?? "";
   if (sarvamKey.length === 0) return null;
   const body = await postSarvam({
@@ -167,7 +111,7 @@ export async function planErrands(options: PlanRequest): Promise<ErrandPlan | nu
     signal: options.signal,
     system: `${system} Leave out a field you do not know instead of writing null. Answer only by calling plan_errands.`,
     tools: [SARVAM_PLAN_TOOL],
-    messages: [{ role: "user", content: options.text }],
+    messages: transcript(options.history ?? [], options.text),
     maxTokens: 6000,
     timeoutMs: PLANNER_TIMEOUT_MS,
     mustCallTool: true,
@@ -210,13 +154,14 @@ export function groundPlan(plan: ErrandPlan, request: string): ErrandPlan {
   const mentions = (value: string | null): boolean => value != null && said.includes(` ${value.toLowerCase().trim()} `);
   const hasPhotoText = request.includes("\n");
   return {
-    errands: plan.errands.map((errand): Errand => {
+    errands: collapseErrands(plan.errands.map((errand): Errand => {
       switch (errand.kind) {
         case "events": {
           const when = errand.when && WHEN_WORDS[errand.when].some(mentions) ? errand.when : null;
           return { ...errand, city: errand.city != null && cityFromText(request)?.id === errand.city ? errand.city : null, when };
         }
         case "bus":
+        case "flight":
           return { ...errand, from: mentions(errand.from) ? errand.from : null, timeOfDay: errand.timeOfDay && errand.timeOfDay !== "any" && mentions(errand.timeOfDay) ? errand.timeOfDay : null };
         case "whatsapp": {
           const placeholder = errand.message != null && !hasPhotoText && (DOCUMENT.test(errand.message) || errand.message.trimEnd().endsWith(":")) && errand.message.length < 80;
@@ -234,37 +179,23 @@ export function groundPlan(plan: ErrandPlan, request: string): ErrandPlan {
           return unknown;
         }
       }
-    }),
+    })),
   };
 }
 
-async function planWithClaude(options: PlanRequest, system: string): Promise<ErrandPlan | null> {
-  let response: Response;
-  try {
-    response = await options.fetchImpl(MESSAGES_URL, {
-      method: "POST",
-      headers: { "x-api-key": options.apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({
-        model: PLANNER_MODEL,
-        max_tokens: 2048,
-        system,
-        tools: [PLAN_TOOL],
-        tool_choice: { type: "tool", name: PLAN_TOOL.name },
-        messages: [{ role: "user", content: options.text }],
-      }),
-      signal: AbortSignal.any([options.signal, AbortSignal.timeout(PLANNER_TIMEOUT_MS)]),
-    });
-  } catch {
-    return null;
+/** Two event searches for the same city, window, and kind would show the same cards. Keep the first. */
+function collapseErrands(errands: Errand[]): Errand[] {
+  const kept: Errand[] = [];
+  for (const errand of errands) {
+    const copy = errand.kind === "events" && kept.some((other) => other.kind === "events" && other.city === errand.city && other.when === errand.when && other.eventKind === errand.eventKind);
+    if (!copy) kept.push(errand);
   }
-  if (!response.ok) return null;
-  const payload = (await response.json().catch(() => null)) as { content?: unknown } | null;
-  return planFrom(payload?.content);
+  return kept;
 }
 
 function planFrom(content: unknown): ErrandPlan | null {
   const blocks: unknown[] = Array.isArray(content) ? content : [];
-  const call = blocks.find((block): block is { type: "tool_use"; name: string; input: unknown } => Boolean(block) && typeof block === "object" && (block as { type?: unknown }).type === "tool_use" && (block as { name?: unknown }).name === PLAN_TOOL.name);
+  const call = blocks.find((block): block is { type: "tool_use"; name: string; input: unknown } => Boolean(block) && typeof block === "object" && (block as { type?: unknown }).type === "tool_use" && (block as { name?: unknown }).name === SARVAM_PLAN_TOOL.name);
   return call ? readPlan(call.input) : null;
 }
 
@@ -298,8 +229,9 @@ function readErrand(raw: unknown): Errand | null {
     case "whatsapp":
       return { kind: "whatsapp", summary, contact: text(row.contact, 80), message: lines(row.message, 3_000), messageFromPhoto: row.messageFromPhoto === true };
     case "bus":
+    case "flight":
       return {
-        kind: "bus",
+        kind: row.kind,
         summary,
         from: text(row.from, 60),
         to: text(row.to, 60),
@@ -367,10 +299,12 @@ export function questionsFor(plan: ErrandPlan, defaults: { city: string | null }
             : { id: `${index}.message`, prompt: `What should the message${errand.contact ? ` to ${errand.contact}` : ""} say?`, kind: "text", options: [] });
         }
         return;
-      case "bus": {
+      case "bus":
+      case "flight": {
         const home = defaults.city ? cityById(defaults.city)?.name ?? null : null;
-        if (!errand.from) questions.push({ id: `${index}.from`, prompt: `Bus${errand.to ? ` to ${errand.to}` : ""} from which city?`, kind: home ? "choice" : "text", options: home ? [home] : [] });
-        if (!errand.to) questions.push({ id: `${index}.to`, prompt: "Bus to which city?", kind: "text", options: [] });
+        const noun = errand.kind === "flight" ? "Flight" : "Bus";
+        if (!errand.from) questions.push({ id: `${index}.from`, prompt: `${noun}${errand.to ? ` to ${errand.to}` : ""} from which city?`, kind: home ? "choice" : "text", options: home ? [home] : [] });
+        if (!errand.to) questions.push({ id: `${index}.to`, prompt: `${noun} to which city?`, kind: "text", options: [] });
         if (!errand.date) questions.push({ id: `${index}.date`, prompt: "Which day?", kind: "choice", options: ["Today", "Tomorrow"] });
         if (!errand.timeOfDay) questions.push({ id: `${index}.time`, prompt: "Leaving when?", kind: "choice", options: ["Morning", "Afternoon", "Evening", "Night", "Any time"] });
         return;
@@ -406,6 +340,7 @@ export function applyAnswers(plan: ErrandPlan, values: Readonly<Record<string, s
       case "whatsapp":
         return { ...errand, contact: errand.contact ?? value(`${index}.contact`), message: errand.message ?? lines(values[`${index}.message`], 3_000) };
       case "bus":
+      case "flight":
         return {
           ...errand,
           from: errand.from ?? value(`${index}.from`),
@@ -439,6 +374,8 @@ export function errandLabel(errand: Errand): string {
       return `WhatsApp ${errand.contact ?? "someone"}`;
     case "bus":
       return `Bus to ${errand.to ?? "somewhere"}`;
+    case "flight":
+      return `Flight to ${errand.to ?? "somewhere"}`;
     case "other":
       return "Something else";
     default: {

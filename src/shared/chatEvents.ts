@@ -1,7 +1,7 @@
 import type { CartEstimate } from "./cartQuote.ts";
 import type { CartSnapshot, QuoteSnapshot, ReceiptSnapshot } from "./commerce.ts";
 import type { DeviceAction } from "./deviceActions.ts";
-import type { BusResult, ErrandForm } from "./errands.ts";
+import type { BusResult, ErrandForm, FlightResult } from "./errands.ts";
 import type { EventKind, Listing } from "./event.ts";
 import type { PayLink } from "./payLink.ts";
 import type { SavedPlace } from "./places.ts";
@@ -9,6 +9,15 @@ import type { SavedPlace } from "./places.ts";
 export type ChatStatusEvent = {
   type: "status";
   message: string;
+};
+
+/** The prompt and tools a scout is working with. `fed` is false when the sites were read directly and the model was not called. */
+export type ChatBriefEvent = {
+  type: "brief";
+  scout: string;
+  fed: boolean;
+  prompt: string;
+  tools: { name: string; description: string }[];
 };
 
 export type ChatQuestionEvent = {
@@ -114,6 +123,11 @@ export type ChatBusesEvent = {
   buses: BusResult;
 };
 
+export type ChatFlightsEvent = {
+  type: "flights";
+  flights: FlightResult;
+};
+
 /** App pages a task opened, kept so they can be opened again. */
 export type ChatPlacesEvent = {
   type: "places";
@@ -121,8 +135,10 @@ export type ChatPlacesEvent = {
 };
 
 export type ChatEvent =
+  | ChatBriefEvent
   | ChatFormEvent
   | ChatBusesEvent
+  | ChatFlightsEvent
   | ChatPlacesEvent
   | ChatDeviceEvent
   | ChatWatchEvent

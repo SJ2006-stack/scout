@@ -1,28 +1,31 @@
 import { cityById, cityFromPincode } from "../shared/cities.ts";
 import type { ChatEvent } from "../shared/chatEvents.ts";
-import { parseChatIntent } from "../shared/chatIntent.ts";
-import { dedupeListings, listingInWindow, sortListings, withinBudget, type Listing } from "../shared/event.ts";
+import { excludedKinds, parseChatIntent } from "../shared/chatIntent.ts";
+import { dedupeListings, listingInWindow, sortListings, upcomingListings, withinBudget, type Listing } from "../shared/event.ts";
 import { dateRange, isTimeZone, windowLabel, type WhenWindow } from "../shared/when.ts";
 import type { AgentId } from "../shared/hosts.ts";
 import type { PhoneAutomation } from "../shared/deviceActions.ts";
 import type { StoreBill } from "../shared/cartQuote.ts";
+import type { HistoryLine } from "../shared/chatHistory.ts";
 import type { ScreenReading } from "../shared/screenReading.ts";
+import type { GoogleAccounts } from "./googleAccount.ts";
 import type { ChatMemory } from "./chatMemory.ts";
 import { ChatMemoryStore } from "./chatMemory.ts";
 import type { ListingCache } from "./listingCache.ts";
 import type { CommerceHub } from "./commerce/hub.ts";
 import type { ScoutTaskView } from "../shared/scoutTask.ts";
 import type { BasketRun, ShopRun } from "./browser/shelf.ts";
-import { converseEvent } from "./eventChat.ts";
-import { converseSpecialist, fallbackSpecialist, type SpecialistAgent } from "./specialistChat.ts";
+import { converseEvent, eventScoutFeed, fetchingLine } from "./eventChat.ts";
+import { confirmShelfGuess, converseSpecialist, fallbackSpecialist, type SpecialistAgent } from "./specialistChat.ts";
 import { eventTools } from "./tools/index.ts";
 import { driveMinutes } from "./travel.ts";
 import type { ProfileStore } from "./profile/profileStore.ts";
 import type { WatchStore } from "./watch/watchStore.ts";
 import { withEmoji } from "../shared/emoji.ts";
-import type { BusResult, ErrandAnswers } from "../shared/errands.ts";
+import type { BusResult, ErrandAnswers, FlightResult } from "../shared/errands.ts";
 import type { BusTrip } from "./browser/buses.ts";
 import { runAnsweredErrands, runMainScout } from "./mainScout.ts";
+import { asksForOtherResults, listingsToShow, mergeShown } from "./otherResults.ts";
 import { answersMessage, pendingForms } from "./questionBack.ts";
 import { screenSpecialist } from "./screenChat.ts";
 
@@ -67,15 +70,18 @@ export type ChatTurn = {
   watches?: WatchStore;
   /** What the Scout Android app reports it can automate; absent outside the app. */
   phone?: PhoneAutomation;
-  /** Receives the reply so far while Sarvam streams; an empty string means earlier text was superseded. */
-  onSpeech?: (text: string) => void;
-  /** Main Scout splits a message into errands with Claude Haiku; empty means it only chats. */
-  anthropicApiKey?: string;
   /** Their answers to Main Scout's question form. */
   answers?: ErrandAnswers;
   compareBuses?: (trip: BusTrip, signal: AbortSignal) => Promise<{ result: BusResult | null; failure: string | null }>;
+  compareFlights?: (from: string, to: string, date: string, timeOfDay: BusTrip["timeOfDay"], signal: AbortSignal) => Promise<{ result: FlightResult | null; failure: string | null }>;
   /** A screenshot the user chose to ask about. Only `text` is their request; this is context. */
   screen?: ScreenReading;
+  /** Earlier lines of this chat only. Absent on older clients, which still use the saved lines. */
+  history?: readonly HistoryLine[];
+  /** Connected Gmail and Drive, when this server can store them. */
+  google?: GoogleAccounts;
+  /** Where Google should send the user after they allow Gmail or Drive. */
+  googleRedirect?: string;
 };
 
 export async function runChat(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<void> {
@@ -106,6 +112,9 @@ async function resumeForm(turn: ChatTurn, answers: ErrandAnswers, emit: (event: 
       return;
     case "ask":
       await runAgent(form.agent, { ...turn, agent: form.agent, text: answersMessage(form.questions, answers.values), answers: undefined }, emit);
+      return;
+    case "shelf":
+      confirmShelfGuess(form.offer, form.query, answers.values, { ...turn, answers: undefined }, emit, form.choices);
       return;
     default: {
       const neverForm: never = form;
@@ -158,7 +167,13 @@ export async function listEvents(turn: ChatTurn, emit: (event: ChatEvent) => voi
   turn.memory.save(turn.sessionId, next);
   if (!city) return { message: "Which city should I look in? Bengaluru, Mumbai, Delhi, or Hyderabad.", count: 0, drives: noDrives };
 
+  const excluded = new Set(excludedKinds(turn.text));
+  if (next.kind && excluded.has(next.kind)) next.kind = null;
   const range = dateRange(next.date, turn.now(), next.timezone);
+  emit({ type: "status", message: "Message sent to Event Scout." });
+  emit({ type: "status", message: fetchingLine(["Luma", "District", "BookMyShow"]) });
+  const feed = eventScoutFeed({ ...turn, agent: "event" });
+  emit({ type: "brief", scout: "Event Scout", fed: false, prompt: feed.prompt, tools: feed.tools });
   emit({ type: "status", message: statusLine(city.name, next.date, next.budget) });
   const loaded = await Promise.all(eventTools.map((tool) => tool.load({
     city,
@@ -173,6 +188,7 @@ export async function listEvents(turn: ChatTurn, emit: (event: ChatEvent) => voi
     readPage: turn.readListings ?? turn.readPage,
   })));
   const collected: Listing[] = [];
+  const outside: Listing[] = [];
   for (const result of loaded) {
     emit({ type: "source", source: result.name, ok: result.ok, message: result.message });
     for (const warning of result.warnings) {
@@ -181,18 +197,45 @@ export async function listEvents(turn: ChatTurn, emit: (event: ChatEvent) => voi
     if (!result.ok) continue;
     for (const listing of result.listings) {
       if (next.kind && listing.kind !== next.kind) continue;
-      if (!listingInWindow(listing, range)) continue;
+      if (excluded.has(listing.kind)) continue;
+      if (excluded.size > 0 && listing.kind === "movie" && listing.start == null) continue;
       if (!withinBudget(listing, next.budget)) continue;
+      if (!listingInWindow(listing, range)) {
+        outside.push(listing);
+        continue;
+      }
       collected.push(listing);
     }
   }
-  const shown = dedupeListings(sortListings(collected)).slice(0, CARD_LIMIT);
-  for (const listing of shown) emit({ type: "card", listing: { ...listing } });
+  const ranked = dedupeListings(sortListings(collected));
+  const askAgain = asksForOtherResults(turn.text);
+  const picked = listingsToShow(ranked, previous.found, askAgain);
+  const shown = picked.shown.slice(0, CARD_LIMIT);
   const when = windowLabel(next.date);
-  const drives = () => attachTravel(shown, next, turn, (url, minutes) => emit({ type: "drive", url, minutes }));
-  if (shown.length === 0) {
+  if (picked.repeated) {
+    emit({ type: "status", message: "Nothing else matched." });
+    const names = ranked.slice(0, 3).map((listing) => listing.title).join(", ");
+    return { message: `Those are the only listings I found${names ? `: ${names}` : ""}. Nothing else matched.`, count: 0, drives: noDrives };
+  }
+  const already = new Set((previous.found ?? []).map((item) => item.url));
+  const pool = askAgain ? outside.filter((listing) => !already.has(listing.url)) : outside;
+  const nextUp = shown.length === 0 ? upcomingListings(pool, range.startMs, 6) : [];
+  const cards = shown.length > 0 ? shown : nextUp;
+  next.found = mergeShown(previous.found, cards.map((listing) => ({ title: listing.title, url: listing.url })));
+  turn.memory.save(turn.sessionId, next);
+  for (const listing of cards) emit({ type: "card", listing: { ...listing } });
+  const drives = () => attachTravel(cards, next, turn, (url, minutes) => emit({ type: "drive", url, minutes }));
+  if (cards.length === 0) {
     emit({ type: "status", message: `Nothing matched in ${city.name} for that window.` });
+    if (excluded.size > 0) {
+      return { message: `I left ${[...excluded].join(" and ")} out. Nothing else is listed for ${when} in ${city.name}.`, count: 0, drives };
+    }
     return { message: `I checked Luma, District, and BookMyShow for ${when} in ${city.name}. Nothing listed there matches.`, count: 0, drives };
+  }
+  if (shown.length === 0) {
+    emit({ type: "status", message: "Nothing matched that day. Showing the next listings." });
+    const names = cards.slice(0, 3).map((listing) => listing.title).join(", ");
+    return { message: `Nothing is listed for ${when} in ${city.name}. Next up: ${names}.`, count: cards.length, drives };
   }
   emit({ type: "status", message: `${shown.length} listing${shown.length === 1 ? "" : "s"} in ${city.name}.` });
   const names = shown.slice(0, 3).map((listing) => listing.title).join(", ");

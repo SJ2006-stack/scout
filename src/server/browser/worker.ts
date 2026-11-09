@@ -2,10 +2,12 @@ import { randomBytes } from "node:crypto";
 import type { BrowserSessionView, BrowserTaskEvent } from "../../shared/browser.ts";
 import type { BrowserDriver, IsolatedPage } from "./driver.ts";
 import type { BusResult } from "../../shared/errands.ts";
-import { readBuses, type BusTrip } from "./buses.ts";
+import { busSearches, mergeBusSites, readBusPage, type BusTrip } from "./buses.ts";
+import { flightSearches, mergeFlights, readFlightPage } from "./flights.ts";
+import type { FlightResult } from "../../shared/errands.ts";
 import { admit, describeBudget, idleSessionIds, sessionHost, type AdmissionLimits, type BudgetReport } from "./budget.ts";
 import { allowBrowserRequest, checkNavigationUrl } from "./policy.ts";
-import { attendListing, cheapestOffer, readShelf, registerControl, shelfSummary, SHOP_SITES, type AttendResult, type BasketRun, type ShopOffer, type ShopRun } from "./shelf.ts";
+import { attendListing, cheapestOffer, readShelf, registerControl, shelfChoiceLine, shelfGuessLine, shelfChoices, shelfSummary, SHOP_SITES, type AttendResult, type BasketRun, type ShopOffer, type ShopRun } from "./shelf.ts";
 import { attemptSignIn, SIGN_IN_CODE_MESSAGE, type AccountLogin } from "./signIn.ts";
 import type { UserDirectory } from "../db/userDirectory.ts";
 import { registrable, type SessionVault } from "./sessionVault.ts";
@@ -167,11 +169,30 @@ export class BrowserWorker {
     return this.slot(() => this.compareBasketInner(queries, parent, ownerId, onStatus));
   }
 
-  /** Reads one day's buses for a route from redBus. Scout lists them; booking stays on redBus. */
+  /** Reads one day's buses on redBus, ixigo, Goibibo, and ConfirmTkt. Scout lists them; booking stays on the site. */
   async compareBuses(trip: BusTrip, parent?: AbortSignal, ownerId?: string): Promise<{ result: BusResult | null; failure: string | null }> {
+    const searches = busSearches(trip);
+    if (searches.length === 0) return { result: null, failure: "I need two different cities and a date before I can open the bus sites." };
     const note: Note = { text: null };
-    const result = await this.slot(() => this.withPage(parent, ownerId, null, note, (page, step) => readBuses(page, trip, step), SHOP_STEP_MS, false));
-    return { result, failure: note.text };
+    const sites = await this.slot(() => Promise.all(searches.map((search) =>
+      this.withPage(parent, ownerId, null, note, (page, step) => readBusPage(page, trip, search, step), SHOP_STEP_MS, false),
+    )));
+    const opened = sites.filter((site) => site != null);
+    if (opened.length === 0) return { result: null, failure: note.text };
+    return { result: mergeBusSites(trip, opened), failure: null };
+  }
+
+  /** Opens the flight searches and reads a fare where the page shows one. Booking stays on the site. */
+  async compareFlights(from: string, to: string, date: string, timeOfDay: BusTrip["timeOfDay"], parent?: AbortSignal, ownerId?: string): Promise<{ result: FlightResult | null; failure: string | null }> {
+    const searches = flightSearches(from, to, date, timeOfDay);
+    if (searches.length === 0) return { result: null, failure: "I need two different cities and a date before I can open the flight sites." };
+    const note: Note = { text: null };
+    const cites = await this.slot(() => Promise.all(searches.map((search) =>
+      this.withPage(parent, ownerId, null, note, (page, step) => readFlightPage(page, timeOfDay, search, step), SHOP_STEP_MS, false),
+    )));
+    const opened = cites.filter((cite) => cite != null);
+    if (opened.length === 0) return { result: null, failure: note.text };
+    return { result: mergeFlights(from, to, date, timeOfDay, opened), failure: null };
   }
 
   collectPay(pageUrl: string, title: string, merchant: string, parent?: AbortSignal, ownerId?: string): Promise<AttendResult | null> {
@@ -402,13 +423,20 @@ export class BrowserWorker {
       const siteNote: Note = { text: null };
       const shelf = await this.withPage(parent, ownerId, null, siteNote, async (page, step) => readShelf(page, needle, site.merchant, step), SHOP_STEP_MS, false);
       if (siteNote.text) note.text = siteNote.text;
-      if (shelf) onStatus?.(shelf.offers.length > 0 ? `${site.merchant} showed ${shelf.offers.length} prices.` : `${site.merchant} showed no price.`);
+      if (shelf) onStatus?.(shelf.offers.length > 0 ? `${site.merchant} showed ${shelf.offers.length} prices.` : shelf.guess ? `${shelf.guess.merchant} listed ${shelf.guess.title} at ₹${shelf.guess.rupees}.` : `${site.merchant} showed no price.`);
       return shelf;
     }));
     const opened = shelves.filter((shelf) => shelf != null);
     const run = { offers: opened.flatMap((shelf) => shelf.offers), opened: opened.length, needsLocation: opened.some((shelf) => shelf.needsLocation) };
     if (!run || run.opened === 0) {
       return { ...empty, summary: note.text ?? empty.summary };
+    }
+    const choices = shelfChoices(opened.flatMap((shelf) => shelf.choices), needle);
+    const others = choices.filter((choice) => !run.offers.some((offer) => offer.merchant === choice.merchant && offer.title === choice.title));
+    if ((run.offers.length === 0 && choices.length > 0) || others.length > 0) {
+      const guess = choices[0] ?? null;
+      if (choices.length > 1) return { offers: [], cheapest: null, pay: null, summary: shelfChoiceLine(choices), signIn: note.text, guess, choices };
+      if (guess) return { offers: [], cheapest: null, pay: null, summary: shelfGuessLine(guess), signIn: note.text, guess, choices };
     }
     const cheapest = cheapestOffer(run.offers);
     const pay = null;

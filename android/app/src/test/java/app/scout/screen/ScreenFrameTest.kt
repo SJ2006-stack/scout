@@ -27,6 +27,23 @@ class ScreenFrameTest {
     }
 
     @Test
+    fun captureSizeFollowsTheSharedWindowIncludingOrientation() {
+        val display = frameSizeFor(1080, 2400, 440)
+        assertEquals(display, captureSize(display, 0, 0))
+        assertEquals(display, captureSize(display, 1080, 0))
+        val window = captureSize(display, 1080, 1920)
+        assertEquals(900, window.width)
+        assertEquals(1600, window.height)
+        assertEquals(440, window.dpi)
+        val turned = captureSize(display, 1920, 1080)
+        assertEquals(1600, turned.width)
+        assertEquals(900, turned.height)
+        val small = captureSize(display, 400, 800)
+        assertEquals(400, small.width)
+        assertEquals(800, small.height)
+    }
+
+    @Test
     fun looksBlankRejectsABlackFrameAndKeepsALitOne() {
         assertTrue(looksBlank(intArrayOf()))
         assertTrue(looksBlank(intArrayOf(0xFF000000.toInt(), 0xFF050505.toInt())))

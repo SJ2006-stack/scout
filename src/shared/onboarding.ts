@@ -1,7 +1,7 @@
 import { CITIES, cityFromPincode, cityFromText } from "./cities.ts";
 import type { EventKind } from "./event.ts";
 
-export type OnboardingStep = "google" | "phone" | "name" | "about" | "ready";
+export type OnboardingStep = "google" | "phone" | "name" | "about" | "accounts" | "ready";
 
 /** A site Scout signs in to for the user. id is the browser skill, domain the vault key. */
 export type Connector = {
@@ -57,12 +57,13 @@ export function preferredName(raw: string): string | null {
   return name;
 }
 
-export function onboardingStep(profile: { signedIn: boolean; phone: string | null; name: string | null; onboarded: boolean }): OnboardingStep {
+export function onboardingStep(profile: { signedIn: boolean; phone: string | null; name: string | null; aboutDone: boolean; onboarded: boolean }): OnboardingStep {
   if (!profile.signedIn) return "google";
   if (profile.phone == null || profile.phone.length === 0) return "phone";
   if (profile.name == null || profile.name.length === 0) return "name";
-  if (!profile.onboarded) return "about";
-  return "ready";
+  if (profile.onboarded) return "ready";
+  if (!profile.aboutDone) return "about";
+  return "accounts";
 }
 
 export const ABOUT_CITIES: readonly { id: string; name: string }[] = CITIES.map((city) => ({ id: city.id, name: city.name }));

@@ -20,6 +20,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -31,10 +32,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Holds one MediaProjection for one screen session, under a foreground service of type
- * mediaProjection with a notice the user cannot miss. It creates no display and reads no
- * pixels until the user taps Capture; then it reads one frame, saves it privately, and
- * stops the projection. Stop, Android's own stop, Scout being swiped away, or three idle
- * minutes all end it.
+ * mediaProjection with a notice the user cannot miss. Once Android grants the projection,
+ * Scout samples frames into a short clip until Stop, a run of failures, or [ScreenSession.CLIP_FRAMES].
+ * Stop with at least one frame keeps the clip. An explicit Capture tap still saves one frame and stops.
+ * On Android 14 and later, a shared app window reports its size through
+ * onCapturedContentResize, including after rotation; the virtual display and its ImageReader
+ * are rebuilt to that size before the frame is saved, and the previous reader is closed only
+ * after the display has stopped drawing to it.
  */
 class ScreenCaptureService : Service(), Shutter {
     private val app get() = application as ScoutApp
@@ -47,8 +51,18 @@ class ScreenCaptureService : Service(), Shutter {
     @Volatile private var sessionId: String? = null
     @Volatile private var owner: String? = null
     @Volatile private var contentVisible = true
+    @Volatile private var contentWidth = 0
+    @Volatile private var contentHeight = 0
     private val released = AtomicBoolean(false)
+    private val recording = AtomicBoolean(false)
+    private val frameFinished = AtomicBoolean(false)
     private val expiry = Runnable { app.screen.expire() }
+    private var requested = FrameSize(0, 0, 0)
+    private var generation = 0
+    private var settleToken = 0
+    private var timeout: Runnable? = null
+    private var settle: Runnable? = null
+    private var pendingDone: ((CaptureResult) -> Unit)? = null
 
     private val callback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -58,6 +72,22 @@ class ScreenCaptureService : Service(), Shutter {
 
         override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
             contentVisible = isVisible
+        }
+
+        override fun onCapturedContentResize(width: Int, height: Int) {
+            if (width <= 0 || height <= 0) return
+            val changed = width != contentWidth || height != contentHeight
+            contentWidth = width
+            contentHeight = height
+            if (!changed || pendingDone == null || frameFinished.get() || released.get()) return
+            val size = currentSize() ?: return
+            val frames = reader
+            if (frames != null && frames.width == size.width && frames.height == size.height) {
+                Log.i(TAG, "screen content resized to ${width}x${height}, capture already ${size.width}x${size.height}")
+                return
+            }
+            Log.i(TAG, "screen content resized to ${width}x${height}, capture ${size.width}x${size.height}")
+            if (mount(size)) armTimeout()
         }
     }
 
@@ -116,6 +146,84 @@ class ScreenCaptureService : Service(), Shutter {
             return
         }
         main.postDelayed(expiry, ScreenSession.LIVE_MS + 1_000)
+        recording.set(true)
+        handler?.post { watchNext(0) }
+    }
+
+    /** Samples the shared screen until the clip is full, the user stops, or several grabs fail. */
+    private fun watchNext(misses: Int) {
+        if (released.get() || !recording.get()) return
+        val id = sessionId ?: return
+        val size = displaySize()
+        if (size.width <= 0 || size.height <= 0) {
+            handler?.postDelayed({ watchNext(misses + 1) }, SAMPLE_MS)
+            return
+        }
+        sample(size) { result ->
+            if (released.get() || !recording.get()) return@sample
+            when (result) {
+                is CaptureResult.Saved -> {
+                    if (app.screen.kept(id)) handler?.postDelayed({ watchNext(0) }, SAMPLE_MS)
+                    else {
+                        recording.set(false)
+                        app.screen.stop(id, ScreenEnd.STOPPED)
+                    }
+                }
+                is CaptureResult.Failed -> {
+                    val have = app.screen.frameCount(id)
+                    val next = misses + 1
+                    if (have > 0 && next >= 3) {
+                        recording.set(false)
+                        app.screen.stop(id, ScreenEnd.STOPPED)
+                    } else if (have == 0 && next >= 6) {
+                        recording.set(false)
+                        app.screen.stop(id, ScreenEnd.FAILED, result.message)
+                    } else {
+                        handler?.postDelayed({ watchNext(next) }, SAMPLE_MS)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Grabs one frame and leaves the virtual display up so the next sample can reuse it. */
+    private fun sample(size: FrameSize, done: (CaptureResult) -> Unit) {
+        val work = handler
+        if (work == null || projection == null || owner == null) {
+            done(CaptureResult.Failed("Screen capture already stopped."))
+            return
+        }
+        work.post {
+            if (released.get() || projection == null || owner == null) {
+                done(CaptureResult.Failed("Screen capture already stopped."))
+                return@post
+            }
+            requested = size
+            frameFinished.set(false)
+            pendingDone = done
+            val sizeNow = currentSize()
+            if (sizeNow == null || sizeNow.width <= 0 || sizeNow.height <= 0) {
+                finishFrame(CaptureResult.Failed("No picture came from the screen. Try again."))
+                return@post
+            }
+            if (display == null || reader == null) {
+                if (mount(sizeNow)) armTimeout()
+                return@post
+            }
+            val run = Runnable {
+                if (frameFinished.get() || released.get()) return@Runnable
+                val source = reader
+                val user = owner
+                if (source == null || user == null) {
+                    finishFrame(CaptureResult.Failed("Screen capture already stopped."))
+                    return@Runnable
+                }
+                finishFrame(save(source, sizeNow, user))
+            }
+            settle = run
+            work.postDelayed(run, SETTLE_MS)
+            armTimeout()
+        }
     }
 
     private fun captureNow(id: String?) {
@@ -126,28 +234,77 @@ class ScreenCaptureService : Service(), Shutter {
 
     override fun capture(size: FrameSize, done: (CaptureResult) -> Unit) {
         val work = handler
-        val live = projection
-        val user = owner
-        if (work == null || live == null || user == null) {
+        if (work == null || projection == null || owner == null) {
             done(CaptureResult.Failed("Screen capture already stopped."))
             return
         }
-        val finished = AtomicBoolean(false)
-        val timeout = Runnable { finishOnce(finished, work, done, CaptureResult.Failed("No picture came from the screen. Try again.")) }
-        work.post {
-            val frames = ImageReader.newInstance(size.width, size.height, PixelFormat.RGBA_8888, 2)
-            reader = frames
-            val armed = AtomicBoolean(false)
-            frames.setOnImageAvailableListener({ source ->
-                if (armed.compareAndSet(false, true)) {
-                    work.postDelayed(
-                        { finishOnce(finished, work, done, save(source, size, user)) },
-                        SETTLE_MS,
-                    )
+        requested = size
+        work.post { openCapture(done) }
+    }
+
+    private fun openCapture(done: (CaptureResult) -> Unit) {
+        if (released.get() || projection == null || owner == null) {
+            done(CaptureResult.Failed("Screen capture already stopped."))
+            return
+        }
+        frameFinished.set(false)
+        pendingDone = done
+        val size = currentSize()
+        if (size == null || size.width <= 0 || size.height <= 0) {
+            finishFrame(CaptureResult.Failed("No picture came from the screen. Try again."))
+            return
+        }
+        Log.i(TAG, "screen capture ${size.width}x${size.height} content ${contentWidth}x${contentHeight}")
+        if (mount(size)) armTimeout()
+    }
+
+    /** Latest shared-window size when Android has reported one, otherwise the full display. */
+    private fun currentSize(): FrameSize? {
+        if (requested.width <= 0 || requested.height <= 0 || requested.dpi <= 0) return null
+        return captureSize(requested, contentWidth, contentHeight)
+    }
+
+    /**
+     * Points the virtual display at a new [ImageReader] of [size]. The reader is created first,
+     * then the display is created or resized onto its surface, and only then is the previous
+     * reader closed. A failed create closes the new reader and ends the capture.
+     */
+    private fun mount(size: FrameSize): Boolean {
+        val live = projection ?: return false
+        val work = handler ?: return false
+        generation += 1
+        val generationAtListen = generation
+        settle?.let { work.removeCallbacks(it) }
+        settle = null
+        val oldReader = reader
+        oldReader?.setOnImageAvailableListener(null, null)
+        val frames = try {
+            ImageReader.newInstance(size.width, size.height, PixelFormat.RGBA_8888, 2)
+        } catch (_: RuntimeException) {
+            finishFrame(CaptureResult.Failed("Android stopped the screen capture. Try again."))
+            return false
+        }
+        frames.setOnImageAvailableListener({ source ->
+            if (generation != generationAtListen || frameFinished.get() || released.get()) return@setOnImageAvailableListener
+            val token = settleToken + 1
+            settleToken = token
+            val run = Runnable {
+                if (settleToken != token || generation != generationAtListen || frameFinished.get()) return@Runnable
+                val user = owner
+                if (user == null) {
+                    finishFrame(CaptureResult.Failed("Screen capture already stopped."))
+                    return@Runnable
                 }
-            }, work)
-            display = try {
-                live.createVirtualDisplay(
+                finishFrame(save(source, size, user))
+            }
+            settle = run
+            val wait = if (contentWidth > 0 && contentHeight > 0) SETTLE_MS else FIRST_SIZE_MS
+            work.postDelayed(run, wait)
+        }, work)
+        val existing = display
+        try {
+            if (existing == null) {
+                display = live.createVirtualDisplay(
                     "scout-screen",
                     size.width,
                     size.height,
@@ -157,18 +314,63 @@ class ScreenCaptureService : Service(), Shutter {
                     null,
                     work,
                 )
-            } catch (_: RuntimeException) {
-                finishOnce(finished, work, done, CaptureResult.Failed("Android stopped the screen capture. Try again."))
-                null
+            } else {
+                existing.resize(size.width, size.height, size.dpi)
+                existing.setSurface(frames.surface)
             }
-            work.postDelayed(timeout, FRAME_WAIT_MS)
+        } catch (_: RuntimeException) {
+            frames.setOnImageAvailableListener(null, null)
+            frames.close()
+            finishFrame(CaptureResult.Failed("Android stopped the screen capture. Try again."))
+            return false
         }
+        if (display == null) {
+            frames.close()
+            finishFrame(CaptureResult.Failed("Android stopped the screen capture. Try again."))
+            return false
+        }
+        reader = frames
+        oldReader?.close()
+        return true
     }
 
-    private fun finishOnce(finished: AtomicBoolean, work: Handler, done: (CaptureResult) -> Unit, result: CaptureResult) {
-        if (!finished.compareAndSet(false, true)) return
-        work.removeCallbacksAndMessages(null)
-        done(result)
+    private fun armTimeout() {
+        val work = handler ?: return
+        timeout?.let { work.removeCallbacks(it) }
+        val run = Runnable { finishFrame(CaptureResult.Failed("No picture came from the screen. Try again.")) }
+        timeout = run
+        work.postDelayed(run, FRAME_WAIT_MS)
+    }
+
+    private fun finishFrame(result: CaptureResult) {
+        if (!frameFinished.compareAndSet(false, true)) return
+        val work = handler
+        timeout?.let { work?.removeCallbacks(it) }
+        settle?.let { work?.removeCallbacks(it) }
+        timeout = null
+        settle = null
+        val done = pendingDone
+        pendingDone = null
+        if (!recording.get() || released.get()) closeSurfaces()
+        done?.invoke(result)
+    }
+
+    /** Stop drawing, release the display, then close the reader. Safe when nothing is open. */
+    private fun closeSurfaces() {
+        val live = display
+        display = null
+        if (live != null) {
+            try {
+                live.setSurface(null)
+            } catch (_: RuntimeException) {
+                // The display may already have been stopped.
+            }
+            live.release()
+        }
+        val frames = reader
+        reader = null
+        frames?.setOnImageAvailableListener(null, null)
+        frames?.close()
     }
 
     private fun save(source: ImageReader, size: FrameSize, user: String): CaptureResult {
@@ -227,24 +429,38 @@ class ScreenCaptureService : Service(), Shutter {
 
     override fun release() {
         if (!released.compareAndSet(false, true)) return
+        recording.set(false)
         main.removeCallbacks(expiry)
+        frameFinished.set(true)
+        pendingDone = null
         val work = handler
         val teardown = Runnable {
-            display?.release()
-            display = null
-            reader?.close()
-            reader = null
+            timeout?.let { handler?.removeCallbacks(it) }
+            settle?.let { handler?.removeCallbacks(it) }
+            timeout = null
+            settle = null
+            closeSurfaces()
             val live = projection
             projection = null
-            live?.unregisterCallback(callback)
-            live?.stop()
+            if (live != null) {
+                try {
+                    live.unregisterCallback(callback)
+                } catch (_: RuntimeException) {
+                    // Already unregistered.
+                }
+                try {
+                    live.stop()
+                } catch (_: RuntimeException) {
+                    // Already stopped.
+                }
+            }
             main.post {
                 ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 worker?.quitSafely()
             }
         }
-        if (work == null) teardown.run() else work.post(teardown)
+        if (work == null || Looper.myLooper() == work.looper) teardown.run() else work.post(teardown)
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -267,7 +483,6 @@ class ScreenCaptureService : Service(), Shutter {
             manager?.createNotificationChannel(channel)
         }
         val immutable = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        val capture = PendingIntent.getService(this, CAPTURE_REQUEST, captureIntent(this, id), immutable)
         val stop = PendingIntent.getService(this, STOP_REQUEST, stopIntent(this, id), immutable)
         val open = PendingIntent.getActivity(this, OPEN_REQUEST, Intent(this, MainActivity::class.java), immutable)
         return NotificationCompat.Builder(this, CHANNEL)
@@ -281,7 +496,6 @@ class ScreenCaptureService : Service(), Shutter {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .addAction(0, getString(R.string.screen_capture), capture)
             .addAction(0, getString(R.string.screen_stop), stop)
             .build()
     }
@@ -311,12 +525,16 @@ class ScreenCaptureService : Service(), Shutter {
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "consent"
         private const val CHANNEL = "scout-screen"
-        private const val NOTICE_ID = 41
-        private const val CAPTURE_REQUEST = 41
+        private const val TAG = "ScoutDebug"
+        /** Not the automation notice id (41), so the two foreground services do not replace each other. */
+        private const val NOTICE_ID = 48
         private const val STOP_REQUEST = 42
         private const val OPEN_REQUEST = 43
         private const val SETTLE_MS = 250L
+        /** Android reports the shared window shortly after the display is created. Wait for that before saving the first frame. */
+        private const val FIRST_SIZE_MS = 800L
         private const val FRAME_WAIT_MS = 3_000L
+        private const val SAMPLE_MS = 1_500L
 
         /** The consent result goes straight to the service and is used once there; nothing else keeps it. */
         fun start(context: Context, session: String, code: Int, consent: Intent): Intent =

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { deskConversations } from "../src/shared/deskBoard.ts";
-import { appendThought, finishThought, thoughtLabel, type ThinkingTurn } from "../src/shared/thinking.ts";
+import { appendThought, finishThought, pushActivity, readThinkingBrief, thoughtLabel, type ThinkingTurn } from "../src/shared/thinking.ts";
 
 describe("thinking", () => {
   it("labels a live trace and the seconds it took", () => {
@@ -18,6 +18,27 @@ describe("thinking", () => {
     const sealed = finishThought(again, 4_000);
     assert.equal(sealed.finishedAt, 4_000);
     assert.equal(finishThought(sealed, 9_000).finishedAt, 4_000);
+  });
+
+  it("names the scout in place of the plain message-sent line", () => {
+    assert.deepEqual(pushActivity(["Message sent.", "Splitting that into tasks."], "Message sent to Event Scout."), ["Message sent to Event Scout.", "Splitting that into tasks."]);
+    assert.deepEqual(pushActivity(["Message sent to Event Scout.", "Event Scout fetching from Luma, District, and BookMyShow."], "Event Scout fetching from Luma, District, and BookMyShow."), ["Message sent to Event Scout.", "Event Scout fetching from Luma, District, and BookMyShow."]);
+  });
+
+  it("reads the prompt and tools shown on the phone", () => {
+    const brief = readThinkingBrief({
+      scout: "Event Scout",
+      fed: false,
+      prompt: "You are Event Scout.",
+      tools: [{ name: "search_luma", description: "Search Luma." }, { name: "" }],
+    });
+    assert.deepEqual(brief, {
+      scout: "Event Scout",
+      fed: false,
+      prompt: "You are Event Scout.",
+      tools: [{ name: "search_luma", description: "Search Luma." }],
+    });
+    assert.equal(readThinkingBrief({ scout: "Event Scout", fed: "yes", prompt: "x", tools: [] }), null);
   });
 
   it("keeps a saved thinking turn on a chat", () => {

@@ -4,27 +4,27 @@ import java.io.File
 import java.security.SecureRandom
 import org.json.JSONObject
 
-data class ScreenShot(val id: String, val owner: String, val at: Long, val width: Int, val height: Int, val bytes: Int, val file: File) {
+data class ScreenShot(val id: String, val owner: String, val at: Long, val width: Int, val height: Int, val bytes: Int, val frames: Int, val file: File) {
     val mime: String get() = "image/jpeg"
 }
 
 /**
- * Holds at most one captured frame in [root] (app cache) until its owner sends or discards it.
+ * Holds one short clip in [root] (app cache), up to [CLIP_FRAMES] JPEGs, until its owner sends or discards it.
  * Nothing here survives the process: whatever is on disk when this is created is a leftover and
  * is deleted. A frame is only handed to the account that captured it and expires after [TTL_MS].
  */
 class ScreenShots(private val root: File, private val now: () -> Long) {
-    private var pending: ScreenShot? = null
+    private val pending = ArrayDeque<ScreenShot>()
 
     init {
         root.deleteRecursively()
     }
 
-    /** Saves [jpeg] as the pending frame, replacing any older one. Null when it is empty or too large. */
+    /** Appends [jpeg] to the clip. The oldest frame is dropped past [CLIP_FRAMES]. Null when it is empty or too large. */
     @Synchronized
     fun put(owner: String, id: String, jpeg: ByteArray, width: Int, height: Int): ScreenShot? {
         if (!SHOT_ID.matches(id) || jpeg.isEmpty() || jpeg.size > MAX_BYTES) return null
-        discard()
+        if (pending.firstOrNull()?.owner != owner) discard()
         root.mkdirs()
         val part = File(root, "$id.part")
         part.writeBytes(jpeg)
@@ -33,14 +33,18 @@ class ScreenShots(private val root: File, private val now: () -> Long) {
             part.delete()
             return null
         }
-        return ScreenShot(id, owner, now(), width, height, jpeg.size, file).also { pending = it }
+        pending.addLast(ScreenShot(id, owner, now(), width, height, jpeg.size, 1, file))
+        while (pending.size > CLIP_FRAMES) pending.removeFirst().file.delete()
+        val latest = pending.removeLast().copy(frames = pending.size + 1)
+        pending.addLast(latest)
+        return latest
     }
 
     @Synchronized
     fun take(uid: String?): ScreenShot? {
-        val shot = pending ?: return null
+        val shot = pending.lastOrNull() ?: return null
         val age = now() - shot.at
-        if (age > TTL_MS || age < 0 || !shot.file.isFile) {
+        if (age > TTL_MS || age < 0 || pending.any { !it.file.isFile }) {
             discard()
             return null
         }
@@ -48,13 +52,13 @@ class ScreenShots(private val root: File, private val now: () -> Long) {
     }
 
     @Synchronized
-    fun bytes(uid: String?, id: String): ByteArray? = take(uid)?.takeIf { it.id == id }?.file?.readBytes()
+    fun bytes(uid: String?, id: String): ByteArray? = fresh(uid)?.find { it.id == id }?.file?.readBytes()
 
-    /** Deletes the frame once its owner sent or discarded it. */
+    /** Deletes the clip once its owner sent or discarded any frame from it. */
     @Synchronized
     fun done(uid: String?, id: String): Boolean {
-        val shot = take(uid) ?: return false
-        if (shot.id != id) return false
+        val clip = fresh(uid) ?: return false
+        if (clip.none { it.id == id }) return false
         discard()
         return true
     }
@@ -62,17 +66,21 @@ class ScreenShots(private val root: File, private val now: () -> Long) {
     /** Another account signed in: their frame is not shown to this one. */
     @Synchronized
     fun claim(uid: String) {
-        val shot = pending ?: return
+        val shot = pending.lastOrNull() ?: return
         if (shot.owner != uid) discard()
     }
 
     @Synchronized
     fun discard() {
-        pending = null
+        pending.clear()
         root.deleteRecursively()
     }
 
+    @Synchronized
+    private fun fresh(uid: String?): List<ScreenShot>? = take(uid)?.let { latest -> pending.filter { it.owner == latest.owner } }
+
     companion object {
+        const val CLIP_FRAMES = 6
         const val TTL_MS = 10 * 60_000L
         const val MAX_BYTES = 4_500_000
         private val random = SecureRandom()
@@ -92,6 +100,7 @@ fun shotForPage(shot: ScreenShot): JSONObject = JSONObject()
     .put("bytes", shot.bytes)
     .put("width", shot.width)
     .put("height", shot.height)
+    .put("frames", shot.frames)
 
 fun screenStateJson(state: String, last: ScreenNotice?, session: String?, shot: JSONObject?): String {
     val payload = JSONObject().put("accepted", true).put("state", state)

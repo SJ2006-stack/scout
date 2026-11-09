@@ -427,11 +427,29 @@ class MainActivity : AppCompatActivity() {
                         .toString()
                 }
                 is BridgeCall.ScreenDone -> JSONObject().put("accepted", app.shots.done(uid, call.id)).toString()
+                is BridgeCall.ScreenFill -> fillFromPage(call)
                 else -> SCREEN_REFUSED
             }
         } catch (_: IOException) {
             SCREEN_REFUSED
         }
+    }
+
+    private fun fillFromPage(call: BridgeCall.ScreenFill): String {
+        val latch = CountDownLatch(1)
+        var result = PhoneResult("f".repeat(24), "failed", "Scout could not fill that screen in time.")
+        Thread {
+            result = phoneActions.fillScreen(call.name, call.email, call.phone, call.note, call.submit)
+            latch.countDown()
+        }.start()
+        latch.await(15, TimeUnit.SECONDS)
+        val data = result.data as? JSONObject
+        return JSONObject()
+            .put("accepted", result.status == "completed")
+            .put("filled", data?.optInt("filled") ?: 0)
+            .put("submitted", data?.optBoolean("submitted") ?: false)
+            .put("message", result.message)
+            .toString()
     }
 
     private fun startScreen(uid: String?): String {
@@ -1021,7 +1039,7 @@ class MainActivity : AppCompatActivity() {
     private fun performBridge(call: BridgeCall) {
         when (call) {
             BridgeCall.DropTake, is BridgeCall.DropImage, is BridgeCall.DropDone -> Unit
-            BridgeCall.ScreenState, BridgeCall.ScreenStart, BridgeCall.ScreenStop, BridgeCall.ScreenFrame, BridgeCall.ScreenTake, is BridgeCall.ScreenFile, is BridgeCall.ScreenDone -> Unit
+            BridgeCall.ScreenState, BridgeCall.ScreenStart, BridgeCall.ScreenStop, BridgeCall.ScreenFrame, BridgeCall.ScreenTake, is BridgeCall.ScreenFile, is BridgeCall.ScreenDone, is BridgeCall.ScreenFill -> Unit
             BridgeCall.Location -> requestBridgeLocation()
             BridgeCall.Microphone -> beginSpeech()
             BridgeCall.Camera -> requestBridgeMedia(audio = false)
@@ -1039,6 +1057,7 @@ class MainActivity : AppCompatActivity() {
             }
             BridgeCall.Biometric -> confirmPresence()
             BridgeCall.Permissions -> openPermissions()
+            BridgeCall.Accessibility -> openAccessibilitySettings()
             is BridgeCall.Checkout -> beginCheckout(this, call.app)
             BridgeCall.SignOut -> signOut()
         }

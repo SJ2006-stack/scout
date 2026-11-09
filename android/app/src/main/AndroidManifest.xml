@@ -141,7 +141,7 @@
                 android:resource="@xml/scout_automation" />
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Shows a stop button while Scout adds items to a cart." />
+                android:value="Shows Take control and Stop over the app Scout is using." />
         </service>
     </application>
 

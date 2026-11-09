@@ -153,6 +153,16 @@ export function listingInWindow(listing: Listing, range: DateRange): boolean {
   return withinDates(listing, range);
 }
 
+/** Listings that start on or after a moment, soonest first. Used when the asked day itself is empty. */
+export function upcomingListings(listings: readonly Listing[], notBeforeMs: number, limit = 6): Listing[] {
+  const upcoming = listings.filter((listing) => {
+    if (listing.start == null) return false;
+    const time = Date.parse(listing.start);
+    return Number.isFinite(time) && time >= notBeforeMs;
+  });
+  return sortListings(dedupeListings(upcoming)).slice(0, limit);
+}
+
 export function dedupeListings(listings: Listing[]): Listing[] {
   const seen = new Set<string>();
   const kept: Listing[] = [];

@@ -13,9 +13,13 @@ import android.net.Uri
 import android.os.Build
 import android.provider.AlarmClock
 import android.util.Log
+import app.scout.R
 import app.scout.companion.automation.AUTOMATION_PACKAGES
 import app.scout.companion.automation.CartAutomation
 import app.scout.companion.automation.EventBook
+import app.scout.companion.automation.formShouldSubmit
+import app.scout.companion.automation.formValues
+import app.scout.companion.automation.planFormFill
 import app.scout.companion.automation.RunQueue
 import app.scout.companion.automation.ScoutAutomationService
 import app.scout.companion.automation.ServiceScreen
@@ -96,6 +100,7 @@ class PhoneActions(private val context: Context) {
                 "get_capabilities" -> PhoneResult(action.id, "completed", "Capabilities read.", capabilities())
                 "app_cart_add" -> addToCart(action)
                 "app_event_book" -> bookEvent(action)
+                "fill_screen" -> fillScreen(action.args.optString("name"), action.args.optString("email"), action.args.optString("phone"), action.args.optString("note"), action.args.optBoolean("submit"))
                 else -> PhoneResult(action.id, "failed", "This app version cannot do ${action.name}.")
             }
         } catch (_: SecurityException) {
@@ -144,6 +149,48 @@ class PhoneActions(private val context: Context) {
         return PhoneResult(action.id, "completed", "Reminder cancelled.")
     }
 
+    /** Types into the app currently on screen. Used while Scout is recording that screen. */
+    fun fillScreen(name: String, email: String, phone: String, note: String, submit: Boolean): PhoneResult {
+        val id = "f".repeat(24)
+        val service = ScoutAutomationService.connected
+            ?: return PhoneResult(id, "failed", "Turn on Scout's accessibility service to fill the form.")
+        val values = formValues(name, email, phone, note)
+        if (values.isEmpty()) return PhoneResult(id, "failed", "Scout has no name, email, or phone to type.")
+        return RunQueue.run {
+            val screen = ServiceScreen(service)
+            val root = screen.root()
+            if (root == null || root.packageName == "app.scout" || root.packageName.isBlank()) {
+                return@run PhoneResult(id, "failed", "Open the form first. Scout fills the app on screen, not itself.")
+            }
+            val plan = planFormFill(root, values, submit || formShouldSubmit(note))
+            if (plan.writes.isEmpty() && plan.button == null) {
+                return@run PhoneResult(id, "failed", "No field on that screen matched a detail Scout has.")
+            }
+            service.beginRun(root.packageName, context.getString(R.string.automation_form))
+            try {
+                val runner = deviceRunner(screen, root.packageName)
+                val typed = ArrayList<String>()
+                for ((node, value) in plan.writes) {
+                    val question = node.hint.ifBlank { node.desc }.ifBlank { "a field" }
+                    runner.setText(question, node, value)
+                    typed += question
+                }
+                val sent = plan.button != null
+                if (plan.button != null) runner.click(plan.button.text.ifBlank { "submit" }, plan.button)
+                val message = buildString {
+                    if (typed.isNotEmpty()) append("Filled ${typed.size} field${if (typed.size == 1) "" else "s"}.")
+                    if (sent) append(" Tapped ${plan.button?.text?.ifBlank { "the button" }}.")
+                }
+                PhoneResult(id, "completed", message.trim(), JSONObject().put("filled", typed.size).put("submitted", sent))
+            } catch (error: StepFailed) {
+                Log.i("ScoutDebug", "form step=${error.step} reason=${error.reason}")
+                PhoneResult(id, "failed", if (error.reason == "refused") "Scout will not tap a pay button." else "Scout could not finish filling that screen.")
+            } finally {
+                service.endRun()
+            }
+        }
+    }
+
     private fun sendWhatsApp(action: PhoneAction): PhoneResult {
         val rawPhone = action.args.optString("phone").filter { it.isDigit() }
         val phone = rawPhone.takeIf { it.matches(Regex("^[1-9][0-9]{7,14}$")) }
@@ -160,14 +207,15 @@ class PhoneActions(private val context: Context) {
             val uri = Uri.parse("https://wa.me/$phone").buildUpon().appendQueryParameter("text", body).build()
             return launch(action, Intent(Intent.ACTION_VIEW, uri).setPackage(pkg), "WhatsApp opened to that chat with the message filled in.")
         }
-        return RunQueue.run {
+        val result = RunQueue.run {
             val screen = ServiceScreen(service)
-            service.beginRun(pkg)
+            service.beginRun(pkg, context.getString(R.string.automation_whatsapp))
             try {
                 WhatsAppSend.deliver(screen, deviceRunner(screen, pkg), pkg, phone, chatName, body)
                 PhoneResult(action.id, "completed", "WhatsApp sent that message.")
             } catch (error: StepFailed) {
-                val status = if (error.reason == "unsent") "handoff_started" else "failed"
+                Log.i("ScoutDebug", "whatsapp step=${error.step} reason=${error.reason}")
+                val status = if (error.reason == "unsent" || error.reason == "user_stopped") "handoff_started" else "failed"
                 val message = when (error.reason) {
                     "unsent" -> "WhatsApp is open with the message filled in."
                     "ambiguous" -> "More than one WhatsApp chat has that name, so nothing was sent."
@@ -181,6 +229,7 @@ class PhoneActions(private val context: Context) {
                 service.endRun()
             }
         }
+        return comeBack(result)
     }
 
     @Suppress("DEPRECATION")
@@ -226,7 +275,7 @@ class PhoneActions(private val context: Context) {
     private fun addToCart(action: PhoneAction): PhoneResult {
         val request = readCartRequest(action.args) ?: return PhoneResult(action.id, "failed", "That cart request is not valid.")
         val result = CartAutomation.run(context, request)
-        return PhoneResult(action.id, cartStatus(result), cartMessage(result), result.toJson())
+        return comeBack(PhoneResult(action.id, cartStatus(result), cartMessage(result), result.toJson()))
     }
 
     private fun bookEvent(action: PhoneAction): PhoneResult {
@@ -244,9 +293,9 @@ class PhoneActions(private val context: Context) {
                 PhoneResult(action.id, "failed", eventMessage(request.app, request.title, "app_missing"))
             }
         }
-        return RunQueue.run {
+        val result = RunQueue.run {
             val screen = ServiceScreen(service)
-            service.beginRun(packageName)
+            service.beginRun(packageName, context.getString(R.string.automation_event))
             try {
                 val stop = EventBook.deliver(screen, deviceRunner(screen, packageName), request)
                 val outcome = eventOutcome(request, screen.root(), stop)
@@ -258,6 +307,7 @@ class PhoneActions(private val context: Context) {
                 service.endRun()
             }
         }
+        return comeBack(result)
     }
 
     private fun eventAppLabel(app: String): String = when (app) {
@@ -274,6 +324,11 @@ class PhoneActions(private val context: Context) {
             .put("exactReminders", Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarms().canScheduleExactAlarms())
             .put("apps", JSONArray(PHONE_APPS.filter { (_, ids) -> ids.any { pm.getLaunchIntentForPackage(it) != null } }.keys.toList()))
             .put("automation", CartAutomation.capabilities(context))
+    }
+
+    private fun comeBack(result: PhoneResult): PhoneResult {
+        if (shouldReturnToScout(result.status)) returnToScout(context)
+        return result
     }
 
     private fun launch(action: PhoneAction, intent: Intent, message: String): PhoneResult {

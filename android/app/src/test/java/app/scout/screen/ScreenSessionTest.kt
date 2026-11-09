@@ -116,6 +116,32 @@ class ScreenSessionTest {
     }
 
     @Test
+    fun aRecordingKeepsSamplingUntilStopThenHandsBackTheClip() {
+        val shutter = FakeShutter()
+        val id = live(shutter)
+        assertTrue(session.kept(id))
+        assertTrue(session.kept(id))
+        assertEquals(2, session.frameCount(id))
+        assertEquals("waiting", session.state())
+        assertEquals(0, shutter.releases)
+        assertTrue(session.stop(id, ScreenEnd.STOPPED))
+        assertEquals("captured", session.lastNotice()?.state)
+        assertEquals(1, shutter.releases)
+        assertEquals("idle", session.state())
+    }
+
+    @Test
+    fun theSixthSavedFrameIsTheLastOneTheClipWillKeep() {
+        val shutter = FakeShutter()
+        val id = live(shutter)
+        repeat(ScreenSession.CLIP_FRAMES - 1) { assertTrue(session.kept(id)) }
+        assertFalse(session.kept(id))
+        assertEquals(ScreenSession.CLIP_FRAMES, session.frameCount(id))
+        assertTrue(session.stop(id, ScreenEnd.STOPPED))
+        assertEquals("captured", session.lastNotice()?.state)
+    }
+
+    @Test
     fun aStaleStartAfterStopCannotAttachAProjection() {
         val id = session.begin("u1")!!
         session.stop(id, ScreenEnd.STOPPED)

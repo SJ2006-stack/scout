@@ -34,10 +34,13 @@ internal class ServiceScreen(private val service: ScoutAutomationService) : Scre
 
     override fun abortedReason(): String? = service.session.aborted()
 
+    override fun holding(): Boolean = service.session.userHolding
+
     override fun launch(packageName: String) {
         val intent = service.packageManager.getLaunchIntentForPackage(packageName) ?: return
-        // Zepto's React Native screen hangs on a blank home when its task is cleared while the process lives.
-        val flags = if (packageName == ZeptoCart.PACKAGE) {
+        // Zepto hangs on a blank home when its task is cleared. WhatsApp's search is the screen
+        // we need, and clearing its task only delays that screen past the wait.
+        val flags = if (packageName == ZeptoCart.PACKAGE || packageName == "com.whatsapp" || packageName == "com.whatsapp.w4b") {
             Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
         } else {
             Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
@@ -148,7 +151,7 @@ internal class ServiceScreen(private val service: ScoutAutomationService) : Scre
 
     private fun withNode(target: NodeSnapshot, block: (AccessibilityNodeInfo) -> Boolean): Boolean {
         val roots = liveRoots()
-        return try {
+        try {
             for (root in roots) {
                 val found = find(root, target)
                 if (found == null) continue
@@ -156,9 +159,44 @@ internal class ServiceScreen(private val service: ScoutAutomationService) : Scre
                 if (found !== root) found.recycle()
                 return ok
             }
-            false
         } finally {
             roots.forEach { it.recycle() }
+        }
+        if (target.id.isBlank()) return false
+        // The keyboard moves WhatsApp's search box between the snapshot and the type, so the
+        // bounds no longer match. One node with that id is still the field.
+        val again = liveRoots()
+        try {
+            for (root in again) {
+                val found = findUniqueId(root, target.id) ?: continue
+                val ok = block(found)
+                found.recycle()
+                return ok
+            }
+        } finally {
+            again.forEach { it.recycle() }
+        }
+        return false
+    }
+
+    private fun findUniqueId(node: AccessibilityNodeInfo, id: String): AccessibilityNodeInfo? {
+        val matches = ArrayList<AccessibilityNodeInfo>()
+        collectId(node, id, matches)
+        if (matches.size == 1) return matches[0]
+        matches.forEach { it.recycle() }
+        return null
+    }
+
+    private fun collectId(node: AccessibilityNodeInfo, id: String, out: MutableList<AccessibilityNodeInfo>) {
+        val viewId = node.viewIdResourceName?.substringAfterLast('/').orEmpty()
+        if (viewId == id) out += AccessibilityNodeInfo.obtain(node)
+        for (index in 0 until node.childCount) {
+            val child = node.getChild(index) ?: continue
+            try {
+                collectId(child, id, out)
+            } finally {
+                child.recycle()
+            }
         }
     }
 
@@ -176,7 +214,7 @@ internal class ServiceScreen(private val service: ScoutAutomationService) : Scre
             val info = window.root ?: continue
             try {
                 val snap = info.snapshot()
-                if (snap.packageName.isNotBlank()) snaps += snap
+                if (snap.packageName.isNotBlank() && snap.packageName != service.packageName) snaps += snap
             } finally {
                 info.recycle()
             }
@@ -184,7 +222,8 @@ internal class ServiceScreen(private val service: ScoutAutomationService) : Scre
         if (snaps.isEmpty()) {
             val active = service.rootInActiveWindow ?: return null
             return try {
-                active.snapshot()
+                val snap = active.snapshot()
+                if (snap.packageName == service.packageName) null else snap
             } finally {
                 active.recycle()
             }
@@ -264,6 +303,8 @@ internal fun AccessibilityNodeInfo.snapshot(): NodeSnapshot {
     }
     val rect = Rect()
     getBoundsInScreen(rect)
+    val kind = className?.toString().orEmpty()
+    val hint = hintText?.toString().orEmpty()
     return NodeSnapshot(
         id = viewIdResourceName?.substringAfterLast('/').orEmpty(),
         text = text?.toString().orEmpty(),
@@ -273,5 +314,7 @@ internal fun AccessibilityNodeInfo.snapshot(): NodeSnapshot {
         bounds = Bounds(rect.left, rect.top, rect.right, rect.bottom),
         children = kids,
         packageName = packageName?.toString().orEmpty(),
+        editable = isEditable || kind.contains("EditText") || hint.isNotBlank(),
+        hint = hint,
     )
 }

@@ -46,6 +46,20 @@ class WhatsAppSendTest {
     }
 
     @Test
+    fun searchHintInTheFieldTextIsTheOpener() {
+        val home = NodeSnapshot(children = listOf(NodeSnapshot(text = "Ask Meta AI or Search", clickable = true)))
+        assertEquals("Ask Meta AI or Search", WhatsAppSend.searchOpener(home)?.text)
+    }
+
+    @Test
+    fun namePathRetriesTypingWhenTheKeyboardMovesTheField() {
+        val screen = NameScreen()
+        WhatsAppSend.deliver(screen, runner(screen), "com.whatsapp", null, "Soham Bhanja", "hi, why so serious")
+        assertEquals(2, screen.searchAttempts)
+        assertEquals(listOf("Ask Meta AI or Search", "contact_row_container", "send"), screen.clicked)
+    }
+
+    @Test
     fun microphoneAloneIsLeftUntapped() {
         val screen = FrameScreen(compose("", send = false))
         val error = runCatching { WhatsAppSend.deliver(screen, runner(screen), "com.whatsapp", "919876543210", null, "On my way") }.exceptionOrNull()
@@ -73,6 +87,53 @@ class WhatsAppSendTest {
             ),
         )
     }
+}
+
+private class NameScreen : Screen {
+    var phase = "home"
+    var query = ""
+    var searchAttempts = 0
+    val clicked = mutableListOf<String>()
+
+    override fun root(): NodeSnapshot {
+        val kids = when (phase) {
+            "chat" -> listOf(
+                NodeSnapshot(id = "entry", text = "hi, why so serious", packageName = "com.whatsapp"),
+                NodeSnapshot(id = "send", desc = "Send", clickable = true, bounds = Bounds(919, 1340, 1054, 1475), packageName = "com.whatsapp"),
+            )
+            "search" -> {
+                val field = NodeSnapshot(id = "search_input", text = query.ifBlank { "Ask Meta AI or Search" }, clickable = true, packageName = "com.whatsapp")
+                if (query.equals("Soham Bhanja", ignoreCase = true)) {
+                    listOf(field, NodeSnapshot(id = "contact_row_container", clickable = true, packageName = "com.whatsapp", children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja", packageName = "com.whatsapp"))))
+                } else {
+                    listOf(field)
+                }
+            }
+            else -> listOf(NodeSnapshot(text = "Ask Meta AI or Search", clickable = true, packageName = "com.whatsapp"))
+        }
+        return NodeSnapshot(packageName = "com.whatsapp", children = kids)
+    }
+
+    override fun foregroundPackage(): String = "com.whatsapp"
+    override fun abortedReason(): String? = null
+    override fun launch(packageName: String) {}
+    override fun openUrl(url: String) {}
+    override fun click(node: NodeSnapshot): Boolean {
+        clicked += node.id.ifBlank { node.text }
+        if (node.text == "Ask Meta AI or Search") phase = "search"
+        if (node.id == "contact_row_container") phase = "chat"
+        return true
+    }
+    override fun gestureClick(node: NodeSnapshot): Boolean = click(node)
+    override fun setText(node: NodeSnapshot, value: String): Boolean {
+        if (node.id != "search_input") return true
+        searchAttempts += 1
+        if (searchAttempts == 1) return false
+        query = value
+        return true
+    }
+    override fun scroll(node: NodeSnapshot, forward: Boolean): Boolean = true
+    override fun back() {}
 }
 
 private class FrameScreen(first: NodeSnapshot, vararg rest: NodeSnapshot) : Screen {

@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { MapPin, Menu } from "lucide-react";
 import type { CartEstimate } from "../shared/cartQuote.ts";
 import type { ErrandAnswers, ErrandForm } from "../shared/errands.ts";
+import { historyFromTurns } from "../shared/chatHistory.ts";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import type { CommerceEvent } from "../shared/commerce.ts";
 import { matchesCardFilter, type CardFilter, type Listing } from "../shared/event.ts";
 import type { AgentId } from "../shared/hosts.ts";
 import { onboardingStep, PLAN_PROMPT, type OnboardingStep } from "../shared/onboarding.ts";
-import { screenAgent, type ScreenReading } from "../shared/screenReading.ts";
-import { speechCue } from "../shared/speech.ts";
+import { priorScreenCommand, screenAgent, type ScreenReading } from "../shared/screenReading.ts";
 import { matchControl, readBrowseCommand, type BrowserControl, type BrowseCommand } from "../shared/browse.ts";
 import type { BrowserTaskEvent } from "../shared/browser.ts";
 import { commerceAgent } from "./agentRoute.ts";
@@ -24,8 +24,8 @@ import { Composer } from "./Composer.tsx";
 import { deleteConversation } from "./conversationList.ts";
 import { conversationsFromStorage, emptyConversation, loadConversations, mergeConversations, saveConversations, type Conversation, type Turn } from "./conversations.ts";
 import { siteAgentFromHealth, siteAgentFromLocation } from "./site.ts";
-import { Onboarding, Splash } from "./SignIn.tsx";
-import { nativeSignOut } from "./nativeApp.ts";
+import { AccessibilityStep, Onboarding, Splash } from "./SignIn.tsx";
+import { insideNativeApp, nativeSignOut } from "./nativeApp.ts";
 import { BrowserTasks } from "./BrowserTasks.tsx";
 import { EventCard, MoreListings } from "./EventCard.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
@@ -41,25 +41,23 @@ import {
   type LocationFix,
 } from "./locationSession.ts";
 import { readSse } from "./sse.ts";
-import { rememberVoiceReplies, speakReply, stopSpeech, voiceRepliesEnabled } from "./voice.ts";
 import { Thinking } from "./Thinking.tsx";
 import { ReplyText } from "./ReplyText.tsx";
-import { appendThought, finishThought } from "../shared/thinking.ts";
+import { appendThought, finishThought, pushActivity, readThinkingBrief } from "../shared/thinking.ts";
 import { withEmoji } from "../shared/emoji.ts";
-import type { LiveEvent } from "../shared/liveEvents.ts";
 import { actionId, phoneAutomation, runAppAction, runDeviceAction, watchDeviceResults } from "./deviceRunner.ts";
 import { bookActionForListing, eventAppFor } from "../shared/listingBook.ts";
 import { PayTray } from "./PayTray.tsx";
 import { EstimateCard } from "./EstimateCard.tsx";
 import { ErrandFormCard } from "./ErrandFormCard.tsx";
 import { BusCard } from "./BusCard.tsx";
+import { FlightCard } from "./FlightCard.tsx";
 import { PlacesCard } from "./PlacesCard.tsx";
 import { readPlaces } from "../shared/places.ts";
 import { PhoneRunCard } from "./PhoneRunCard.tsx";
 import { phoneRunsFromTurns } from "../shared/payReady.ts";
-import { canAutomate, isAppAction, type DeviceResult } from "../shared/deviceActions.ts";
+import { accessibilityReady, appInstalled, isAppAction, type DeviceResult } from "../shared/deviceActions.ts";
 import { applyPhoneResult } from "../shared/phoneRun.ts";
-import { useVoiceCall } from "./voiceCall.ts";
 
 type Place = { lat: number; lon: number };
 
@@ -95,10 +93,8 @@ export function App() {
   const [location, setLocation] = useState<LocationView>({ kind: "idle" });
   const abortRef = useRef<AbortController | null>(null);
   const publishDesk = useRef(false);
-  const [voiceReplies, setVoiceReplies] = useState(voiceRepliesEnabled);
-  const voiceRepliesRef = useRef(voiceReplies);
-  voiceRepliesRef.current = voiceReplies;
   const [gate, setGate] = useState<Gate>("checking");
+  const [accessOn, setAccessOn] = useState<boolean | null>(null);
   const [link, setLink] = useState<BookingLink>("checking");
 
   useEffect(() => {
@@ -145,6 +141,29 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (gate !== "in") return;
+    const read = () => setAccessOn(accessibilityReady(insideNativeApp(), phoneAutomation({ fresh: true })));
+    read();
+    const onShow = () => {
+      if (document.visibilityState === "visible") read();
+    };
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onShow);
+      window.removeEventListener("focus", onShow);
+    };
+  }, [gate]);
+
+  useEffect(() => {
+    if (gate !== "in" || accessOn !== false) return;
+    const timer = window.setInterval(() => {
+      setAccessOn(accessibilityReady(insideNativeApp(), phoneAutomation({ fresh: true })));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [gate, accessOn]);
 
   async function advanceOnboarding(): Promise<void> {
     const body = await readSession();
@@ -224,8 +243,6 @@ export function App() {
   });
 
   const active = screen.kind === "chat" ? conversations.find((item) => item.id === screen.conversationId) ?? null : null;
-  const voiceChatRef = useRef<string | null>(null);
-  const voiceCall = useVoiceCall({ agent: siteAgent, sessionId: active?.sessionId, onLive: onVoiceLive, onToast: showToast });
   const [sharedDrop, setSharedDrop] = useSharedDrop(gate === "in");
   const screenCapture = useScreenCapture(gate === "in");
   const conversationsRef = useRef(conversations);
@@ -239,10 +256,6 @@ export function App() {
       hasPhoneRun(item.turns, result.id) ? { ...item, turns: applyPhoneTurns(item.turns, result), updatedAt: Date.now() } : item
     )));
   }), []);
-  useEffect(() => {
-    if (voiceCall.state === "idle" || voiceCall.state === "ended") voiceChatRef.current = null;
-    else if (voiceCall.state === "connecting") stopSpeech();
-  }, [voiceCall.state]);
 
   function showToast(text: string): void {
     setToast({ text });
@@ -296,46 +309,6 @@ export function App() {
 
   function patch(id: string, update: (conversation: Conversation) => Conversation): void {
     setConversations((current) => current.map((item) => (item.id === id ? update(item) : item)));
-  }
-
-  function onVoiceLive(event: LiveEvent): void {
-    let target = conversations.find((item) => item.id === voiceChatRef.current) ?? active;
-    if (!target) {
-      if (event.type !== "voice-user") return;
-      target = startConversation();
-    }
-    voiceChatRef.current = target.id;
-    stickToEnd.current = true;
-    if (event.type === "voice-user") {
-      patch(target.id, (current) => ({
-        ...current,
-        title: current.title === "New chat" ? event.text.slice(0, 72) : current.title,
-        turns: beginThinking([...sealThinking(current.turns), { kind: "user", text: event.text }], ["Heard you on the call."]),
-        updatedAt: Date.now(),
-      }));
-      return;
-    }
-    if (event.type === "voice-turn-done") {
-      patch(target.id, (current) => ({ ...current, turns: sealThinking(current.turns) }));
-      return;
-    }
-    if (event.type === "question") {
-      patch(target.id, (current) => ({ ...current, turns: applyQuestion(current.turns, event.message), updatedAt: Date.now() }));
-      return;
-    }
-    if (event.type === "drive") {
-      patch(target.id, (current) => ({ ...current, turns: applyDrive(current.turns, event.url, event.minutes) }));
-      return;
-    }
-    const sessionId = target.sessionId;
-    const nextTurns = [...turnsFrom(event), ...deviceTurns(event, sessionId)];
-    const activityLine = activityFrom(event);
-    patch(target.id, (current) => ({
-      ...current,
-      turns: traceTurns(current.turns, nextTurns, activityLine, event.type === "done"),
-      activity: activityLine ? [...current.activity, activityLine] : current.activity,
-      updatedAt: Date.now(),
-    }));
   }
 
   async function submit(conversation: Conversation, text: string, screenReading?: ScreenReading): Promise<void> {
@@ -397,7 +370,7 @@ export function App() {
 
   async function sendBook(conversation: Conversation, listing: Listing): Promise<void> {
     if (busyId != null) return;
-    if (canAutomate(phoneAutomation(), eventAppFor(listing.platform))) {
+    if (appInstalled(phoneAutomation(), eventAppFor(listing.platform))) {
       const action = bookActionForListing(listing, actionId(), Date.now());
       const run = action ? runAppAction(action, conversation.sessionId) : null;
       if (run) {
@@ -439,7 +412,7 @@ export function App() {
         patch(conversation.id, (current) => ({
           ...current,
           turns: traceTurns(current.turns, nextTurns, activityLine, event.type === "done"),
-          activity: activityLine ? [...current.activity, activityLine] : current.activity,
+          activity: activityLine ? pushActivity(current.activity, activityLine) : current.activity,
           updatedAt: Date.now(),
         }));
       });
@@ -563,6 +536,7 @@ export function App() {
           lat: place?.lat ?? null,
           lon: place?.lon ?? null,
           phone: phoneAutomation(),
+          history: historyFromTurns(conversation.turns),
           ...(extra?.answers ? { answers: extra.answers } : {}),
           ...(extra?.screen ? { screen: extra.screen } : {}),
         }),
@@ -579,29 +553,8 @@ export function App() {
         }));
         return;
       }
-      let speechEpoch = 0;
-      let speechStarted = false;
-      let latestQuestion = "";
-      const startSpeech = (sentence: string) => {
-        speechEpoch += 1;
-        const epoch = speechEpoch;
-        void sayReply(sentence, () => epoch === speechEpoch);
-      };
       await readSse<ChatEvent>(response, (event) => {
         if (event.type === "question") {
-          if (event.message.trim().length === 0) {
-            speechEpoch += 1;
-            speechStarted = false;
-            latestQuestion = "";
-            stopSpeech();
-          } else {
-            latestQuestion = event.message;
-            const sentence = speechCue(speechStarted, event.message);
-            if (sentence) {
-              speechStarted = true;
-              startSpeech(sentence);
-            }
-          }
           patch(conversation.id, (current) => ({
             ...current,
             turns: applyQuestion(current.turns, event.message),
@@ -617,16 +570,23 @@ export function App() {
           }));
           return;
         }
+        if (event.type === "brief") {
+          patch(conversation.id, (current) => ({
+            ...current,
+            turns: applyBrief(current.turns, event),
+            updatedAt: Date.now(),
+          }));
+          return;
+        }
         const nextTurns = [...turnsFrom(event), ...deviceTurns(event, conversation.sessionId)];
         const activityLine = activityFrom(event);
         patch(conversation.id, (current) => ({
           ...current,
           turns: traceTurns(current.turns, nextTurns, activityLine, event.type === "done"),
-          activity: activityLine ? [...current.activity, activityLine] : current.activity,
+          activity: activityLine ? pushActivity(current.activity, activityLine) : current.activity,
           updatedAt: Date.now(),
         }));
       });
-      if (!speechStarted && latestQuestion.trim().length > 0) startSpeech(latestQuestion);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         patch(conversation.id, (current) => ({
@@ -681,7 +641,7 @@ export function App() {
         patch(conversation.id, (current) => ({
           ...current,
           turns: traceTurns(current.turns, nextTurns, activityLine, event.type === "done"),
-          activity: activityLine ? [...current.activity, activityLine] : current.activity,
+          activity: activityLine ? pushActivity(current.activity, activityLine) : current.activity,
           updatedAt: Date.now(),
         }));
       });
@@ -719,28 +679,12 @@ export function App() {
     void submit(active, trimmed);
   }
 
-  function allowVoice(enabled: boolean): void {
-    rememberVoiceReplies(enabled);
-    setVoiceReplies(enabled);
-    if (!enabled) stopSpeech();
-  }
-
-  async function sayReply(text: string, stillCurrent: () => boolean): Promise<void> {
-    if (!voiceRepliesRef.current || text.trim().length === 0) return;
-    try {
-      await speakReply(text, stillCurrent);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "Scout could not speak that.");
-    }
-  }
-
   function usePrompt(text: string): void {
     void submit(startConversation(), text);
   }
 
   function stop(): void {
     abortRef.current?.abort();
-    stopSpeech();
   }
 
   async function detect(): Promise<void> {
@@ -783,6 +727,7 @@ export function App() {
 
   if (gate === "checking") return <Splash />;
   if (gate !== "in") return <Onboarding step={gate} onAdvance={() => void advanceOnboarding()} />;
+  if (insideNativeApp() && accessOn !== true) return accessOn === false ? <AccessibilityStep /> : <Splash />;
 
   const recent = conversations
     .filter((item) => item.agent === siteAgent && hasUserTurn(item))
@@ -837,8 +782,6 @@ export function App() {
           {screen.kind === "settings" ? (
             <SettingsPanel
               account={account}
-              voiceReplies={voiceReplies}
-              onVoiceReplies={allowVoice}
               onSignOut={() => void signOut()}
               onToast={showToast}
             />
@@ -881,6 +824,8 @@ export function App() {
             onClose={screenCapture.close}
             onSend={(message, reading) => void submit(screen.kind === "chat" && active ? active : startConversation(), message, reading)}
             onToast={showToast}
+            prior={priorScreenCommand(draft, (active?.turns ?? []).flatMap((turn) => turn.kind === "user" ? [turn.text] : []))}
+            person={{ name: account.name, email: account.email, phone: account.phone }}
           />
         ) : null}
         {showComposer ? (
@@ -888,15 +833,12 @@ export function App() {
             value={draft}
             busy={screen.kind === "chat" ? busy && busyId === active?.id : busy}
             placeholder={screen.kind === "chat" ? "Message Scout…" : link === "saved" || link === "off" ? PLAN_PROMPT : `Message ${agentById(siteAgent).name}…`}
-            voiceReplies={voiceReplies}
             onChange={setDraft}
             onSend={() => sendText(draft)}
             onDictate={sendText}
-            onVoiceReplies={allowVoice}
             onStop={stop}
             onToast={showToast}
             onScreen={screenCapture.available ? screenCapture.open : undefined}
-            call={{ state: voiceCall.state, level: voiceCall.level, onToggle: voiceCall.toggle }}
           />
         ) : null}
       </main>
@@ -910,7 +852,7 @@ export function App() {
   );
 }
 
-type SessionBody = { signedIn?: boolean; userId?: string; email?: string | null; phone?: string | null; name?: string | null; onboarded?: boolean };
+type SessionBody = { signedIn?: boolean; userId?: string; email?: string | null; phone?: string | null; name?: string | null; aboutDone?: boolean; onboarded?: boolean };
 type Gate = "checking" | Exclude<OnboardingStep, "ready"> | "in";
 
 async function readSession(): Promise<SessionBody | null> {
@@ -931,6 +873,7 @@ function gateFromSession(body: SessionBody | null): Gate {
     signedIn,
     phone: typeof body?.phone === "string" ? body.phone : null,
     name: typeof body?.name === "string" ? body.name : null,
+    aboutDone: body?.aboutDone === true,
     onboarded: body?.onboarded === true,
   });
   return step === "ready" ? "in" : step;
@@ -1062,7 +1005,7 @@ function TurnView({
     case "note":
       return <p className="note">{turn.text}</p>;
     case "thinking":
-      return <Thinking steps={steps && steps.length > 0 ? steps : turn.steps} startedAt={turn.startedAt} finishedAt={turn.finishedAt} />;
+      return <Thinking steps={steps && steps.length > 0 ? steps : turn.steps} startedAt={turn.startedAt} finishedAt={turn.finishedAt} brief={turn.brief} />;
     case "card":
       if (!matchesCardFilter(turn.listing.kind, filter)) return null;
       return <EventCard listing={turn.listing} busy={busy} onBook={onBook} />;
@@ -1078,6 +1021,8 @@ function TurnView({
       return <ErrandFormCard form={turn.form} answered={turn.answered} busy={busy} onSubmit={(values) => onAnswer(turn.form, values)} />;
     case "buses":
       return <BusCard buses={turn.buses} />;
+    case "flights":
+      return <FlightCard flights={turn.flights} />;
     case "places":
       return <PlacesCard places={turn.places} />;
     case "receipt":
@@ -1162,6 +1107,7 @@ function turnsFrom(event: ChatEvent): Turn[] {
     case "question":
       return [{ kind: "text", text: event.message }];
     case "status":
+    case "brief":
       return [];
     case "source":
       return event.ok ? [] : [{ kind: "note", text: event.message }];
@@ -1181,6 +1127,8 @@ function turnsFrom(event: ChatEvent): Turn[] {
       return [{ kind: "form", form: event.form, answered: false }];
     case "buses":
       return [{ kind: "buses", buses: event.buses }];
+    case "flights":
+      return [{ kind: "flights", flights: event.flights }];
     case "places": {
       const places = readPlaces(event.places);
       return places ? [{ kind: "places", places }] : [];
@@ -1267,6 +1215,15 @@ function browserStep(event: BrowserTaskEvent): string | null {
   }
 }
 
+function applyBrief(turns: Turn[], event: Extract<ChatEvent, { type: "brief" }>): Turn[] {
+  const brief = readThinkingBrief(event);
+  if (!brief) return turns;
+  const index = openThinkingIndex(turns);
+  const turn = index < 0 ? null : turns[index];
+  if (!turn || turn.kind !== "thinking") return turns;
+  return turns.map((item, itemIndex) => (itemIndex === index ? { ...turn, brief } : item));
+}
+
 function beginThinking(turns: Turn[], steps: string[] = [], now = Date.now()): Turn[] {
   return [...turns, { kind: "thinking", steps, startedAt: now, finishedAt: null }];
 }
@@ -1309,6 +1266,8 @@ function activityFrom(event: ChatEvent): string | null {
     case "status":
     case "source":
       return event.message;
+    case "brief":
+      return null;
     case "question":
     case "card":
     case "more":
@@ -1318,6 +1277,7 @@ function activityFrom(event: ChatEvent): string | null {
     case "estimate":
     case "form":
     case "buses":
+    case "flights":
     case "places":
     case "receipt":
     case "pay":

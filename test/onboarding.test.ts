@@ -18,11 +18,12 @@ describe("onboarding", () => {
     assert.equal(indianMobile("12345"), null);
     assert.equal(preferredName("  Asha  Rao "), "Asha Rao");
     assert.equal(preferredName(""), null);
-    assert.equal(onboardingStep({ signedIn: false, phone: null, name: null, onboarded: false }), "google");
-    assert.equal(onboardingStep({ signedIn: true, phone: null, name: null, onboarded: false }), "phone");
-    assert.equal(onboardingStep({ signedIn: true, phone: "+919876543210", name: null, onboarded: false }), "name");
-    assert.equal(onboardingStep({ signedIn: true, phone: "+919876543210", name: "Asha", onboarded: false }), "about");
-    assert.equal(onboardingStep({ signedIn: true, phone: "+919876543210", name: "Asha", onboarded: true }), "ready");
+    assert.equal(onboardingStep({ signedIn: false, phone: null, name: null, aboutDone: false, onboarded: false }), "google");
+    assert.equal(onboardingStep({ signedIn: true, phone: null, name: null, aboutDone: false, onboarded: false }), "phone");
+    assert.equal(onboardingStep({ signedIn: true, phone: "+919876543210", name: null, aboutDone: false, onboarded: false }), "name");
+    assert.equal(onboardingStep({ signedIn: true, phone: "+919876543210", name: "Asha", aboutDone: false, onboarded: false }), "about");
+    assert.equal(onboardingStep({ signedIn: true, phone: "+919876543210", name: "Asha", aboutDone: true, onboarded: false }), "accounts");
+    assert.equal(onboardingStep({ signedIn: true, phone: "+919876543210", name: "Asha", aboutDone: false, onboarded: true }), "ready");
   });
 
   it("keeps only known about answers, and reads the city from the pincode", () => {
@@ -86,6 +87,10 @@ describe("onboarding", () => {
         assert.equal((await post(base, "/api/onboarding/about", { pincode: "1100" })).status, 400);
         const about = await post(base, "/api/onboarding/about", { pincode: "560034", diet: ["jain", "veg"], interests: ["workshop"], language: "Hindi" });
         assert.equal(about.status, 200);
+        session = (await (await fetch(`${base}/api/auth/session`, { headers: { cookie } })).json()) as Record<string, unknown>;
+        assert.equal(session.aboutDone, true);
+        assert.equal(session.onboarded, false);
+        assert.equal((await post(base, "/api/onboarding/accounts", {})).status, 200);
         session = (await (await fetch(`${base}/api/auth/session`, { headers: { cookie } })).json()) as Record<string, unknown>;
         assert.equal(session.onboarded, true);
         const userId = signedIn.ok ? signedIn.userId : "";

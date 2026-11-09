@@ -163,6 +163,63 @@ class StepRunnerTest {
     }
 
     @Test
+    fun waitsWhileTheUserHasControl() {
+        val screen = RecordingScreen(NodeSnapshot(text = "home", packageName = "com.grofers.customerapp"))
+        screen.holding = true
+        val clock = ManualClock()
+        var polls = 0
+        val runner = StepRunner(
+            screen,
+            clock,
+            pause = {
+                polls += 1
+                clock.time += it
+                if (polls == 4) {
+                    screen.holding = false
+                    screen.root = NodeSnapshot(text = "ready", packageName = "com.grofers.customerapp")
+                }
+            },
+            expectedPackage = "com.grofers.customerapp",
+            timeoutMs = 120,
+            pollMs = 50,
+        )
+        val found = runner.waitUntil("results", "screen_changed") { it.text == "ready" }
+        assertEquals("ready", found.text)
+        assertTrue(clock.time >= 200)
+    }
+
+    @Test
+    fun leavingWhileInControlDoesNotStopUntilScoutResumes() {
+        val screen = RecordingScreen(NodeSnapshot(text = "home", packageName = "com.grofers.customerapp"))
+        val clock = ManualClock()
+        var polls = 0
+        val runner = StepRunner(
+            screen,
+            clock,
+            pause = {
+                polls += 1
+                clock.time += it
+                if (polls == 1) {
+                    screen.holding = true
+                    screen.root = NodeSnapshot(text = "elsewhere", packageName = "com.whatsapp")
+                }
+                if (polls == 3) screen.holding = false
+            },
+            expectedPackage = "com.grofers.customerapp",
+            timeoutMs = 5_000,
+            pollMs = 50,
+        )
+        runner.waitUntil("home", "timeout") { it.text == "home" }
+        try {
+            runner.waitUntil("results", "timeout") { false }
+            error("leaving after Resume should stop the run")
+        } catch (failed: StepFailed) {
+            assertEquals("user_stopped", failed.reason)
+        }
+        assertTrue(polls >= 3)
+    }
+
+    @Test
     fun stopsWhenTheUserLeavesTheApp() {
         val screen = RecordingScreen(NodeSnapshot(text = "home", packageName = "com.grofers.customerapp"))
         val clock = ManualClock()
@@ -182,6 +239,36 @@ class StepRunnerTest {
             assertEquals("user_stopped", failed.reason)
             assertEquals("results", failed.step)
         }
+    }
+}
+
+class RunSessionControlTest {
+    @Test
+    fun takeControlLetsTheUserTouchWithoutStopping() {
+        var time = 0L
+        val session = RunSession { time }
+        session.begin("com.grofers.customerapp")
+        assertFalse(session.userHolding)
+        session.takeControl()
+        session.onUserTouch()
+        assertTrue(session.userHolding)
+        assertNull(session.aborted())
+        session.resumeScout()
+        assertFalse(session.userHolding)
+        session.onUserTouch()
+        assertNull(session.aborted())
+        time = 800
+        session.onUserTouch()
+        assertEquals("user_stopped", session.aborted())
+    }
+
+    @Test
+    fun stopStillEndsARunTheUserIsControlling() {
+        val session = RunSession { 0L }
+        session.begin("com.whatsapp")
+        session.takeControl()
+        session.stop()
+        assertEquals("user_stopped", session.aborted())
     }
 }
 
@@ -221,6 +308,8 @@ internal class RecordingScreen(
 ) : Screen {
     var clicks = 0
     var gestures = 0
+    var holding = false
+    override fun holding(): Boolean = holding
     override fun root(): NodeSnapshot = root
     override fun foregroundPackage(): String = root.packageName
     override fun abortedReason(): String? = abort

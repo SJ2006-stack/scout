@@ -85,7 +85,7 @@ docker build -f deploy/site.Dockerfile -t scout-site .
 docker build -f deploy/browser-worker.Dockerfile -t scout-browser .
 docker run --rm -p 8080:8080 \
   -e BROWSER_PROFILE_KEY \
-  -e BROWSER_ALLOWED_HOSTS=luma.com,district.in,bookmyshow.com \
+  -e BROWSER_ALLOWED_HOSTS=luma.com,district.in,bookmyshow.com,redbus.in,ixigo.com,goibibo.com,confirmtkt.com,google.com,makemytrip.com,cleartrip.com,easemytrip.com \
   -e BROWSER_HEADED=0 \
   -v scout-browser:/data \
   scout-browser

@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, Mic, Monitor, Phone, PhoneOff, Plus, Square, Volume2, VolumeX } from "lucide-react";
+import { ArrowUp, Mic, Plus, Smartphone, Square } from "lucide-react";
 import { readNativeSpeech, requestNativeMicrophone } from "../shared/nativeSpeech.ts";
 import { attachOcrText } from "../shared/ocr.ts";
 import { readAttachment } from "./ocr.ts";
 import { recordingMime, SPEECH_CLIP_MS, transcribeSpeech } from "./voice.ts";
-import type { VoiceCallState } from "./voiceCall.ts";
 
 const MAX_HEIGHT = 140;
 
@@ -12,32 +11,25 @@ type ComposerProps = {
   value: string;
   busy: boolean;
   placeholder: string;
-  voiceReplies: boolean;
   onChange: (value: string) => void;
   onSend: () => void;
   onDictate: (text: string) => void;
-  onVoiceReplies: (enabled: boolean) => void;
   onStop: () => void;
   onToast: (message: string) => void;
   onScreen?: () => void;
-  call?: { state: VoiceCallState; level: number; onToggle: () => void };
 };
 
 export function Composer({
   value,
   busy,
   placeholder,
-  voiceReplies,
   onChange,
   onSend,
   onDictate,
-  onVoiceReplies,
   onStop,
   onToast,
   onScreen,
-  call,
 }: ComposerProps) {
-  const onCall = call != null && call.state !== "idle" && call.state !== "ended";
   const empty = value.trim().length === 0;
   const [listening, setListening] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -165,11 +157,7 @@ export function Composer({
     if (!busy && !empty) onSend();
   }
 
-  const hint = onCall
-    ? call.state === "active"
-      ? "On a voice call with Scout. Just talk."
-      : "Connecting the voice call…"
-    : listening
+  const hint = listening
     ? "Listening… tap the mic when you're done"
     : transcribing
       ? "Turning your voice into text…"
@@ -227,19 +215,9 @@ export function Composer({
               title="Understand my screen"
               onClick={onScreen}
             >
-              <Monitor size={18} />
+              <Smartphone size={18} />
             </button>
           ) : null}
-          <button
-            className={voiceReplies ? "icon-button speak on" : "icon-button speak"}
-            type="button"
-            aria-label={voiceReplies ? "Spoken replies on" : "Spoken replies off"}
-            aria-pressed={voiceReplies}
-            title={voiceReplies ? "Scout reads replies aloud. Tap to turn off." : "Tap to have Scout read replies aloud."}
-            onClick={() => onVoiceReplies(!voiceReplies)}
-          >
-            {voiceReplies ? <Volume2 size={18} /> : <VolumeX size={18} />}
-          </button>
           <button
             className={listening ? "icon-button mic listening" : "icon-button mic"}
             type="button"
@@ -250,19 +228,6 @@ export function Composer({
           >
             <Mic size={18} />
           </button>
-          {call ? (
-            <button
-              className={onCall ? "icon-button call live" : "icon-button call"}
-              type="button"
-              aria-label={onCall ? "End voice call" : "Start a voice call"}
-              aria-pressed={onCall}
-              title={onCall ? "End the voice call" : "Talk with Scout in Hindi, English, or both"}
-              style={onCall ? { boxShadow: `0 0 0 ${2 + Math.round(call.level * 8)}px rgba(34, 197, 94, 0.35)` } : undefined}
-              onClick={call.onToggle}
-            >
-              {onCall ? <PhoneOff size={18} /> : <Phone size={18} />}
-            </button>
-          ) : null}
         </div>
         {busy ? (
           <button className="send" type="button" aria-label="Stop" title="Stop" onClick={onStop}>

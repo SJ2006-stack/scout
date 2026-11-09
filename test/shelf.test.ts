@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import QRCode from "qrcode";
 import { parseAriaSnapshot } from "../src/server/browser/aria.ts";
 import { decodeQrPng } from "../src/server/browser/qrPng.ts";
-import { asksForLocation, attendListing, cheapestOffer, isLiveShopQuery, matching, nextCheckoutClick, pricedText, pricedTitles, searchTerms, searchUrl, shelfSummary } from "../src/server/browser/shelf.ts";
+import { asksForLocation, attendListing, cheapestOffer, isLiveShopQuery, matching, nextCheckoutClick, pickShelf, pricedText, pricedTitles, searchTerms, searchUrl, shelfChoiceLine, shelfChoices, shelfGuessLine, shelfSummary } from "../src/server/browser/shelf.ts";
 import { readCart } from "../src/server/browser/siteFlows.ts";
 import { SKILLS } from "../src/server/browser/skills.ts";
 import { listingsFromHtml } from "../src/server/events/htmlListings.ts";
@@ -53,8 +53,42 @@ describe("shop shelf", () => {
     assert.equal(searchTerms("Amul butter 100 g"), "Amul butter");
     assert.equal(searchTerms("2 kg atta"), "atta");
     assert.equal(searchTerms("Coke 1.25L"), "Coke");
+    assert.equal(searchTerms("Govardhan Ghee 1L"), "Govardhan Ghee");
+    assert.equal(searchTerms("Gowardhan Ghee (500 g)"), "Gowardhan Ghee");
     assert.equal(searchTerms("7up"), "7up");
     assert.equal(searchTerms("500 g"), "500 g");
+  });
+
+  it("keeps the first listing when the search has products and none match the size", () => {
+    const found = [
+      { merchant: "Blinkit" as const, title: "Govardhan Pure Cow Ghee 500 ml", rupees: 345, pageUrl: "https://blinkit.com/" },
+      { merchant: "Blinkit" as const, title: "Amul Ghee 1 L", rupees: 600, pageUrl: "https://blinkit.com/" },
+    ];
+    const missed = pickShelf(found, "Govardhan Ghee 1L");
+    assert.equal(missed.offers.length, 0);
+    assert.equal(missed.guess?.title, "Govardhan Pure Cow Ghee 500 ml");
+    assert.equal(shelfGuessLine(found[0]!), "Blinkit listed Govardhan Pure Cow Ghee 500 ml at ₹345. Is that what you're looking for?");
+    const hit = pickShelf([{ ...found[0]!, title: "Govardhan Pure Cow Ghee 1 L" }], "Govardhan Ghee 1L");
+    assert.equal(hit.offers.length, 1);
+    assert.equal(hit.guess, null);
+    const patanjali = { merchant: "Blinkit" as const, title: "Patanjali Cow Ghee (1 l) 1 ltr", rupees: 763, pageUrl: "https://blinkit.com/" };
+    const jar = { merchant: "Blinkit" as const, title: "Gowardhan Pure Cow Ghee | Jar", rupees: 439, pageUrl: "https://blinkit.com/" };
+    const litre = { merchant: "Blinkit" as const, title: "Gowardhan Pure Cow Ghee 1 L", rupees: 620, pageUrl: "https://blinkit.com/" };
+    assert.equal(matching([jar], "govardhan ghee").length, 1);
+    assert.equal(pickShelf([patanjali, litre], "Gowardhan Ghee (500 g)").guess?.title, litre.title);
+    assert.equal(pickShelf([patanjali], "Gowardhan Ghee (500 g)").guess, null);
+  });
+
+  it("keeps the asked brand and the other ghee brands, and drops an unrelated product", () => {
+    const patanjali = { merchant: "Blinkit" as const, title: "Patanjali Cow Ghee (1 l) 1 ltr", rupees: 763, pageUrl: "https://blinkit.com/" };
+    const pepsi = { merchant: "Instamart" as const, title: "Pepsi Soft Drink Bottle", rupees: 160, pageUrl: "https://www.swiggy.com/instamart" };
+    const amul = { merchant: "Blinkit" as const, title: "Amul Pure Ghee 1 L", rupees: 610, pageUrl: "https://blinkit.com/" };
+    const gowardhan = { merchant: "Zepto" as const, title: "Gowardhan Pure Cow Ghee | Jar", rupees: 439, pageUrl: "https://www.zepto.com/" };
+    const choices = shelfChoices([patanjali, pepsi, amul, gowardhan], "govardhan ghee");
+    assert.deepEqual(choices.map((offer) => offer.title), [gowardhan.title, patanjali.title, amul.title]);
+    assert.match(shelfChoiceLine(choices), /Gowardhan Pure Cow Ghee \| Jar at ₹439 on Zepto/);
+    assert.match(shelfChoiceLine(choices), /Patanjali Cow Ghee/);
+    assert.deepEqual(shelfChoices([gowardhan], "govardhan ghee").map((offer) => offer.title), [gowardhan.title]);
   });
 
   it("does not read the store's search banner as a product", () => {
@@ -210,6 +244,7 @@ describe("shop shelf", () => {
         else throw new Error("covered by the dialog");
       },
       fill: async () => undefined,
+      scroll: async () => false,
       takePayment: () => null,
       screenshot: async () => new Uint8Array(),
       storageState: async () => ({}),

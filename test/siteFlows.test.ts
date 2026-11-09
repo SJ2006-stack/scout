@@ -35,6 +35,7 @@ function zeptoPage(blankReads: number): { page: IsolatedPage; filled: string[] }
     fill: async (_target: ElementTarget, value: string) => {
       filled.push(value);
     },
+    scroll: async () => false,
     takePayment: () => null,
     screenshot: async () => new Uint8Array(),
     storageState: async () => ({}),

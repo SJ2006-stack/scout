@@ -17,10 +17,49 @@ export type BusOption = {
   seats: number | null;
   rupees: number;
   rating: number | null;
+  /** Which site this row was read from. Older results omit it. */
+  site?: string;
 };
 
-/** Buses read from redBus for one route and day. Scout lists them; they book on redBus. */
-export type BusResult = { from: string; to: string; date: string; window: string; url: string; total: number | null; options: BusOption[] };
+/** One bus site the worker opened. `options` are only departures in the asked window. */
+export type BusSiteResult = {
+  site: string;
+  url: string;
+  total: number | null;
+  loaded: number;
+  options: BusOption[];
+};
+
+/** Buses read for one route and day. Scout lists them; booking stays on the site that showed the row. */
+export type BusResult = {
+  from: string;
+  to: string;
+  date: string;
+  window: string;
+  url: string;
+  total: number | null;
+  options: BusOption[];
+  sites?: BusSiteResult[];
+};
+
+/** A flight search cited on one booking site. A null fare means the page opened but no fare in that window was read. */
+export type FlightCite = {
+  site: string;
+  url: string;
+  rupees: number | null;
+  departs: string | null;
+};
+
+export type FlightResult = {
+  from: string;
+  to: string;
+  date: string;
+  window: string;
+  cites: FlightCite[];
+};
+
+const BUS_ROOTS = ["redbus.in", "ixigo.com", "goibibo.com", "confirmtkt.com"];
+const FLIGHT_ROOTS = ["google.com", "makemytrip.com", "goibibo.com", "cleartrip.com", "ixigo.com", "easemytrip.com"];
 
 const FORM_LIMIT = 8;
 const OPTION_LIMIT = 6;
@@ -57,9 +96,47 @@ export function readBusResult(raw: unknown): BusResult | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Partial<BusResult>;
   if (typeof row.from !== "string" || typeof row.to !== "string" || typeof row.date !== "string" || typeof row.window !== "string" || typeof row.url !== "string" || !Array.isArray(row.options)) return null;
-  if (!row.url.startsWith("https://www.redbus.in/")) return null;
+  if (!hostOk(row.url, BUS_ROOTS)) return null;
   const options = row.options.filter(isBusOption).slice(0, 10);
-  return { from: row.from, to: row.to, date: row.date, window: row.window, url: row.url, total: typeof row.total === "number" ? row.total : null, options };
+  const sites = Array.isArray(row.sites) ? row.sites.map(readBusSite).filter((site): site is BusSiteResult => site != null).slice(0, 6) : undefined;
+  return { from: row.from, to: row.to, date: row.date, window: row.window, url: row.url, total: typeof row.total === "number" ? row.total : null, options, ...(sites && sites.length > 0 ? { sites } : {}) };
+}
+
+export function readFlightResult(raw: unknown): FlightResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Partial<FlightResult>;
+  if (typeof row.from !== "string" || typeof row.to !== "string" || typeof row.date !== "string" || typeof row.window !== "string" || !Array.isArray(row.cites)) return null;
+  const cites = row.cites.map(readFlightCite).filter((cite): cite is FlightCite => cite != null).slice(0, 6);
+  if (cites.length === 0) return null;
+  return { from: row.from, to: row.to, date: row.date, window: row.window, cites };
+}
+
+function readBusSite(raw: unknown): BusSiteResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Partial<BusSiteResult>;
+  if (typeof row.site !== "string" || typeof row.url !== "string" || !hostOk(row.url, BUS_ROOTS) || !Array.isArray(row.options)) return null;
+  const options = row.options.filter(isBusOption).slice(0, 6);
+  const loaded = typeof row.loaded === "number" && row.loaded >= 0 ? Math.min(500, Math.round(row.loaded)) : options.length;
+  return { site: row.site.slice(0, 40), url: row.url, total: typeof row.total === "number" ? row.total : null, loaded, options };
+}
+
+function readFlightCite(raw: unknown): FlightCite | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Partial<FlightCite>;
+  if (typeof row.site !== "string" || typeof row.url !== "string" || !hostOk(row.url, FLIGHT_ROOTS)) return null;
+  const rupees = typeof row.rupees === "number" && row.rupees > 0 ? Math.round(row.rupees) : null;
+  const departs = typeof row.departs === "string" && /^\d{2}:\d{2}$/.test(row.departs) ? row.departs : null;
+  return { site: row.site.slice(0, 40), url: row.url, rupees, departs };
+}
+
+function hostOk(url: string, roots: readonly string[]): boolean {
+  if (!url.startsWith("https://")) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return roots.some((root) => host === root || host.endsWith(`.${root}`));
+  } catch {
+    return false;
+  }
 }
 
 function isBusOption(value: unknown): value is BusOption {

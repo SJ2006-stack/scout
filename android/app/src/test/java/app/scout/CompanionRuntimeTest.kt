@@ -197,6 +197,7 @@ class CompanionRuntimeTest {
         assertEquals("Sign in with the code from your email.", (refused as SpeechResult.Failed).message)
         assertTrue(allowBridge("scout.shrianshjaiswal.me", """{"op":"microphone"}""", 1_000L) is BridgeDecision.Allow)
         assertTrue(allowBridge("scout.shrianshjaiswal.me", """{"op":"permissions"}""", 1_000L) is BridgeDecision.Allow)
+        assertTrue(allowBridge("scout.shrianshjaiswal.me", """{"op":"accessibility"}""", 1_000L) is BridgeDecision.Allow)
     }
 
     @Test

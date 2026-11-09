@@ -10,6 +10,8 @@ class NodeSnapshot(
     val bounds: Bounds = Bounds(0, 0, 0, 0),
     val children: List<NodeSnapshot> = emptyList(),
     val packageName: String = "",
+    val editable: Boolean = false,
+    val hint: String = "",
 ) {
     var parent: NodeSnapshot? = null
 

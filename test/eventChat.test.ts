@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseChatIntent } from "../src/shared/chatIntent.ts";
+import { excludedKinds, parseChatIntent } from "../src/shared/chatIntent.ts";
 import { calendarDate, dateRange, dayRange } from "../src/shared/when.ts";
 import { districtEvents, districtMovies } from "../src/server/events/district.ts";
 import { lumaEvents } from "../src/server/events/luma.ts";
@@ -238,6 +238,10 @@ describe("event listings", () => {
     assert.equal(hindi.city?.id, "delhi");
     assert.equal(hindi.date, "2026-10-31");
     assert.equal(parseChatIntent("मुंबई में कल क्या है", thirtyFirst, "Asia/Kolkata").date, "tomorrow");
+    assert.equal(parseChatIntent("Any other thing happening in delhi aside from comedy shows").kind.kind, "clear");
+    assert.deepEqual(excludedKinds("Any other thing happening in delhi aside from comedy shows"), ["comedy"]);
+    assert.deepEqual(excludedKinds("except the ones already shown"), []);
+    assert.equal(parseChatIntent("any other").kind.kind, "keep");
     const named = dateRange("2026-10-31", thirtyFirst, "Asia/Kolkata");
     assert.equal(calendarDate(named.startMs, "Asia/Kolkata"), "2026-10-31");
     assert.equal(new Date(named.endMs - 1).toISOString() > new Date(named.startMs).toISOString(), true);
@@ -333,6 +337,69 @@ describe("event listings", () => {
     assert.equal(titles.includes("Free Comedy"), true);
   });
 
+  it("leaves comedy out and does not call undated movies the weekend", async () => {
+    const memory = new ChatMemoryStore();
+    memory.save("session", {
+      cityId: "bengaluru",
+      lat: null,
+      lon: null,
+      budget: null,
+      date: "week",
+      kind: "comedy",
+      timezone: "Asia/Kolkata",
+      lines: [],
+      found: [{ title: "Free Comedy", url: "https://www.district.in/events/free-comedy" }],
+    });
+    const events = await turn("Any other thing happening in bengaluru aside from comedy shows", sources(), memory);
+    const titles = events.flatMap((event) => (event.type === "card" ? [event.listing.title] : []));
+    assert.equal(titles.includes("Udta Teer"), false);
+    assert.equal(titles.includes("Free Comedy"), false);
+    assert.equal(titles.includes("Roast Tank"), true);
+    const question = events.find((event) => event.type === "question");
+    assert.equal(question?.type === "question" && question.message.includes("Nothing else matched"), false);
+  });
+
+  it("shows the next listings when tomorrow itself is empty", async () => {
+    const now = Date.parse("2026-11-09T07:00:00.000Z");
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("api.luma.com")) {
+        return Response.json({ entries: [lumaShow("Weekend Show", "weekend-show", "2026-11-14T12:30:00.000Z")] });
+      }
+      return new Response("missing", { status: 404 });
+    }) as typeof fetch;
+    const events: ChatEvent[] = [];
+    await runChat(
+      {
+        sessionId: "session",
+        text: "what's happening tomorrow in delhi",
+        timezone: "Asia/Kolkata",
+        pincode: "",
+        lat: null,
+        lon: null,
+        timeoutMs: 1000,
+        signal: new AbortController().signal,
+        now: () => now,
+        memory: new ChatMemoryStore(),
+        cache: new ListingCache(60_000, () => now),
+        fetchImpl,
+        mapsApiKey: "",
+        sarvamApiKey: "",
+      },
+      (event) => events.push(event),
+    );
+    const cards = events.flatMap((event) => (event.type === "card" ? [event.listing.title] : []));
+    assert.deepEqual(cards, ["Weekend Show"]);
+    const question = events.find((event) => event.type === "question");
+    assert.match(question?.type === "question" ? question.message : "", /Nothing is listed for tomorrow in Delhi/);
+    assert.match(question?.type === "question" ? question.message : "", /Weekend Show/);
+    assert.equal(events.some((event) => event.type === "status" && event.message === "Event Scout fetching from Luma, District, and BookMyShow."), true);
+    const brief = events.find((event) => event.type === "brief");
+    assert.equal(brief?.type === "brief" && brief.fed, false);
+    assert.equal(brief?.type === "brief" && brief.tools.some((tool) => tool.name === "search_district"), true);
+    assert.equal(brief?.type === "brief" && brief.tools.some((tool) => tool.name === "search_luma"), true);
+    assert.equal(brief?.type === "brief" && brief.tools.some((tool) => tool.name === "search_bookmyshow"), true);
+  });
+
   it("clamps tomorrow to that day even when Sarvam asks for a week", async () => {
     const now = Date.parse("2026-10-26T18:35:00.000Z");
     const cache = new ListingCache(60_000, () => now);
@@ -374,9 +441,15 @@ describe("event listings", () => {
     const first = await sarvamTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
     const second = await sarvamTurn("what's happening tomorrow in delhi", fetchImpl, cache, now);
     for (const events of [first, second]) {
-      const status = events.find((event) => event.type === "status");
+      const status = events.find((event) => event.type === "status" && event.message.startsWith("Looking"));
       assert.match(status?.type === "status" ? status.message : "", /Looking in Delhi for tomorrow/);
       assert.doesNotMatch(status?.type === "status" ? status.message : "", /seven days/);
+      assert.equal(events.some((event) => event.type === "status" && event.message === "Message sent to Event Scout."), true);
+      assert.equal(events.some((event) => event.type === "status" && event.message === "Event Scout fetching from Luma."), true);
+      const brief = events.find((event) => event.type === "brief");
+      assert.equal(brief?.type === "brief" && brief.fed, true);
+      assert.match(brief?.type === "brief" ? brief.prompt : "", /Event Scout/);
+      assert.equal(brief?.type === "brief" && brief.tools.some((tool) => tool.name === "search_bookmyshow"), true);
       const cards = events.flatMap((event) => (event.type === "card" ? [event.listing] : []));
       assert.deepEqual(cards.map((card) => card.title), ["Tomorrow Show"]);
       assert.equal(calendarDate(Date.parse(cards[0]?.start ?? ""), "Asia/Kolkata"), "2026-10-28");

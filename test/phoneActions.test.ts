@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ChatEvent } from "../src/shared/chatEvents.ts";
 import {
+  accessibilityReady,
   appHome,
+  appInstalled,
   deviceSummary,
   isAppLink,
   needsConfirmation,
@@ -250,6 +252,14 @@ describe("phone result parsers", () => {
     assert.deepEqual(phone, { serviceOn: true, apps: { blinkit: { installed: true, version: "v".repeat(32) }, zepto: { installed: false, version: null } } });
     assert.equal(readPhoneAutomation({ serviceOn: "yes", apps: {} }), null);
     assert.equal(readPhoneAutomation({ flashlight: true }), null);
+    assert.equal(appInstalled(phone, "blinkit"), true);
+    assert.equal(appInstalled(phone, "zepto"), false);
+    assert.equal(appInstalled({ serviceOn: false, apps: { district: { installed: true, version: "1" } } }, "district"), true);
+    const off = { serviceOn: false, apps: {} };
+    assert.equal(accessibilityReady(true, off), false);
+    assert.equal(accessibilityReady(true, { serviceOn: true, apps: {} }), true);
+    assert.equal(accessibilityReady(false, off), true);
+    assert.equal(accessibilityReady(true, null), true);
   });
 });
 

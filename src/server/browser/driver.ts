@@ -25,6 +25,8 @@ export interface IsolatedPage {
   goto(url: string, signal: AbortSignal): Promise<{ url: string; title: string }>;
   location(signal: AbortSignal): Promise<{ url: string; title: string }>;
   html(signal: AbortSignal): Promise<string>;
+  /** Scrolls the results. True when the page actually moved. */
+  scroll(signal: AbortSignal): Promise<boolean>;
   elements(signal: AbortSignal): Promise<PageElement[]>;
   click(target: ElementTarget, signal: AbortSignal): Promise<void>;
   fill(target: ElementTarget, value: string, signal: AbortSignal): Promise<void>;

@@ -51,13 +51,14 @@ function basketLine(part: string): BasketItem | null {
 
 const YES = /^(?:(?:ok(?:ay)?|yes|yeah|yep|sure|please|go ahead|do it|go)[,!\s]*)+$/;
 const BUY = /^(?:(?:ok(?:ay)?|yes|yeah|sure|please|go ahead)[,!\s]+)?(?:buy|order|get|add|fill|place)(?:\s+(?:it|them|this|that|these|those|all|everything|the (?:basket|cart|order|items)))?(?:\s+(?:to|in)\s+(?:my |the )?cart)?(?:\s+please)?$/;
+const TAIL = /(?:\s+(?:then|now|instead|please|pls))+$/;
 
-/** A go-ahead for the basket just compared, such as "buy it", "yes", or "order it on Zepto". */
+/** A go-ahead for the basket just compared, such as "buy it", "yes", or "order from Zepto then". */
 export function readBuy(text: string): { store: ShopApp | "best" } | null {
-  const said = text.trim().toLowerCase().replace(/[.!]+$/, "");
+  const said = text.trim().toLowerCase().replace(/[.!]+$/, "").replace(TAIL, "").trim();
   if (said.length === 0 || said.length > 60) return null;
   const store = said.match(/\b(blinkit|zepto|instamart)\b/)?.[1];
-  const rest = said.replace(/\b(?:(?:on|from|in|at|with)\s+)?(?:blinkit|zepto|instamart)\b/, "").replace(/\s+/g, " ").trim();
+  const rest = said.replace(/\b(?:(?:on|from|in|at|with)\s+)?(?:blinkit|zepto|instamart)\b/g, " ").replace(/\s+/g, " ").trim();
   const named = store === "blinkit" || store === "zepto" || store === "instamart" ? store : null;
   if (YES.test(rest) || BUY.test(rest) || (named && rest.length === 0)) return { store: named ?? "best" };
   return null;

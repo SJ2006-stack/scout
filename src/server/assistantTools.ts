@@ -26,8 +26,9 @@ import type { EventApp, ShopApp } from "../shared/productRef.ts";
 import { isProfileKey, PROFILE_KEYS, profilePrompt, type ProfileStore } from "./profile/profileStore.ts";
 import { isEventKind, isWatchWhen, type WatchStore } from "./watch/watchStore.ts";
 import { ASK_PROMPT, ASK_TOOL, askUser } from "./questionBack.ts";
+import { GOOGLE_TOOLS, GOOGLE_TOOL_NAMES, googlePrompt, type GoogleAccounts, type GoogleToolName } from "./googleAccount.ts";
 
-export type AssistantToolName = "ask_user" | "remember_preference" | "forget_preference" | "phone_action" | "watch_events" | AppActionName;
+export type AssistantToolName = "ask_user" | "remember_preference" | "forget_preference" | "phone_action" | "watch_events" | AppActionName | GoogleToolName;
 
 export type AssistantContext = {
   userId: string;
@@ -38,11 +39,14 @@ export type AssistantContext = {
   watches?: WatchStore;
   /** What the Scout Android app reported about its Accessibility service and installed store and event apps. */
   phone?: PhoneAutomation;
+  google?: GoogleAccounts;
+  fetchImpl?: typeof fetch;
+  googleRedirect?: string;
 };
 
 export type AssistantToolResult = { ok: boolean; content: string };
 
-const ASSISTANT_NAMES: readonly AssistantToolName[] = ["ask_user", "remember_preference", "forget_preference", "phone_action", "watch_events", "app_cart_add", "app_event_book"];
+const ASSISTANT_NAMES: readonly AssistantToolName[] = ["ask_user", "remember_preference", "forget_preference", "phone_action", "watch_events", "app_cart_add", "app_event_book", ...GOOGLE_TOOL_NAMES];
 const PHONE_ACTION_NAMES = DEVICE_ACTION_NAMES.filter((name) => !isAppActionName(name));
 const APP_AGENT: Readonly<Record<AppActionName, AgentId>> = { app_cart_add: "shop", app_event_book: "event" };
 
@@ -196,6 +200,7 @@ export function assistantTools(context: AssistantContext): readonly Record<strin
   if (context.agent === "shop" && stores.length > 0) tools.push(cartTool(stores));
   const apps = automatableApps(context.phone, EVENT_APPS);
   if (context.agent === "event" && apps.length > 0) tools.push(bookTool(apps));
+  if (context.google) tools.push(...GOOGLE_TOOLS);
   return tools;
 }
 
@@ -209,7 +214,7 @@ export function assistantPrompt(context: AssistantContext): string {
   const watch = context.watches && (context.agent === "event" || context.agent === "main")
     ? "When they want to be told later about new events, call watch_events. It keeps running after this chat."
     : "";
-  return [profile, ASK_PROMPT, phone, watch, appPrompt(context)].filter((line) => line.length > 0).join(" ");
+  return [profile, ASK_PROMPT, phone, watch, googlePrompt(context.google != null), appPrompt(context)].filter((line) => line.length > 0).join(" ");
 }
 
 function appPrompt(context: AssistantContext): string {
@@ -290,6 +295,19 @@ export async function runAssistantTool(
         ok: true,
         content: `Sent to the phone for approval: ${device.summary}. They tap Allow, then Scout works in ${appName(app)} and stops before payment. The phone reports what it added or where it stopped on a card. Do not say it is done.`,
       };
+    }
+    case "connect_google":
+    case "gmail_recent":
+    case "gmail_send":
+    case "gmail_change":
+    case "drive_find":
+    case "drive_read":
+    case "drive_write":
+    case "drive_trash": {
+      if (!context.google) return { ok: false, content: "Gmail and Drive are not available." };
+      const ran = await context.google.run(context.userId, name, args, context.fetchImpl ?? fetch, context.googleRedirect ?? "");
+      if (ran.note) emit({ type: "note", message: ran.note });
+      return { ok: ran.ok, content: ran.content };
     }
     case "watch_events": {
       if (!context.watches) return { ok: false, content: "Scout Watch is not available." };

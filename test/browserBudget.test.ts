@@ -457,6 +457,10 @@ class FakePage implements IsolatedPage {
     return "<html></html>";
   }
 
+  async scroll(): Promise<boolean> {
+    return false;
+  }
+
   async elements(): Promise<Array<{ role: string; name: string }>> {
     return [];
   }

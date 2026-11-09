@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Scout</string>
     <string name="azure_origin">https://scout.shrianshjaiswal.me</string>
-    <string name="sign_in_subtitle">Sign in with Google. Then add your phone number, your name, and a few things Scout should know about you.</string>
+    <string name="sign_in_subtitle">Sign in with Google. Then add your phone number, your name, a few things Scout should know, and turn on Accessibility.</string>
     <string name="sign_in_google">Continue with Google</string>
     <string name="sign_out">Sign out</string>
     <string name="sign_in_failed">Google sign-in failed. Try again.</string>
@@ -21,8 +21,15 @@
     <string name="perm_notifications">Notifications</string>
     <string name="perm_automation">Automation (Accessibility)</string>
     <string name="perm_open_settings">Open settings</string>
-    <string name="automation_notice">Scout is adding items… tap to stop</string>
-    <string name="automation_service_description">Scout adds items to a cart you approved. It does not place orders or pay.</string>
+    <string name="automation_notice">Scout is working. Take control to type and tap yourself.</string>
+    <string name="automation_take">Take control</string>
+    <string name="automation_resume">Resume</string>
+    <string name="automation_stop">Stop</string>
+    <string name="automation_holding">You\'re in control. Scout is paused.</string>
+    <string name="automation_whatsapp">Sending on WhatsApp. Scout comes back when it is sent. Tap to stop.</string>
+    <string name="automation_form">Filling this screen. Take control to type yourself, or Stop to end it.</string>
+    <string name="automation_event">Working in the event app. Scout comes back before payment. Tap to stop.</string>
+    <string name="automation_service_description">Scout works in an app you approved. Take control sits on top of that app. Scout does not place orders or pay.</string>
     <string name="perm_enable">Enable</string>
     <string name="perm_change">Change</string>
     <string name="perm_allowed">Allowed</string>

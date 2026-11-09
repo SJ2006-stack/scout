@@ -27,6 +27,7 @@ import { ListingCache, listingCacheTtlMs } from "./listingCache.ts";
 import { distributionFromEnv } from "./invites/appRelease.ts";
 import { Accounts } from "./auth/accounts.ts";
 import { scoutDbPath, UserDirectory } from "./db/userDirectory.ts";
+import { GoogleAccounts, googleKeyFromEnv, googleOAuthFromEnv } from "./googleAccount.ts";
 import { createArcGisGeocoder, createGoogleGeocoder } from "./geocode.ts";
 import { fcmFromEnv, FcmSender } from "./notify/fcm.ts";
 import { CartBillStore } from "./cartBills.ts";
@@ -36,8 +37,6 @@ import { ProfileStore } from "./profile/profileStore.ts";
 import { eventTools } from "./tools/index.ts";
 import { WatchRunner } from "./watch/watchRunner.ts";
 import { WatchStore } from "./watch/watchStore.ts";
-import { bolnaFromEnv } from "./voice/bolna.ts";
-import { LiveRelay } from "./voice/liveRelay.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -71,11 +70,7 @@ export function createDeps(): ApiDeps {
     timeoutMs: connectorTimeoutMs,
     now: Date.now,
   });
-  const bolna = bolnaFromEnv(process.env);
-  if (!bolna) console.error("Bolna voice calls stay off until BOLNA_API_KEY and BOLNA_LLM_KEY are set.");
   return {
-    bolna,
-    liveRelay: new LiveRelay(),
     profile: new ProfileStore(dbPath),
     watches,
     watchRunner,
@@ -91,8 +86,8 @@ export function createDeps(): ApiDeps {
     chatMemory: new ChatMemoryStore(dbPath),
     listingCache,
     mapsApiKey: process.env.GOOGLE_MAPS_API_KEY?.trim() ?? "",
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY?.trim() ?? "",
     sarvamApiKey: process.env.SARVAM_API_KEY?.trim() ?? "",
+    google: new GoogleAccounts(dbPath, googleKeyFromEnv(process.env.BROWSER_PROFILE_KEY), googleOAuthFromEnv(process.env), Date.now),
     gnaniApiKey: process.env.GNANI_API_KEY?.trim() ?? "",
     commerce: createCommerceHub(Date.now),
     ...createBrowserRuntime(directory, inbox, notifier),

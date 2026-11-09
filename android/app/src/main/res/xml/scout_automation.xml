@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- isAccessibilityTool: Swiggy hides its screens from services without it (one empty node). -->
+<!-- WhatsApp is added only while a send is running, then packageNames is restored. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeTouchInteractionStart"
     android:accessibilityFeedbackType="feedbackGeneric"

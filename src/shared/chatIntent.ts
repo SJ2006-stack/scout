@@ -2,6 +2,8 @@ import { cityFromText, type City } from "./cities.ts";
 import type { EventKind } from "./event.ts";
 import { whenInMessage, type WhenWindow } from "./when.ts";
 
+const KIND_WORD = "comedy|comedies|movies?|films?|concerts?|music|theatres?|theaters?|plays?|workshops?";
+
 export type BudgetUpdate = { kind: "set"; amount: number } | { kind: "clear" } | { kind: "keep" };
 
 export type KindUpdate = { kind: "set"; value: EventKind } | { kind: "clear" } | { kind: "keep" };
@@ -36,12 +38,45 @@ function readBudget(value: string): BudgetUpdate {
   return { kind: "set", amount };
 }
 
+/** Kinds they told Scout to leave out, as in "aside from comedy" or "not movies". */
+export function excludedKinds(text: string): EventKind[] {
+  const exclusion = new RegExp(
+    `\\b(?:aside from|other than|apart from|besides|except|excluding|without|not)\\s+(?:the\\s+|any\\s+|more\\s+|those\\s+|these\\s+)?(?:stand-?up\\s+)?(${KIND_WORD})`,
+    "gi",
+  );
+  const found = new Set<EventKind>();
+  for (const match of text.toLowerCase().matchAll(exclusion)) {
+    const kind = kindOfWord(match[1] ?? "");
+    if (kind) found.add(kind);
+  }
+  return [...found];
+}
+
+function kindOfWord(word: string): EventKind | null {
+  if (word.startsWith("comed")) return "comedy";
+  if (word.startsWith("movie") || word.startsWith("film")) return "movie";
+  if (word.startsWith("concert") || word === "music") return "concert";
+  if (word.startsWith("theat") || word.startsWith("play")) return "theatre";
+  if (word.startsWith("workshop")) return "workshop";
+  return null;
+}
+
+function namedKinds(value: string): EventKind[] {
+  const kinds: EventKind[] = [];
+  if (value.includes("comedy")) kinds.push("comedy");
+  if (value.includes("concert") || value.includes("music")) kinds.push("concert");
+  if (value.includes("theatre") || value.includes("theater") || value.includes("play")) kinds.push("theatre");
+  if (value.includes("workshop")) kinds.push("workshop");
+  if (value.includes("movie") || value.includes("film")) kinds.push("movie");
+  return kinds;
+}
+
 function readKind(value: string): KindUpdate {
   if (/\b(anything|everything|all events|whatever)\b/.test(value)) return { kind: "clear" };
-  if (value.includes("comedy")) return { kind: "set", value: "comedy" };
-  if (value.includes("concert") || value.includes("music")) return { kind: "set", value: "concert" };
-  if (value.includes("theatre") || value.includes("theater") || value.includes("play")) return { kind: "set", value: "theatre" };
-  if (value.includes("workshop")) return { kind: "set", value: "workshop" };
-  if (value.includes("movie") || value.includes("film")) return { kind: "set", value: "movie" };
+  const excluded = new Set(excludedKinds(value));
+  const wanted = namedKinds(value).filter((kind) => !excluded.has(kind));
+  const named = wanted[0];
+  if (wanted.length === 1 && named) return { kind: "set", value: named };
+  if (excluded.size > 0) return { kind: "clear" };
   return { kind: "keep" };
 }

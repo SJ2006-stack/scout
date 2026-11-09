@@ -34,7 +34,7 @@ type LaunchedPage = {
   getByRole(role: AriaRole, options: { name: string; exact: true }): { nth(index: number): { click(options: { timeout: number }): Promise<void>; fill(value: string, options: { timeout: number }): Promise<void> } };
   getByText(text: string): { nth(index: number): { click(options: { timeout: number }): Promise<void> } };
   screenshot(options: { type: "png" }): Promise<Buffer>;
-  evaluate(run: () => void): Promise<void>;
+  evaluate<T>(run: () => T): Promise<T>;
 };
 
 type AriaRole = "button" | "link" | "checkbox" | "radio" | "tab" | "menuitem" | "option" | "switch" | "textbox" | "searchbox" | "combobox";
@@ -172,6 +172,11 @@ class PlaywrightPage implements IsolatedPage {
     return raceSignal(this.page.content(), signal);
   }
 
+  async scroll(signal: AbortSignal): Promise<boolean> {
+    const moved = await raceSignal(this.page.evaluate(scrollResults), signal);
+    return moved === true;
+  }
+
   async elements(signal: AbortSignal): Promise<PageElement[]> {
     await raceSignal(this.page.evaluate(unhideModalBody), signal).catch(() => undefined);
     const snapshot = await raceSignal(this.page.locator("body").ariaSnapshot(), signal);
@@ -259,6 +264,23 @@ function raceSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
  * React Modal marks the whole body aria-hidden when its app element is unset, as on
  * Blinkit's login dialog. That hides the dialog's own phone box from the snapshot.
  */
+function scrollResults(): boolean {
+  const nodes: Element[] = [];
+  if (document.scrollingElement) nodes.push(document.scrollingElement);
+  for (const node of document.querySelectorAll("div, ul, main, section")) {
+    if (node.scrollHeight > node.clientHeight + 120 && node.clientHeight > 80) nodes.push(node);
+  }
+  let moved = false;
+  for (const node of nodes) {
+    const before = node.scrollTop;
+    node.scrollTop = before + Math.max(640, node.clientHeight * 0.85);
+    if (node.scrollTop > before + 40) moved = true;
+  }
+  const beforeY = window.scrollY;
+  window.scrollBy(0, Math.max(640, window.innerHeight * 0.85));
+  return moved || window.scrollY > beforeY + 40;
+}
+
 function unhideModalBody(): void {
   const body = document.body;
   if (body.getAttribute("aria-hidden") === "true") body.removeAttribute("aria-hidden");

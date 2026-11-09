@@ -1,5 +1,5 @@
 import { readCartEstimate, type CartEstimate } from "./cartQuote.ts";
-import { readBusResult, readErrandForm, type BusResult, type ErrandForm } from "./errands.ts";
+import { readBusResult, readErrandForm, readFlightResult, type BusResult, type ErrandForm, type FlightResult } from "./errands.ts";
 import { isCartSnapshot, isQuoteSnapshot, isReceiptSnapshot, type CartSnapshot, type QuoteSnapshot, type ReceiptSnapshot } from "./commerce.ts";
 import { isPayLink, type PayLink } from "./payLink.ts";
 import { readPlaces, type SavedPlace } from "./places.ts";
@@ -19,6 +19,7 @@ export type DeskTurn =
   | { kind: "estimate"; estimate: CartEstimate }
   | { kind: "form"; form: ErrandForm; answered: boolean }
   | { kind: "buses"; buses: BusResult }
+  | { kind: "flights"; flights: FlightResult }
   | { kind: "places"; places: SavedPlace[] }
   | { kind: "receipt"; receipt: ReceiptSnapshot }
   | { kind: "pay"; pay: PayLink }
@@ -94,6 +95,8 @@ function isDeskTurn(value: unknown): value is DeskTurn {
       return readErrandForm(turn.form) !== null && typeof turn.answered === "boolean";
     case "buses":
       return readBusResult(turn.buses) !== null;
+    case "flights":
+      return readFlightResult((turn as { flights?: unknown }).flights) !== null;
     case "places":
       return readPlaces((turn as { places?: unknown }).places) !== null;
     case "receipt":

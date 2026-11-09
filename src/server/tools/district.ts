@@ -39,7 +39,7 @@ async function loadEvents(context: ToolContext): Promise<Part> {
   const read = await districtRead(context, "https://www.district.in/events/", (html) => districtEvents(html, context.city, context.retrievedAt));
   if (!read.ok) return { ok: false, message: `District events are unavailable. ${read.message}`, listings: [] };
   if (read.listings.length > 0) context.cache.set(key, read.listings);
-  return { ok: true, message: "District events loaded.", listings: read.listings };
+  return { ok: true, message: read.listings.length > 0 ? "District events loaded." : "District events had none.", listings: read.listings };
 }
 
 async function loadMovies(context: ToolContext): Promise<Part> {
@@ -49,7 +49,7 @@ async function loadMovies(context: ToolContext): Promise<Part> {
   const read = await districtRead(context, "https://www.district.in/movies/", (html) => districtMovies(html, context.retrievedAt));
   if (!read.ok) return { ok: false, message: `District movies are unavailable. ${read.message}`, listings: [] };
   if (read.listings.length > 0) context.cache.set(key, read.listings);
-  return { ok: true, message: "District movies loaded.", listings: read.listings };
+  return { ok: true, message: read.listings.length > 0 ? "District movies loaded." : "District movies had none.", listings: read.listings };
 }
 
 /**

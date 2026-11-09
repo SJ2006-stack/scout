@@ -1,5 +1,6 @@
 import { ChevronRight, LogOut } from "lucide-react";
 import { Connectors } from "./Connectors.tsx";
+import { GoogleLinks } from "./GoogleLinks.tsx";
 import { insideNativeApp, openNativePermissions } from "./nativeApp.ts";
 import { PairPanel } from "./PairPanel.tsx";
 import type { Account } from "./screen.ts";
@@ -7,13 +8,11 @@ import { formatPhone, initialOf } from "./uiText.ts";
 
 type SettingsPanelProps = {
   account: Account;
-  voiceReplies: boolean;
-  onVoiceReplies: (enabled: boolean) => void;
   onSignOut: () => void;
   onToast: (message: string) => void;
 };
 
-export function SettingsPanel({ account, voiceReplies, onVoiceReplies, onSignOut, onToast }: SettingsPanelProps) {
+export function SettingsPanel({ account, onSignOut, onToast }: SettingsPanelProps) {
   const phone = formatPhone(account.phone);
   return (
     <div className="settings">
@@ -30,25 +29,9 @@ export function SettingsPanel({ account, voiceReplies, onVoiceReplies, onSignOut
         </button>
       </section>
 
-      <section className="panel">
-        <h3>Preferences</h3>
-        <div className="setting-row">
-          <div>
-            <strong id="voice-label">Spoken replies</strong>
-            <p>Scout reads its answers aloud.</p>
-          </div>
-          <button
-            className={voiceReplies ? "switch on" : "switch"}
-            type="button"
-            role="switch"
-            aria-checked={voiceReplies}
-            aria-labelledby="voice-label"
-            onClick={() => onVoiceReplies(!voiceReplies)}
-          >
-            <span className="switch-knob" />
-          </button>
-        </div>
-        {insideNativeApp() ? (
+      {insideNativeApp() ? (
+        <section className="panel">
+          <h3>Preferences</h3>
           <button
             className="setting-row action"
             type="button"
@@ -62,7 +45,13 @@ export function SettingsPanel({ account, voiceReplies, onVoiceReplies, onSignOut
             </div>
             <ChevronRight size={18} aria-hidden="true" />
           </button>
-        ) : null}
+        </section>
+      ) : null}
+
+      <section className="panel">
+        <h3>Gmail and Drive</h3>
+        <p className="connectors-note">Optional. Connecting gives Scout read and write access, kept on this server.</p>
+        <GoogleLinks />
       </section>
 
       <section className="panel">

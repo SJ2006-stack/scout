@@ -2,11 +2,12 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { ABOUT_CITIES, DIETS, EVENT_INTERESTS, REPLY_LANGUAGES, type OnboardingStep } from "../shared/onboarding.ts";
 import { apiUrl, rememberSignedInUser } from "./backend.ts";
 import { signInWithGoogle } from "./googleSignIn.ts";
-import { insideNativeApp, nativeSignOut } from "./nativeApp.ts";
+import { GoogleLinks } from "./GoogleLinks.tsx";
+import { insideNativeApp, nativeSignOut, openAccessibilitySettings } from "./nativeApp.ts";
 
 type Step = Exclude<OnboardingStep, "ready">;
 
-const STEPS = 4;
+const STEPS = 5;
 
 export function Splash() {
   return (
@@ -51,6 +52,8 @@ export function Onboarding({ step, onAdvance }: { step: Step; onAdvance: () => v
       return <NameStep onAdvance={onAdvance} />;
     case "about":
       return <AboutStep onAdvance={onAdvance} />;
+    case "accounts":
+      return <AccountsStep onAdvance={onAdvance} />;
     default: {
       const neverStep: never = step;
       return neverStep;
@@ -254,10 +257,53 @@ function AboutStep({ onAdvance }: { onAdvance: () => void }) {
       </fieldset>
       {errorLine}
       <button className="auth-submit" type="submit" disabled={busy}>
-        {busy ? "Saving…" : "Start using Scout"}
+        {busy ? "Saving…" : "Continue"}
       </button>
       <div className="auth-links">
         <button className="auth-link" type="button" disabled={busy} onClick={() => void save("/api/onboarding/about", {}, "That did not go through.")}>
+          Skip for now
+        </button>
+      </div>
+    </AuthFrame>
+  );
+}
+
+/** Shown in the Android app whenever Scout's accessibility service is off. There is no skip. */
+export function AccessibilityStep() {
+  return (
+    <main className="auth-screen">
+      <form
+        className="auth-card"
+        onSubmit={(event) => {
+          event.preventDefault();
+          openAccessibilitySettings();
+        }}
+      >
+        <span className="logo" aria-hidden="true">S</span>
+        <h1>Turn on Accessibility</h1>
+        <p className="auth-lead">
+          Scout uses this to book tickets, fill a cart, and send WhatsApp. Turn Scout on in Android's Accessibility settings. If you see Scout's permission list first, tap Automation. This stays here until it is on.
+        </p>
+        <button className="auth-submit" type="submit">Open Accessibility settings</button>
+      </form>
+    </main>
+  );
+}
+
+function AccountsStep({ onAdvance }: { onAdvance: () => void }) {
+  const { busy, save, errorLine } = useSave(onAdvance);
+  return (
+    <AuthFrame
+      step={5}
+      title="Gmail and Drive"
+      lead="Optional. If you connect them, Scout can read, send, archive, and trash mail, and read, create, change, and remove Drive files. Google asks you to allow that. Skip if you don't want it."
+      onSubmit={(event) => { event.preventDefault(); void save("/api/onboarding/accounts", {}, "That did not go through."); }}
+    >
+      <GoogleLinks />
+      {errorLine}
+      <button className="auth-submit" type="submit" disabled={busy}>{busy ? "Saving…" : "Continue"}</button>
+      <div className="auth-links">
+        <button className="auth-link" type="button" disabled={busy} onClick={() => void save("/api/onboarding/accounts", {}, "That did not go through.")}>
           Skip for now
         </button>
       </div>

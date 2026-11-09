@@ -11,21 +11,35 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import app.scout.R
 
 /**
- * Reads only the six shop and event apps, and only while an approved run is active.
+ * Reads the six shop and event apps, and only while an approved run is active.
+ * A WhatsApp send adds WhatsApp for that run, then the list goes back.
  * It does not place orders. Pay controls are refused by [SafetyGuard] before every tap.
  */
 class ScoutAutomationService : AccessibilityService() {
     val session = RunSession()
+    private val main = Handler(Looper.getMainLooper())
+    private val overlay by lazy { ControlOverlay(this) }
     private var receiverRegistered = false
+    private var basePackages: Array<String>? = null
+    private var watchingWhatsApp = false
+    private var runNotice: String? = null
     private val stopReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ACTION_STOP) session.stop()
+            when (intent?.action) {
+                ACTION_STOP -> session.stop()
+                ACTION_TOGGLE -> {
+                    if (session.userHolding) session.resumeScout() else session.takeControl()
+                    main.post { if (session.active) present() }
+                }
+            }
         }
     }
 
@@ -41,8 +55,13 @@ class ScoutAutomationService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         connected = this
+        basePackages = serviceInfo?.packageNames?.clone()
         if (!receiverRegistered) {
-            ContextCompat.registerReceiver(this, stopReceiver, IntentFilter(ACTION_STOP), ContextCompat.RECEIVER_NOT_EXPORTED)
+            val filter = IntentFilter().apply {
+                addAction(ACTION_STOP)
+                addAction(ACTION_TOGGLE)
+            }
+            ContextCompat.registerReceiver(this, stopReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
             receiverRegistered = true
         }
     }
@@ -65,36 +84,80 @@ class ScoutAutomationService : AccessibilityService() {
         if (!session.active || event == null) return
         // Leaving the app is judged from the topmost window in ServiceScreen.root(). Events also
         // arrive late from an app that is going to the background, which read as the user leaving.
-        if (event.eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) session.onUserTouch()
+        if (event.eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) {
+            if (event.packageName?.toString() == packageName) return
+            session.onUserTouch()
+        }
     }
 
     override fun onInterrupt() {
         session.stop()
     }
 
-    fun beginRun(packageName: String) {
+    fun beginRun(packageName: String, notice: String? = null) {
+        if (packageName == "com.whatsapp" || packageName == "com.whatsapp.w4b") watchWhatsApp(packageName)
+        runNotice = notice
         session.begin(packageName)
-        showNotice()
+        main.post { if (session.active) present() }
     }
 
     fun endRun() {
         session.end()
-        hideNotice()
+        runNotice = null
+        restorePackages()
+        main.post {
+            overlay.hide()
+            hideNotice()
+        }
+    }
+
+    private fun present() {
+        overlay.show(
+            session.userHolding,
+            onDown = { session.noteChromeTouch() },
+            onToggle = {
+                if (session.userHolding) session.resumeScout() else session.takeControl()
+                if (session.active) present()
+            },
+            onStop = { session.stop() },
+        )
+        showNotice()
+    }
+
+    /**
+     * The service's package list is the shop and event apps. WhatsApp stays off that list so a
+     * WhatsApp window cannot look like the user left a shop. A send adds WhatsApp for the run,
+     * because a window outside the list cannot be read or typed into.
+     */
+    private fun watchWhatsApp(packageName: String) {
+        val info = serviceInfo ?: return
+        val base = basePackages ?: info.packageNames ?: return
+        if (packageName in base) return
+        info.packageNames = base + packageName
+        serviceInfo = info
+        watchingWhatsApp = true
+    }
+
+    private fun restorePackages() {
+        if (!watchingWhatsApp) return
+        val info = serviceInfo ?: return
+        val base = basePackages ?: return
+        info.packageNames = base.clone()
+        serviceInfo = info
+        watchingWhatsApp = false
     }
 
     private fun showNotice() {
-        val stop = PendingIntent.getBroadcast(
-            this,
-            NOTICE,
-            Intent(ACTION_STOP).setPackage(packageName),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val holding = session.userHolding
+        val toggle = getString(if (holding) R.string.automation_resume else R.string.automation_take)
         val notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_mic_notice)
             .setContentTitle("Scout")
-            .setContentText(getString(R.string.automation_notice))
+            .setContentText(if (holding) getString(R.string.automation_holding) else runNotice ?: getString(R.string.automation_notice))
             .setOngoing(true)
-            .setContentIntent(stop)
+            .setContentIntent(broadcast(ACTION_STOP, NOTICE))
+            .addAction(0, toggle, broadcast(ACTION_TOGGLE, TOGGLE_REQUEST))
+            .addAction(0, getString(R.string.automation_stop), broadcast(ACTION_STOP, STOP_REQUEST))
             .build()
         try {
             if (Build.VERSION.SDK_INT >= 34) {
@@ -112,10 +175,22 @@ class ScoutAutomationService : AccessibilityService() {
         getSystemService(NotificationManager::class.java)?.cancel(NOTICE)
     }
 
+    private fun broadcast(action: String, request: Int): PendingIntent {
+        return PendingIntent.getBroadcast(
+            this,
+            request,
+            Intent(action).setPackage(packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
     companion object {
         const val ACTION_STOP = "app.scout.automation.STOP"
+        const val ACTION_TOGGLE = "app.scout.automation.TOGGLE"
         private const val CHANNEL = "scout-automation"
         private const val NOTICE = 41
+        private const val TOGGLE_REQUEST = 42
+        private const val STOP_REQUEST = 43
 
         @Volatile
         var connected: ScoutAutomationService? = null

@@ -635,6 +635,11 @@ class FakePage implements IsolatedPage {
     return `<html>${this.url}</html>`;
   }
 
+  async scroll(signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) throw new Error("timed out");
+    return false;
+  }
+
   async elements(signal: AbortSignal): Promise<PageElement[]> {
     if (signal.aborted) throw new Error("timed out");
     const price = this.url.includes("zepto.com") ? 70 : this.url.includes("swiggy.com") ? 90 : this.url.includes("blinkit.com") ? 80 : 0;

@@ -54,11 +54,11 @@ export function watchDeviceResults(onResult: (result: DeviceResult, line: string
   return () => window.removeEventListener("scout-native", listener);
 }
 
-/** What the Scout app says it can automate, read through get_capabilities and kept briefly. */
-export function phoneAutomation(): PhoneAutomation | null {
+/** What the Scout app says it can automate, read through get_capabilities and kept briefly. Pass fresh after the user returns from settings. */
+export function phoneAutomation(options?: { fresh?: boolean }): PhoneAutomation | null {
   const request = bridge();
   if (!request) return null;
-  if (automation && Date.now() - automation.at < AUTOMATION_TTL_MS) return automation.value;
+  if (!options?.fresh && automation && Date.now() - automation.at < AUTOMATION_TTL_MS) return automation.value;
   const action: DeviceAction = {
     name: "get_capabilities",
     args: {},

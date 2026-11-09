@@ -25,7 +25,7 @@ export type StoredUser = {
   lastSeenAt: number;
 };
 
-export type Account = { id: string; email: string; phone: string | null; name: string | null; onboarded: boolean };
+export type Account = { id: string; email: string; phone: string | null; name: string | null; aboutDone: boolean; onboarded: boolean };
 
 export type StoredBrowser = BrowserLink & {
   profileState: ProfileState;
@@ -77,6 +77,7 @@ export class UserDirectory {
     addColumn(this.db, "users", "preferred_name", "TEXT");
     addColumn(this.db, "users", "phone_verified_at", "INTEGER");
     addColumn(this.db, "users", "onboarded_at", "INTEGER");
+    addColumn(this.db, "users", "about_at", "INTEGER");
   }
 
   touch(userId: string, now: number): void {
@@ -154,8 +155,8 @@ export class UserDirectory {
 
   account(userId: string): Account | null {
     if (!USER_ID.test(userId)) return null;
-    const row = this.db.prepare("SELECT id, email, phone, preferred_name, onboarded_at FROM users WHERE id = ?").get(userId) as
-      | { id: string; email: string | null; phone: string | null; preferred_name: string | null; onboarded_at: number | null }
+    const row = this.db.prepare("SELECT id, email, phone, preferred_name, about_at, onboarded_at FROM users WHERE id = ?").get(userId) as
+      | { id: string; email: string | null; phone: string | null; preferred_name: string | null; about_at: number | null; onboarded_at: number | null }
       | undefined;
     if (!row || row.email == null || row.email.length === 0) return null;
     return {
@@ -163,11 +164,20 @@ export class UserDirectory {
       email: row.email,
       phone: row.phone != null && row.phone.length > 0 ? row.phone : null,
       name: row.preferred_name != null && row.preferred_name.length > 0 ? row.preferred_name : null,
+      aboutDone: row.about_at != null,
       onboarded: row.onboarded_at != null,
     };
   }
 
-  /** The about step was saved or skipped. Needs the phone and name first. */
+  /** The about step was saved or skipped. Gmail and Drive come next, and are optional. */
+  markAbout(userId: string, now: number): boolean {
+    if (!USER_ID.test(userId)) return false;
+    return this.db.prepare(
+      "UPDATE users SET about_at = ?, last_seen_at = ? WHERE id = ? AND phone IS NOT NULL AND preferred_name IS NOT NULL",
+    ).run(now, now, userId).changes > 0;
+  }
+
+  /** Gmail and Drive were connected or skipped. Needs the phone and name first. */
   finishOnboarding(userId: string, now: number): boolean {
     if (!USER_ID.test(userId)) return false;
     return this.db.prepare(

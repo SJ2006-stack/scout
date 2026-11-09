@@ -39,9 +39,9 @@ data class ScreenNotice(val state: String, val reason: String? = null, val messa
 }
 
 /**
- * One screen capture at a time, from the user's tap to one saved frame:
- * idle -> asking (Android's consent screen) -> starting (service is taking the projection)
- * -> waiting (projection held, nothing captured) -> capturing (one frame) -> idle.
+ * One screen recording at a time. After consent the projection stays up and the service
+ * samples frames until Stop, a failure, or [CLIP_FRAMES]. A clip with at least one frame
+ * ends as captured. One explicit Capture tap still saves a single frame and stops.
  *
  * Every session has its own id and needs its own consent. A consent answer, a service start,
  * or a capture tap that does not match the current session is refused, so an old result or an
@@ -52,7 +52,7 @@ class ScreenSession(private val now: () -> Long, private val newId: () -> String
     private sealed class Phase(val id: String, val owner: String) {
         class Asking(id: String, owner: String) : Phase(id, owner)
         class Starting(id: String, owner: String) : Phase(id, owner)
-        class Live(id: String, owner: String, val shutter: Shutter, val since: Long) : Phase(id, owner)
+        class Live(id: String, owner: String, val shutter: Shutter, val since: Long, var frames: Int = 0) : Phase(id, owner)
         class Capturing(id: String, owner: String, val shutter: Shutter, val done: (Boolean, String?) -> Unit) : Phase(id, owner)
     }
 
@@ -127,6 +127,21 @@ class ScreenSession(private val now: () -> Long, private val newId: () -> String
         return true
     }
 
+    /** A sampled frame landed. True means the recording should take another. */
+    fun kept(id: String): Boolean {
+        synchronized(this) {
+            val current = phase as? Phase.Live ?: return false
+            if (current.id != id) return false
+            current.frames += 1
+            return current.frames < CLIP_FRAMES
+        }
+    }
+
+    fun frameCount(id: String): Int = synchronized(this) {
+        val current = phase as? Phase.Live ?: return 0
+        if (current.id != id) 0 else current.frames
+    }
+
     /** The user tapped Capture. Grabs one frame, then releases the projection whatever happens. */
     fun shoot(id: String, size: FrameSize, done: (Boolean, String?) -> Unit): Boolean {
         val shutter: Shutter
@@ -149,12 +164,14 @@ class ScreenSession(private val now: () -> Long, private val newId: () -> String
     /** Ends the session [id], or whichever is running when [id] is null. */
     fun stop(id: String?, end: ScreenEnd, message: String? = null): Boolean {
         val ended: Phase
-        val notice = ScreenNotice("ended", end.word, message)
+        val notice: ScreenNotice
         synchronized(this) {
             val current = phase ?: return false
             if (id != null && current.id != id) return false
             ended = current
             phase = null
+            val deliver = ended is Phase.Live && ended.frames > 0 && (end == ScreenEnd.STOPPED || end == ScreenEnd.EXPIRED)
+            notice = if (deliver) ScreenNotice("captured") else ScreenNotice("ended", end.word, message)
             last = notice
         }
         when (ended) {
@@ -202,5 +219,6 @@ class ScreenSession(private val now: () -> Long, private val newId: () -> String
     companion object {
         /** A session that captured nothing for this long is stopped. */
         const val LIVE_MS = 3 * 60_000L
+        const val CLIP_FRAMES = 6
     }
 }

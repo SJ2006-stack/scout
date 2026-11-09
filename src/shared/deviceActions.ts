@@ -494,7 +494,19 @@ export function readPhoneAutomation(raw: unknown): PhoneAutomation | null {
 
 /** The phone can drive this app only when Scout's Accessibility service is on and the app is installed. */
 export function canAutomate(automation: PhoneAutomation | null | undefined, app: AutomationApp): boolean {
-  return automation?.serviceOn === true && automation.apps[app]?.installed === true;
+  return automation?.serviceOn === true && appInstalled(automation, app);
+}
+
+/** The event app is on the phone, so Book can open it even when the accessibility service is off. */
+export function appInstalled(automation: PhoneAutomation | null | undefined, app: AutomationApp): boolean {
+  return automation?.apps[app]?.installed === true;
+}
+
+/** On the phone, onboarding stays up until Scout's accessibility service is on. A browser, or a phone that did not report, is not blocked. */
+export function accessibilityReady(insideApp: boolean, automation: PhoneAutomation | null | undefined): boolean {
+  if (!insideApp) return true;
+  if (automation == null) return true;
+  return automation.serviceOn;
 }
 
 export function automatableApps<App extends AutomationApp>(automation: PhoneAutomation | null | undefined, apps: readonly App[]): App[] {

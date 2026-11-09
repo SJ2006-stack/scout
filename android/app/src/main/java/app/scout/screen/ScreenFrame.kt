@@ -21,6 +21,16 @@ fun frameSizeFor(width: Int, height: Int, dpi: Int, maxSide: Int = FRAME_MAX_SID
 }
 
 /**
+ * Size of the virtual display for one capture. Android 14+ reports the shared window
+ * through [android.media.projection.MediaProjection.Callback.onCapturedContentResize],
+ * including after rotation. A missing or empty report keeps the full display size.
+ */
+fun captureSize(display: FrameSize, contentWidth: Int, contentHeight: Int): FrameSize {
+    if (contentWidth <= 0 || contentHeight <= 0) return display
+    return frameSizeFor(contentWidth, contentHeight, display.dpi)
+}
+
+/**
  * True when every sampled ARGB pixel is near black. Android blacks out windows that block
  * screenshots (banking, payment, and password screens), so such a frame is refused, not sent.
  */

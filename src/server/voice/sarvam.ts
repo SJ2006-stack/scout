@@ -1,18 +1,10 @@
-import { stripEmoji } from "../../shared/emoji.ts";
-import { spokenLanguage } from "../../shared/spoken.ts";
-
 const STT_URL = "https://api.vachana.ai/stt/v3";
-const TTS_URL = "https://api.sarvam.ai/text-to-speech";
 const STT_MODEL = "prisma-v3.0";
 // codemix keeps English words in Latin letters inside a Hindi sentence.
 const STT_FORMAT = "codemix";
 const STT_LANGUAGE = "indic-auto";
-const TTS_MODEL = "bulbul:v3";
-const TTS_SPEAKER = "shubh";
-const MAX_SPEECH = 2_500;
 
 export type VoiceDeps = {
-  sarvamApiKey?: string;
   gnaniApiKey?: string;
   fetchImpl?: typeof fetch;
 };
@@ -27,10 +19,6 @@ export async function voiceResponse(
   if (pathname === "/api/voice/stt") {
     if (method !== "POST") return { status: 405, body: { error: "Send the recording with POST." } };
     return transcribe(raw, contentType, deps);
-  }
-  if (pathname === "/api/voice/tts") {
-    if (method !== "POST") return { status: 405, body: { error: "Send the reply with POST." } };
-    return speak(raw, deps);
   }
   return null;
 }
@@ -66,40 +54,6 @@ async function transcribe(
   return { status: 200, body: { text } };
 }
 
-async function speak(raw: Uint8Array, deps: VoiceDeps): Promise<{ status: number; body: unknown }> {
-  const key = deps.sarvamApiKey?.trim() ?? "";
-  if (key.length === 0) return { status: 503, body: { error: "Voice is off until SARVAM_API_KEY is set." } };
-  let value: unknown;
-  try {
-    value = JSON.parse(new TextDecoder().decode(raw)) as unknown;
-  } catch {
-    return { status: 400, body: { error: "Request was not valid JSON." } };
-  }
-  const text = stripEmoji(textOf(value));
-  if (text.length === 0) return { status: 400, body: { error: "There is nothing to say." } };
-  const clipped = text.slice(0, MAX_SPEECH);
-  let response: Response;
-  try {
-    response = await (deps.fetchImpl ?? fetch)(TTS_URL, {
-      method: "POST",
-      headers: { "api-subscription-key": key, "content-type": "application/json" },
-      body: JSON.stringify({
-        text: clipped,
-        language_code: spokenLanguage(clipped),
-        model: TTS_MODEL,
-        speaker: TTS_SPEAKER,
-      }),
-    });
-  } catch {
-    return { status: 502, body: { error: "Sarvam could not be reached." } };
-  }
-  const payload = await readPayload(response);
-  if (!response.ok) return { status: 502, body: { error: sarvamError(response.status) } };
-  const audio = audioOf(payload);
-  if (audio.length === 0) return { status: 502, body: { error: "Sarvam returned no audio." } };
-  return { status: 200, body: { audio, mediaType: "audio/wav" } };
-}
-
 function fileName(mime: string): string {
   if (mime.includes("wav")) return "speech.wav";
   if (mime.includes("mpeg") || mime.includes("mp3")) return "speech.mp3";
@@ -109,11 +63,6 @@ function fileName(mime: string): string {
   return "speech.webm";
 }
 
-function textOf(value: unknown): string {
-  if (typeof value !== "object" || value == null || !("text" in value)) return "";
-  return typeof value.text === "string" ? value.text.trim() : "";
-}
-
 function transcriptOf(payload: unknown): string {
   if (typeof payload !== "object" || payload == null) return "";
   if ("transcript" in payload && typeof payload.transcript === "string") return payload.transcript.trim();
@@ -121,21 +70,9 @@ function transcriptOf(payload: unknown): string {
   return "";
 }
 
-function audioOf(payload: unknown): string {
-  if (typeof payload !== "object" || payload == null || !("audios" in payload)) return "";
-  const audios = payload.audios;
-  if (!Array.isArray(audios) || typeof audios[0] !== "string") return "";
-  return audios[0];
-}
-
 function gnaniError(status: number): string {
   if (status === 401 || status === 403) return "The Gnani key was refused.";
   return "Gnani could not complete that.";
-}
-
-function sarvamError(status: number): string {
-  if (status === 401 || status === 403) return "The Sarvam key was refused.";
-  return "Sarvam could not complete that.";
 }
 
 async function readPayload(response: Response): Promise<unknown> {

@@ -1,13 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   compactReading,
   kindLabel,
+  screenAsksForAction,
   screenSuggestions,
   sourceLabel,
   type ScreenReading,
 } from "../shared/screenReading.ts";
 import { understandScreen } from "./screenUnderstand.ts";
-import { finishScreenShot, type ScreenUi } from "./scoutScreen.ts";
+import { fillOpenScreen, finishScreenShot, type ScreenUi } from "./scoutScreen.ts";
 import "./scoutScreen.css";
 
 type ScreenCardProps = {
@@ -20,20 +21,84 @@ type ScreenCardProps = {
   onClose: () => void;
   onSend: (text: string, reading: ScreenReading) => void;
   onToast: (message: string) => void;
+  prior: string;
+  person: { name: string | null; email: string | null; phone: string | null };
 };
 
-/** Review a captured frame, then send it for structured reading. Nothing leaves the phone until Send. */
-export function ScreenCard({ view, busy, onStart, onStop, onCapture, onDiscard, onClose, onSend, onToast }: ScreenCardProps) {
-  const [question, setQuestion] = useState("What am I looking at?");
+/** Review a recorded clip, then send the latest moment. A command already given is carried out. Nothing leaves the phone until then. */
+export function ScreenCard({ view, busy, onStart, onStop, onCapture, onDiscard, onClose, onSend, onToast, prior, person }: ScreenCardProps) {
+  const [question, setQuestion] = useState(prior || "What am I looking at?");
   const [reading, setReading] = useState<ScreenReading | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const shotId = view.phase === "preview" ? view.shot.id : view.phase;
+  const acted = useRef("");
+  const toastRef = useRef(onToast);
+  const sendRef = useRef(onSend);
+  const closeRef = useRef(onClose);
+  sendRef.current = onSend;
+  closeRef.current = onClose;
+  toastRef.current = onToast;
 
   useEffect(() => {
     setReading(null);
     setAnalyzing(false);
-    setQuestion("What am I looking at?");
-  }, [shotId]);
+    setQuestion(prior || "What am I looking at?");
+  }, [shotId, prior]);
+
+  useEffect(() => {
+    if (view.phase !== "preview" || busy || !screenAsksForAction(prior) || acted.current === view.shot.id) return;
+    const shot = view.shot;
+    const file = view.file;
+    acted.current = shot.id;
+    let cancel = false;
+    setAnalyzing(true);
+    understandScreen(file)
+      .then((next) => {
+        if (cancel) return;
+        setReading(next);
+        finishScreenShot(shot);
+        sendRef.current(prior, compactReading(next));
+        closeRef.current();
+      })
+      .catch((error: unknown) => {
+        if (!cancel) toastRef.current(error instanceof Error ? error.message : "Scout could not read the screen right now.");
+      })
+      .finally(() => {
+        if (!cancel) setAnalyzing(false);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [shotId, busy, prior, view]);
+
+  useEffect(() => {
+    if (view.phase !== "progress" || view.state !== "waiting") return;
+    const submit = /\b(submit|send|finish|complete)\b/i.test(prior);
+    let attempts = 0;
+    let stop = false;
+    const tick = () => {
+      if (stop || attempts >= 8) return;
+      attempts += 1;
+      const result = fillOpenScreen({
+        name: person.name ?? "",
+        email: person.email ?? "",
+        phone: person.phone ?? "",
+        note: prior,
+        submit,
+      });
+      if (result && result.filled > 0) {
+        stop = true;
+        if (result.message) toastRef.current(result.message);
+      }
+    };
+    const timer = window.setInterval(tick, 3000);
+    const first = window.setTimeout(tick, 1200);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+      window.clearTimeout(first);
+    };
+  }, [view.phase === "progress" ? view.state : view.phase, prior, person.name, person.email, person.phone]);
 
   async function analyze(): Promise<void> {
     if (view.phase !== "preview" || busy || analyzing) return;
@@ -60,7 +125,7 @@ export function ScreenCard({ view, busy, onStart, onStop, onCapture, onDiscard, 
       <section className="screen-card" aria-label="Understand my screen">
         <header className="screen-head">
           <strong>Understand my screen</strong>
-          <span className="muted">Android will ask to share a screen. Prefer sharing one app window when the phone offers it. Scout takes one picture after you tap Capture, shows it here, and uploads it only if you send it.</span>
+          <span className="muted">Android will ask to share a screen. Prefer sharing one app window when the phone offers it. Scout then records a short clip. It uploads the latest moment only if you send it{prior ? `, and it will carry out “${prior}”` : ""}.</span>
         </header>
         <div className="screen-actions">
           <button type="button" className="text-button" onClick={onClose}>Cancel</button>
@@ -75,16 +140,16 @@ export function ScreenCard({ view, busy, onStart, onStop, onCapture, onDiscard, 
     return (
       <section className="screen-card" aria-label="Screen capture">
         <header className="screen-head">
-          <strong>{waiting ? "Scout is waiting to capture" : "Allow screen capture"}</strong>
+          <strong>{waiting ? "Scout is recording" : "Allow screen recording"}</strong>
           <span className="muted">
             {waiting
-              ? "Open the app you want Scout to see, then tap Capture in the notice or here. Scout takes one picture and stops."
-              : "Approve Android's screen-capture prompt. Scout will not take a picture until you tap Capture."}
+              ? `Open the form or app. Scout types your name, email, and phone into the fields it can see${prior ? `, and follows “${prior}”` : ""}. It taps Submit only if you asked. Tap Stop when you are done.`
+              : "Approve Android's screen-capture prompt. Scout records until you tap Stop."}
           </span>
         </header>
         <div className="screen-actions">
           <button type="button" className="text-button" onClick={onStop}>Stop</button>
-          {waiting ? <button type="button" className="screen-send" onClick={onCapture}>Capture</button> : null}
+          {waiting ? <button type="button" className="screen-send" onClick={onCapture}>Save this moment</button> : null}
         </div>
       </section>
     );
@@ -113,7 +178,9 @@ export function ScreenCard({ view, busy, onStart, onStop, onCapture, onDiscard, 
         <span className="muted">
           {reading
             ? reading.summary
-            : "This picture is still on the phone. Send it for Scout to read, or discard it."}
+            : view.shot.frames > 1
+              ? `Recorded ${view.shot.frames} moments. The latest is still on the phone. Send it for Scout to read, or discard it.`
+              : "This moment is still on the phone. Send it for Scout to read, or discard it."}
         </span>
       </header>
       <img className="screen-preview" src={view.url} alt="Captured screen" />

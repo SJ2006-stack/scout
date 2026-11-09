@@ -15,6 +15,7 @@ import { scoutPurpose } from "./scoutPrompt.ts";
 import { withEmoji } from "../shared/emoji.ts";
 import { browseFollowUp, matchFound, readablePage, type FoundEvent } from "./events/pageText.ts";
 import { assistantPrompt, assistantTools, isAssistantTool, runAssistantTool, type AssistantContext, type AssistantToolName } from "./assistantTools.ts";
+import { asksForOtherResults } from "./otherResults.ts";
 
 const CARD_LIMIT = 24;
 const SHOW_LIMIT = 3;
@@ -87,10 +88,44 @@ type SearchInput = { city: City; when: WhenWord; kind: EventKind | null; budget:
 type Block = Record<string, unknown>;
 type ApiMessage = ChatMessage;
 
+const FETCH_SOURCES = ["Luma", "District", "BookMyShow"] as const;
+
+/** "Event Scout fetching from Luma, District, and BookMyShow." Names only the sources in this call. */
+export function fetchingLine(sources: readonly string[]): string {
+  const names = FETCH_SOURCES.filter((name) => sources.includes(name));
+  if (names.length === 0) return "Event Scout fetching listings.";
+  if (names.length === 1) return `Event Scout fetching from ${names[0]}.`;
+  if (names.length === 2) return `Event Scout fetching from ${names[0]} and ${names[1]}.`;
+  return `Event Scout fetching from ${names[0]}, ${names[1]}, and ${names[2]}.`;
+}
+
+/** The system prompt and tool list Event Scout is given. The same values are sent when the model runs. */
+export function eventScoutFeed(turn: ChatTurn): { prompt: string; tools: { name: string; description: string }[] } {
+  const prompt = `${instructions(turn.now(), timeZone(turn), turn.memory.get(turn.sessionId).date)} ${assistantPrompt(assistantContext(turn))}`.trim();
+  const tools = modelTools(turn).flatMap((tool) => {
+    const access = toolAccess(tool);
+    return access ? [access] : [];
+  });
+  return { prompt, tools };
+}
+
+function modelTools(turn: ChatTurn): readonly Record<string, unknown>[] {
+  return [...TOOLS.map((tool) => ({ ...tool })), ...assistantTools(assistantContext(turn))];
+}
+
+function toolAccess(tool: Record<string, unknown>): { name: string; description: string } | null {
+  const record = tool as { name?: unknown; description?: unknown };
+  if (typeof record.name !== "string" || record.name.trim().length === 0) return null;
+  return { name: record.name, description: typeof record.description === "string" ? record.description : "" };
+}
+
 export async function converseEvent(turn: ChatTurn, emit: (event: ChatEvent) => void): Promise<boolean> {
-  const remembered = turn.memory.get(turn.sessionId).lines;
+  const feed = eventScoutFeed(turn);
+  emit({ type: "status", message: "Message sent to Event Scout." });
+  emit({ type: "brief", scout: "Event Scout", fed: true, prompt: feed.prompt, tools: feed.tools });
+  const remembered = turn.history ?? turn.memory.get(turn.sessionId).lines;
   const messages = transcript(remembered, turn.text);
-  const seen = new Set<string>();
+  const seen = new Set<string>(asksForOtherResults(turn.text) ? (turn.memory.get(turn.sessionId).found ?? []).map((item) => item.url) : []);
   const announced = new Set<string>();
   const spoken: string[] = [];
   const shown: string[] = [];
@@ -112,6 +147,8 @@ export async function converseEvent(turn: ChatTurn, emit: (event: ChatEvent) => 
     if (text.length > 0 && !spoken.includes(text)) spoken.push(text);
     const calls = blocks.filter(isToolUse);
     if (calls.length === 0) return finish(turn, text.length > 0 ? text : spoken.join("\n\n"), patch, shown, emit, more);
+    const fetching = calls.flatMap((call) => (isSearchTool(call.name) ? [sourceName(call.name)] : []));
+    if (fetching.length > 0) emit({ type: "status", message: fetchingLine(fetching) });
     started = true;
     messages.push({ role: "assistant", content: blocks });
     const gathered: Listing[] = [];
@@ -169,8 +206,8 @@ function finish(
   const titles = shown.slice(0, 6).map((title, index) => `${index + 1}. ${title}`).join("; ");
   const extra = more.slice(0, 12).join("; ");
   const remembered = `${spoken.length > 0 ? spoken : "I checked the listings."}${titles ? `\n(Cards on screen: ${titles})` : ""}${extra ? `\n(Under Show more: ${extra})` : ""}`;
-  const lines = [...previous.lines, { role: "user" as const, text: turn.text }, { role: "assistant" as const, text: remembered }].slice(-12);
-  turn.memory.save(turn.sessionId, { ...previous, ...patch, found: patch.found ?? previous.found ?? [], lines });
+  const lines = turn.history ? previous.lines : [...previous.lines, { role: "user" as const, text: turn.text }, { role: "assistant" as const, text: remembered }].slice(-12);
+  turn.memory.save(turn.sessionId, { ...previous, ...patch, found: mergeFound(previous.found, patch.found), lines });
   emit({ type: "done", count: shown.length });
   return true;
 }
@@ -180,16 +217,10 @@ async function complete(turn: ChatTurn, messages: ApiMessage[]): Promise<{ stop_
     apiKey: turn.sarvamApiKey,
     fetchImpl: turn.fetchImpl,
     signal: turn.signal,
-    system: `${instructions(turn.now(), timeZone(turn), turn.memory.get(turn.sessionId).date)} ${assistantPrompt(assistantContext(turn))}${voicePrompt(turn)}`,
-    tools: [...TOOLS, ...assistantTools(assistantContext(turn))],
+    system: eventScoutFeed(turn).prompt,
+    tools: modelTools(turn),
     messages,
-    ...(turn.onSpeech ? { onText: turn.onSpeech } : {}),
   });
-}
-
-export function voicePrompt(turn: ChatTurn): string {
-  if (!turn.onSpeech) return "";
-  return " This reply is spoken aloud on a voice call. Answer in the language they used, including Hinglish, in at most two short sentences. Before a tool call, say one short line like 'Ek second, dekh raha hoon.' Never read links, emoji, prices with symbols, or lists longer than three items; say the rest is on screen.";
 }
 
 export function assistantContext(turn: ChatTurn): AssistantContext {
@@ -201,6 +232,7 @@ export function assistantContext(turn: ChatTurn): AssistantContext {
     ...(turn.profile ? { profile: turn.profile } : {}),
     ...(turn.watches ? { watches: turn.watches } : {}),
     ...(turn.phone ? { phone: turn.phone } : {}),
+    ...(turn.google ? { google: turn.google, fetchImpl: turn.fetchImpl, googleRedirect: turn.googleRedirect } : {}),
   };
 }
 
@@ -269,7 +301,8 @@ async function runTool(
   }
   emit({ type: "source", source: tool.name, ok, message });
   for (const warning of warnings) emit({ type: "source", source: tool.name, ok: false, message: warning });
-  const matched = windowed.filter((listing) => withinBudget(listing, search.budget)).slice(0, CARD_LIMIT);
+  const omit = asksForOtherResults(turn.text) ? new Set((turn.memory.get(turn.sessionId).found ?? []).map((item) => item.url)) : new Set<string>();
+  const matched = windowed.filter((listing) => withinBudget(listing, search.budget) && !omit.has(listing.url)).slice(0, CARD_LIMIT);
   if (turn.profile) {
     turn.profile.set(turn.sessionId, "city", search.city.id, "inferred", turn.now());
     if (search.kind) turn.profile.set(turn.sessionId, "event_kinds", search.kind, "inferred", turn.now());
@@ -414,6 +447,7 @@ function instructions(nowMs: number, timeZoneName: string, remembered: WhenWindo
     "Your harness is search_luma, search_district, search_bookmyshow, open_event, and register_event. The browser worker is available. Never say you have no browser worker, no login, or no way to register.",
     "If they are not asking what is on, for a detail, or to book, answer them and do not call a tool. Use the earlier messages in this chat.",
     "When they ask what is on, or which listing is cheaper, call all three search tools with the same city, date, and kind. Compare only prices those tools returned. Do not invent a price or a link. The screen shows only three events. Mention those three, say this is what you got when you last checked, and ask if they are looking for something particular. Then wait. Do not list the rest.",
+    "When they ask for any other, more, or to leave out what you already showed, the tools omit those listings. If listings is empty because of that, say those were the only matches and do not repeat their titles.",
     "When they ask for more detail about one event, call open_event with that title. Answer from the page text it returns. Do not say the search listing is all you can see.",
     "When app_event_book is available and they ask to book or get tickets, call it for the cheaper listing on an app the phone can drive. For a BookMyShow or District movie, pass the cinema they named as ref.venue and the time they named as showtime (ISO with offset); the phone goes to that seat map. For a District event, pass the day and slot start as showtime and their price limit as maxPricePerTicket; the phone adds the tickets and stops on Checkout. For Luma, no showtime is needed; the phone stops on the filled registration form. If they named no show or day, call it without a showtime; the phone reports the showtimes or open days, so ask which one. Tell them to tap Allow, then finish in the app: pick seats and pay, tap Checkout, or tap Register. Do not call register_event for that event.",
     "When app_event_book is not available and they ask to register, RSVP, book, or use their Gmail, call register_event with that title. The worker uses the saved Gmail and phone. Tell them what the tool result says. Do not send them the link to do it themselves.",
@@ -471,6 +505,10 @@ function isToolUse(block: Block): block is Block & { id: string; name: ToolId; i
 }
 
 type SearchToolId = "search_luma" | "search_district" | "search_bookmyshow";
+
+function isSearchTool(value: string): value is SearchToolId {
+  return value === "search_luma" || value === "search_district" || value === "search_bookmyshow";
+}
 
 function isToolId(value: unknown): value is ToolId {
   return value === "search_luma" || value === "search_district" || value === "search_bookmyshow" || value === "open_event" || value === "register_event" || isAssistantTool(value);

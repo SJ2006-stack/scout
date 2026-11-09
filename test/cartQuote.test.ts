@@ -155,8 +155,11 @@ describe("basket messages", () => {
     assert.deepEqual(readBuy("Buy it"), { store: "best" });
     assert.deepEqual(readBuy("yes"), { store: "best" });
     assert.deepEqual(readBuy("ok order them on Zepto"), { store: "zepto" });
+    assert.deepEqual(readBuy("Order from zepto then"), { store: "zepto" });
+    assert.deepEqual(readBuy("get it from Blinkit now"), { store: "blinkit" });
     assert.deepEqual(readBuy("instamart"), { store: "instamart" });
     assert.equal(readBuy("buy milk"), null);
+    assert.equal(readBuy("order milk from zepto"), null);
     assert.equal(readBuy("which one is cheaper"), null);
   });
 });

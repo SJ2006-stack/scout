@@ -78,6 +78,27 @@ export function compactReading(reading: ScreenReading, budget = 12_000): ScreenR
   return { ...reading, items };
 }
 
+const ACTION_REQUEST = /\b(add|buy|order|book|send|open|set|remind|archive|trash|delete|save|write|share|message|text|call|play|start|turn on|turn off|find|search|read|compare|get me|put)\b/i;
+
+/** True when the user's own words ask Scout to do something. A bare "what am I looking at?" does not. */
+export function screenAsksForAction(text: string | null | undefined): boolean {
+  const words = text?.trim() ?? "";
+  if (words.length < 2) return false;
+  if (/^what am i looking at\??$/i.test(words)) return false;
+  return ACTION_REQUEST.test(words);
+}
+
+/** The command already typed, or the latest earlier user line that asks Scout to act. Empty when there is none. */
+export function priorScreenCommand(draft: string, earlier: readonly string[]): string {
+  const typed = draft.trim();
+  if (screenAsksForAction(typed)) return typed;
+  for (let index = earlier.length - 1; index >= 0; index -= 1) {
+    const line = earlier[index]?.trim() ?? "";
+    if (screenAsksForAction(line)) return line;
+  }
+  return "";
+}
+
 /** The specialist that knows this kind of screen. Event screens go to Main Scout, which answers from the poster. */
 export function screenAgent(kind: ScreenKind): AgentId {
   switch (kind) {

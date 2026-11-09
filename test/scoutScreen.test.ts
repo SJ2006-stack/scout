@@ -31,6 +31,7 @@ describe("screen capture bridge", () => {
       bytes: 12,
       width: 80,
       height: 120,
+      frames: 1,
     });
     assert.equal(readScreenShot({ id: "../x", mime: "image/jpeg", bytes: 12, width: 1, height: 1 }), null);
     assert.equal(readScreenShot({ id: ID, mime: "image/png", bytes: 12, width: 1, height: 1 }), null);

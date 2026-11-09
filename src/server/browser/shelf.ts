@@ -31,6 +31,10 @@ export type ShopRun = {
   pay: PayLink | null;
   summary: string;
   signIn: string | null;
+  /** The first listing from the search when none of them matched the asked words. */
+  guess?: ShopOffer | null;
+  /** Other packs on those pages, the asked brand first, when nothing matched exactly. */
+  choices?: ShopOffer[];
 };
 
 /** Matching shelf offers for each basket item, from every store that opened. */
@@ -171,11 +175,57 @@ export function asksForLocation(html: string): boolean {
   return /select your location|choose your location|enter your (?:delivery )?location|add your location|where do you want the delivery/i.test(html);
 }
 
-export type ShelfRead = { offers: ShopOffer[]; needsLocation: boolean };
+export type ShelfRead = { offers: ShopOffer[]; needsLocation: boolean; guess: ShopOffer | null; choices: ShopOffer[] };
+
+/** Exact title matches stay. When none match, confirm a listing that shares the brand, not the first unrelated product. */
+export function pickShelf(found: readonly ShopOffer[], query: string): { offers: ShopOffer[]; guess: ShopOffer | null } {
+  const offers = matching(found, query);
+  if (offers.length > 0) return { offers, guess: null };
+  const words = contentWords(query);
+  const guess = words.length === 0 ? found[0] ?? null : found.find((offer) => sharesBrand(offer.title, words)) ?? null;
+  return { offers: [], guess };
+}
+
+/** What to show when the first search listing is not an exact match. */
+export function shelfGuessLine(offer: ShopOffer): string {
+  return `${offer.merchant} listed ${offer.title} at ₹${offer.rupees}. Is that what you're looking for?`;
+}
+
+/** The asked brand first, then other brands of the same product. An unrelated listing stays out. */
+export function shelfChoices(found: readonly ShopOffer[], query: string): ShopOffer[] {
+  const words = contentWords(query);
+  const exact = new Set(matching(found, query));
+  const related = words.length === 0 ? [...found] : found.filter((offer) => exact.has(offer) || sharesAny(offer.title, words));
+  const brand = related.filter((offer) => exact.has(offer) || sharesBrand(offer.title, words));
+  const ordered = [...brand, ...related.filter((offer) => !brand.includes(offer))];
+  const seen = new Set<string>();
+  const choices: ShopOffer[] = [];
+  for (const offer of ordered) {
+    const key = offer.title.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    choices.push(offer);
+    if (choices.length === 4) break;
+  }
+  return choices;
+}
+
+export function shelfChoiceLine(offers: readonly ShopOffer[]): string {
+  const names = offers.map((offer) => `${offer.title} at ₹${offer.rupees} on ${offer.merchant}`);
+  return `I found ${names.join("; ")}. Which pack?`;
+}
 
 /** Zepto finds nothing for "amul butter 100 g", so stores get the words without a size and the size filters the results. */
+const SIZE_UNIT = "kgs?|gms?|grams?|g|ml|ltrs?|litres?|liters?|l";
+
+/** Stores are searched without the size. A form answer like "Gowardhan Ghee (500 g)" must not keep the empty brackets. */
 export function searchTerms(query: string): string {
-  const words = query.replace(/\b\d+(?:\.\d+)?\s*(?:kgs?|gms?|grams?|g|ml|ltrs?|litres?|liters?|l)\b/gi, " ").replace(/\s+/g, " ").trim();
+  const words = query
+    .replace(new RegExp(`\\(\\s*\\d+(?:\\.\\d+)?\\s*(?:${SIZE_UNIT})\\s*\\)`, "gi"), " ")
+    .replace(new RegExp(`\\b\\d+(?:\\.\\d+)?\\s*(?:${SIZE_UNIT})\\b`, "gi"), " ")
+    .replace(/[()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   return words.length >= 2 ? words : query.trim();
 }
 
@@ -183,6 +233,8 @@ export async function readShelf(page: IsolatedPage, query: string, merchant: Sho
   const terms = searchTerms(query);
   await step((signal) => page.goto(searchUrl(merchant, terms), signal));
   let offers: ShopOffer[] = [];
+  let guess: ShopOffer | null = null;
+  let listed: ShopOffer[] = [];
   let needsLocation = false;
   let searched = false;
   const seenAt = Date.now();
@@ -192,7 +244,11 @@ export async function readShelf(page: IsolatedPage, query: string, merchant: Sho
     const html = await step((signal) => page.html(signal));
     const landed = await step((signal) => page.location(signal));
     needsLocation = needsLocation || asksForLocation(html);
-    offers = matching(collectShelfOffers(merchant, landed.url, elements, html, seenAt), query);
+    const found = collectShelfOffers(merchant, landed.url, elements, html, seenAt);
+    listed = [...listed, ...found];
+    const picked = pickShelf(found, query);
+    if (picked.guess) guess = picked.guess;
+    offers = picked.offers;
     if (offers.length > 0) break;
     if (attempt < 5) continue;
     const box = elements.find((element) => element.role === "searchbox" || element.role === "combobox" || (element.role === "textbox" && /search/i.test(element.name)));
@@ -205,7 +261,8 @@ export async function readShelf(page: IsolatedPage, query: string, merchant: Sho
     if (!search) continue;
     await step((signal) => page.click({ role: search.role, name: search.name, nth: 0 }, signal));
   }
-  return { offers, needsLocation };
+  const choices = shelfChoices(listed, query);
+  return { offers, needsLocation, guess: offers.length > 0 ? null : choices[0] ?? guess, choices };
 }
 
 function offersFrom(merchant: ShopMerchant, pageUrl: string, items: readonly Priced[], seenAt: number): ShopOffer[] {
@@ -458,11 +515,36 @@ function textOf(html: string): string {
  * Keeps offers whose title names every query word. Store pages mix in ads and suggestions.
  * Instamart's web search shows no sizes, so a size they asked for only rules out an offer that shows a different one.
  */
+const WORD_ALIAS: Record<string, string> = { gowardhan: "govardhan" };
+
+function canonWord(word: string): string {
+  return WORD_ALIAS[word] ?? word;
+}
+
+function contentWords(query: string): string[] {
+  return withUnits(query).split(/[^a-z0-9]+/).filter((word) => word.length > 1 && !SIZE_WORD.test(word)).map(canonWord);
+}
+
+function titleWords(title: string): Set<string> {
+  return new Set(withUnits(title).split(/[^a-z0-9]+/).map(canonWord));
+}
+
+function sharesBrand(title: string, words: readonly string[]): boolean {
+  const names = titleWords(title);
+  const brand = [...words].sort((left, right) => right.length - left.length)[0];
+  return brand != null && names.has(brand);
+}
+
+function sharesAny(title: string, words: readonly string[]): boolean {
+  const names = titleWords(title);
+  return words.some((word) => names.has(word));
+}
+
 export function matching(offers: readonly ShopOffer[], query: string): ShopOffer[] {
-  const words = withUnits(query).split(/[^a-z0-9]+/).filter((word) => word.length > 1);
+  const words = withUnits(query).split(/[^a-z0-9]+/).filter((word) => word.length > 1).map(canonWord);
   return offers.filter((offer) => {
     const size = offer.ref?.size ?? normalisedSize(offer.title);
-    const title = new Set(withUnits(`${offer.title} ${size ?? ""}`).split(/[^a-z0-9]+/));
+    const title = new Set(withUnits(`${offer.title} ${size ?? ""}`).split(/[^a-z0-9]+/).map(canonWord));
     const has = (word: string) => title.has(word) || title.has(`${word}s`) || title.has(`${word}es`);
     return words.every((word) => has(word) || (word.endsWith("s") && has(word.slice(0, -1))) || (size == null && SIZE_WORD.test(word)));
   });
