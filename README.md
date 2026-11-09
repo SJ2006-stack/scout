@@ -4,7 +4,7 @@ A personal assistant for India. Ask in Hindi, English, or Hinglish, by typing or
 
 **Live:** [scout.shrianshjaiswal.me](https://scout.shrianshjaiswal.me)
 
-**Source:** this tree is on GitHub branch [`feature/screen-intelligence`](https://github.com/SJ2006-stack/scout/tree/feature/screen-intelligence), pushed Nov 9, 2026. It is not merged to `main`. Azure is `form1-20261109`. The Android app in this commit is 0.9.6.
+**Source:** the Nov 9 work is commit [`1540b66`](https://github.com/SJ2006-stack/scout/commit/1540b66) on branch [`feature/screen-intelligence`](https://github.com/SJ2006-stack/scout/tree/feature/screen-intelligence). It is not merged to `main`. Azure is `form1-20261109`. The Android app in that commit is 0.9.6.
 
 This repository is the server and the web app. The Android companion app (microphone, phone actions, UPI handoff, push) is the Gradle project in `android/`, with its own README. It is not part of the Docker image.
 
