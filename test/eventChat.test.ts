@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { excludedKinds, parseChatIntent } from "../src/shared/chatIntent.ts";
+import { balanceListings, type Listing } from "../src/shared/event.ts";
 import { calendarDate, dateRange, dayRange } from "../src/shared/when.ts";
 import { districtEvents, districtMovies } from "../src/server/events/district.ts";
 import { lumaEvents } from "../src/server/events/luma.ts";
@@ -69,6 +70,29 @@ const lumaBody = JSON.stringify({
     },
   ],
 });
+
+function sample(title: string, kind: Listing["kind"], url: string, start: string | null = null): Listing {
+  return {
+    id: url,
+    sourceId: url,
+    platform: "District",
+    title,
+    kind,
+    posterUrl: null,
+    start,
+    end: null,
+    timezone: "Asia/Kolkata",
+    city: "Delhi",
+    venue: null,
+    lat: null,
+    lon: null,
+    price: { min: null, max: null, currency: "INR", provenance: "unknown" },
+    url,
+    retrievedAt: "2026-11-10T00:00:00.000Z",
+    category: null,
+    driveMinutes: null,
+  };
+}
 
 function eventItem(name: string, url: string, price: string | null, locality = "Bengaluru") {
   return {
@@ -217,6 +241,16 @@ describe("event listings", () => {
     assert.equal(new Date(weekend.endMs).toISOString(), "2026-10-25T18:30:00.000Z");
   });
 
+  it("mixes a general look and keeps a full list for one named kind", () => {
+    const movies = ["Ramayana", "Pyre", "Scene", "Udta Teer"].map((title, index) => sample(title, "movie", `https://www.district.in/movies/${index}`));
+    const comedy = sample("Free Comedy", "comedy", "https://www.district.in/events/free-comedy", "2026-11-20T14:00:00.000Z");
+    const sports = sample("Delhi Cricket", "sports", "https://www.district.in/events/delhi-cricket", "2026-11-21T14:00:00.000Z");
+    const concert = sample("Night Concert", "concert", "https://www.district.in/events/night-concert", "2026-11-14T14:00:00.000Z");
+    const mixed = balanceListings([concert, ...movies], [comedy, sports]);
+    assert.deepEqual(mixed.map((listing) => listing.kind), ["comedy", "sports", "concert", "movie", "movie"]);
+    assert.equal(mixed.some((listing) => listing.title === "Scene"), false);
+  });
+
   it("treats tomorrow as the next calendar day in Asia/Kolkata", () => {
     const now = Date.parse("2026-10-26T18:35:00.000Z");
     const range = dateRange("tomorrow", now, "Asia/Kolkata");
@@ -242,6 +276,10 @@ describe("event listings", () => {
     assert.deepEqual(excludedKinds("Any other thing happening in delhi aside from comedy shows"), ["comedy"]);
     assert.deepEqual(excludedKinds("except the ones already shown"), []);
     assert.equal(parseChatIntent("any other").kind.kind, "keep");
+    assert.equal(parseChatIntent("look for something to do this weekend in delhi").kind.kind, "clear");
+    assert.deepEqual(parseChatIntent("comedy shows in delhi").kind, { kind: "set", value: "comedy" });
+    assert.deepEqual(parseChatIntent("movies in delhi").kind, { kind: "set", value: "movie" });
+    assert.deepEqual(parseChatIntent("cricket in delhi").kind, { kind: "set", value: "sports" });
     const named = dateRange("2026-10-31", thirtyFirst, "Asia/Kolkata");
     assert.equal(calendarDate(named.startMs, "Asia/Kolkata"), "2026-10-31");
     assert.equal(new Date(named.endMs - 1).toISOString() > new Date(named.startMs).toISOString(), true);
@@ -480,6 +518,7 @@ describe("event listings", () => {
     assert.match(instructions, /Asia\/Kolkata/);
     assert.match(instructions, /Do not use week for one day/);
     assert.match(instructions, /Reply in the language of their latest message/);
+    assert.match(instructions, /Latin letters only/);
     const searchTool = bodies[0]?.tools?.[0]?.function;
     assert.match(searchTool?.description ?? "", /YYYY-MM-DD/);
     assert.equal(searchTool?.parameters?.properties?.when?.enum, undefined);

@@ -29,6 +29,7 @@ import { insideNativeApp, nativeSignOut } from "./nativeApp.ts";
 import { BrowserTasks } from "./BrowserTasks.tsx";
 import { EventCard, MoreListings } from "./EventCard.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
+import { VaultPanel } from "./VaultPanel.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { Welcome, type BookingLink } from "./Welcome.tsx";
 import type { Account, Screen, Toast } from "./screen.ts";
@@ -50,6 +51,8 @@ import { bookActionForListing, eventAppFor } from "../shared/listingBook.ts";
 import { PayTray } from "./PayTray.tsx";
 import { EstimateCard } from "./EstimateCard.tsx";
 import { ErrandFormCard } from "./ErrandFormCard.tsx";
+import { ErrandQueueCard } from "./ErrandQueueCard.tsx";
+import { readErrandQueue } from "../shared/errandQueue.ts";
 import { BusCard } from "./BusCard.tsx";
 import { FlightCard } from "./FlightCard.tsx";
 import { PlacesCard } from "./PlacesCard.tsx";
@@ -578,6 +581,16 @@ export function App() {
           }));
           return;
         }
+        if (event.type === "queue") {
+          const queue = readErrandQueue(event.queue);
+          if (!queue) return;
+          patch(conversation.id, (current) => ({
+            ...current,
+            turns: applyQueue(current.turns, queue),
+            updatedAt: Date.now(),
+          }));
+          return;
+        }
         const nextTurns = [...turnsFrom(event), ...deviceTurns(event, conversation.sessionId)];
         const activityLine = activityFrom(event);
         patch(conversation.id, (current) => ({
@@ -747,6 +760,7 @@ export function App() {
         onHome={() => goTo({ kind: "home" })}
         onNewChat={newChat}
         onTasks={() => goTo({ kind: "tasks" })}
+        onVault={() => goTo({ kind: "vault" })}
         onSettings={() => goTo({ kind: "settings" })}
         onOpenChat={openChat}
         onDelete={deleteChat}
@@ -779,6 +793,7 @@ export function App() {
         >
           {screen.kind === "home" ? <Welcome siteAgent={siteAgent} name={account.name} link={link} onPrompt={usePrompt} /> : null}
           {screen.kind === "tasks" ? <BrowserTasks /> : null}
+          {screen.kind === "vault" ? <VaultPanel onToast={showToast} /> : null}
           {screen.kind === "settings" ? (
             <SettingsPanel
               account={account}
@@ -895,6 +910,8 @@ function StageTitle({ screen, conversation, siteAgent }: { screen: Screen; conve
       return <h1>Tasks</h1>;
     case "settings":
       return <h1>Settings</h1>;
+    case "vault":
+      return <h1>Vault</h1>;
     case "chat": {
       if (conversation == null) return <h1>Scout</h1>;
       const label = conversation.title === "New chat" ? agentById(conversation.agent).name : conversation.title;
@@ -1019,6 +1036,8 @@ function TurnView({
       return <EstimateCard estimate={turn.estimate} />;
     case "form":
       return <ErrandFormCard form={turn.form} answered={turn.answered} busy={busy} onSubmit={(values) => onAnswer(turn.form, values)} />;
+    case "queue":
+      return <ErrandQueueCard queue={turn.queue} />;
     case "buses":
       return <BusCard buses={turn.buses} />;
     case "flights":
@@ -1075,6 +1094,22 @@ function applyQuestion(turns: Turn[], message: string): Turn[] {
   return [...kept, { kind: "text", text: message }];
 }
 
+function applyQueue(turns: Turn[], queue: NonNullable<ReturnType<typeof readErrandQueue>>): Turn[] {
+  let start = -1;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    if (turns[index]?.kind === "user") {
+      start = index;
+      break;
+    }
+  }
+  for (let index = turns.length - 1; index > start; index -= 1) {
+    if (turns[index]?.kind === "queue") {
+      return turns.map((item, itemIndex) => (itemIndex === index ? { kind: "queue", queue } : item));
+    }
+  }
+  return [...turns, { kind: "queue", queue }];
+}
+
 function applyDrive(turns: Turn[], url: string, minutes: number): Turn[] {
   if (!Number.isFinite(minutes) || minutes <= 0) return turns;
   return turns.map((turn) => {
@@ -1125,6 +1160,8 @@ function turnsFrom(event: ChatEvent): Turn[] {
       return [{ kind: "estimate", estimate: event.estimate }];
     case "form":
       return [{ kind: "form", form: event.form, answered: false }];
+    case "queue":
+      return [];
     case "buses":
       return [{ kind: "buses", buses: event.buses }];
     case "flights":
@@ -1276,6 +1313,7 @@ function activityFrom(event: ChatEvent): string | null {
     case "quote":
     case "estimate":
     case "form":
+    case "queue":
     case "buses":
     case "flights":
     case "places":

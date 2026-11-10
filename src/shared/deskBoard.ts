@@ -1,4 +1,5 @@
 import { readCartEstimate, type CartEstimate } from "./cartQuote.ts";
+import { readErrandQueue, type ErrandQueue } from "./errandQueue.ts";
 import { readBusResult, readErrandForm, readFlightResult, type BusResult, type ErrandForm, type FlightResult } from "./errands.ts";
 import { isCartSnapshot, isQuoteSnapshot, isReceiptSnapshot, type CartSnapshot, type QuoteSnapshot, type ReceiptSnapshot } from "./commerce.ts";
 import { isPayLink, type PayLink } from "./payLink.ts";
@@ -24,6 +25,7 @@ export type DeskTurn =
   | { kind: "receipt"; receipt: ReceiptSnapshot }
   | { kind: "pay"; pay: PayLink }
   | { kind: "task"; taskId: string; skill: string; title: string }
+  | { kind: "queue"; queue: ErrandQueue }
   | { kind: "phone"; run: PhoneRun }
   | { kind: "card"; listing: Listing }
   | { kind: "more"; listings: Listing[] };
@@ -73,7 +75,7 @@ function isDeskConversation(value: unknown): value is DeskConversation {
 
 function isDeskTurn(value: unknown): value is DeskTurn {
   if (!value || typeof value !== "object") return false;
-  const turn = value as { kind?: unknown; text?: unknown; listing?: unknown; listings?: unknown; cart?: unknown; quote?: unknown; estimate?: unknown; form?: unknown; answered?: unknown; buses?: unknown; receipt?: unknown; pay?: unknown; taskId?: unknown; skill?: unknown; title?: unknown; run?: unknown };
+  const turn = value as { kind?: unknown; text?: unknown; listing?: unknown; listings?: unknown; cart?: unknown; quote?: unknown; estimate?: unknown; form?: unknown; answered?: unknown; buses?: unknown; receipt?: unknown; pay?: unknown; taskId?: unknown; skill?: unknown; title?: unknown; run?: unknown; queue?: unknown };
   switch (turn.kind) {
     case "user":
     case "text":
@@ -105,6 +107,8 @@ function isDeskTurn(value: unknown): value is DeskTurn {
       return isPayLink(turn.pay);
     case "task":
       return typeof turn.taskId === "string" && /^[a-f0-9]{32}$/.test(turn.taskId) && typeof turn.skill === "string" && typeof turn.title === "string";
+    case "queue":
+      return readErrandQueue(turn.queue) !== null;
     case "phone":
       return isPhoneRun(turn.run);
     default:

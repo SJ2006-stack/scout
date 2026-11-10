@@ -15,8 +15,8 @@ android {
         applicationId = "app.scout"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.9.6"
+        versionCode = 21
+        versionName = "0.9.7"
     }
 
     buildTypes {

@@ -121,6 +121,8 @@ class SafetyGuardTest {
         }
         assertEquals(0, screen.clicks)
         assertEquals(0, screen.gestures)
+        runner.confirmOrder("place_order", screen.root()!!)
+        assertEquals(1, screen.clicks)
     }
 }
 

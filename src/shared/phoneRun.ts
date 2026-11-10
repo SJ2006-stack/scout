@@ -115,6 +115,8 @@ export function stopReasonLine(reason: CartStopReason, app: AutomationApp): stri
       return `Turn on Location on your phone. ${name} will not continue without it.`;
     case "user_stopped":
       return "You stopped Scout.";
+    case "payment_pin":
+      return `${name} is asking for a UPI PIN or code. Enter it yourself. Scout does not type that.`;
     default: {
       const neverReason: never = reason;
       return neverReason;

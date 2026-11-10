@@ -1,4 +1,4 @@
-import { ListTodo, Settings, SquarePen, Trash2 } from "lucide-react";
+import { ListTodo, LockKeyhole, Settings, SquarePen, Trash2 } from "lucide-react";
 import { publicScoutUrl, type AgentId } from "../shared/hosts.ts";
 import { AGENTS } from "./agents.ts";
 import type { Conversation } from "./conversations.ts";
@@ -14,6 +14,7 @@ type SidebarProps = {
   onHome: () => void;
   onNewChat: () => void;
   onTasks: () => void;
+  onVault: () => void;
   onSettings: () => void;
   onOpenChat: (conversation: Conversation) => void;
   onDelete: (id: string) => void;
@@ -28,6 +29,7 @@ export function Sidebar({
   onHome,
   onNewChat,
   onTasks,
+  onVault,
   onSettings,
   onOpenChat,
   onDelete,
@@ -43,6 +45,7 @@ export function Sidebar({
         <SquarePen size={16} aria-hidden="true" />
         New chat
       </button>
+      <div className="sidebar-body">
       <p className="nav-label">{siteAgent === "main" ? "Scout assigns" : "Scouts"}</p>
       {AGENTS.filter((agent) => agent.id !== "main").map((agent) => {
         const Icon = agent.icon;
@@ -100,7 +103,17 @@ export function Sidebar({
           </button>
         </div>
       ))}
+      </div>
       <div className="sidebar-foot">
+        <button
+          className={screen.kind === "vault" ? "nav selected" : "nav"}
+          type="button"
+          aria-current={screen.kind === "vault" ? "page" : undefined}
+          onClick={onVault}
+        >
+          <LockKeyhole size={18} aria-hidden="true" />
+          Vault
+        </button>
         <button
           className={screen.kind === "tasks" ? "nav selected" : "nav"}
           type="button"

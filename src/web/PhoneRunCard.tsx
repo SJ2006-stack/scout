@@ -21,7 +21,7 @@ export function PhoneRunCard({ run, estimate = null }: { run: PhoneRun; estimate
 function PhoneRunBody({ run, state, estimate }: { run: PhoneRun; state: PhoneRunState; estimate: CartEstimate | null }) {
   switch (state) {
     case "waiting":
-      return <p className="review-note">Tap Allow on your phone. Scout then works in {appName(run.app)} and stops before payment.{etaLine(run, estimate)}</p>;
+      return <p className="review-note">Tap Allow on your phone. Scout adds the items in {appName(run.app)}. A confirmed order then taps Place Order and stops if a UPI PIN appears. Scout does not type that PIN.{etaLine(run, estimate)}</p>;
     case "added":
       if (run.action === "app_event_book") {
         return (

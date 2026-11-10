@@ -2,7 +2,7 @@ import { cityFromText, type City } from "./cities.ts";
 import type { EventKind } from "./event.ts";
 import { whenInMessage, type WhenWindow } from "./when.ts";
 
-const KIND_WORD = "comedy|comedies|movies?|films?|concerts?|music|theatres?|theaters?|plays?|workshops?";
+const KIND_WORD = "comedy|comedies|movies?|films?|concerts?|music|theatres?|theaters?|plays?|workshops?|sports?";
 
 export type BudgetUpdate = { kind: "set"; amount: number } | { kind: "clear" } | { kind: "keep" };
 
@@ -58,6 +58,7 @@ function kindOfWord(word: string): EventKind | null {
   if (word.startsWith("concert") || word === "music") return "concert";
   if (word.startsWith("theat") || word.startsWith("play")) return "theatre";
   if (word.startsWith("workshop")) return "workshop";
+  if (word.startsWith("sport")) return "sports";
   return null;
 }
 
@@ -67,9 +68,12 @@ function namedKinds(value: string): EventKind[] {
   if (value.includes("concert") || value.includes("music")) kinds.push("concert");
   if (value.includes("theatre") || value.includes("theater") || value.includes("play")) kinds.push("theatre");
   if (value.includes("workshop")) kinds.push("workshop");
+  if (/\b(sports?|cricket|football|soccer|kabaddi|badminton|tennis|hockey|marathon|ipl)\b/.test(value)) kinds.push("sports");
   if (value.includes("movie") || value.includes("film")) kinds.push("movie");
   return kinds;
 }
+
+const OPEN_LOOK = /\b(something to do|things to do|what(?:'s| is) (?:on|happening)|look for something|find something|bored|bore)\b/;
 
 function readKind(value: string): KindUpdate {
   if (/\b(anything|everything|all events|whatever)\b/.test(value)) return { kind: "clear" };
@@ -77,6 +81,6 @@ function readKind(value: string): KindUpdate {
   const wanted = namedKinds(value).filter((kind) => !excluded.has(kind));
   const named = wanted[0];
   if (wanted.length === 1 && named) return { kind: "set", value: named };
-  if (excluded.size > 0) return { kind: "clear" };
+  if (excluded.size > 0 || OPEN_LOOK.test(value)) return { kind: "clear" };
   return { kind: "keep" };
 }

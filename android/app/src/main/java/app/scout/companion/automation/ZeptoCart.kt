@@ -144,7 +144,7 @@ object ZeptoCart {
                 bill = merged(bill, billOf(cart))
                 scrolls += 1
             }
-            return finish(store, drafts, lines, bill, null, null, null, null)
+            return finishOrder(store, drafts, lines, bill, request, runner)
         } catch (failed: StepFailed) {
             return finish(store, drafts, lines, bill, failed.step, failed.reason, null, failed.message)
         }

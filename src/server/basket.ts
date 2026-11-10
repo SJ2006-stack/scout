@@ -6,7 +6,7 @@ import { isLiveShopQuery, type BasketRun, type ShopOffer } from "./browser/shelf
 export type BasketItem = { query: string; quantity: number };
 
 /** What the phone gets for one store: the app_cart_add arguments for every item that store had. */
-export type StoreCart = { items: { ref: ProductRef; quantity: number; maxPrice: number }[]; allowSimilar: false };
+export type StoreCart = { items: { ref: ProductRef; quantity: number; maxPrice: number }[]; allowSimilar: false; placeOrder?: boolean };
 
 export type BasketPlan = {
   label: string;
@@ -16,6 +16,8 @@ export type BasketPlan = {
 };
 
 const SHOPS: readonly ShopApp[] = ["blinkit", "zepto", "instamart"];
+/** The Android app accepts at most this many lines in one cart. */
+const PHONE_CART_ITEMS = 10;
 const PRICE_ROOM = 1.1;
 const PLAN_TTL_MS = 30 * 60 * 1000;
 const PLAN_LIMIT = 200;
@@ -26,7 +28,7 @@ const UNIT = /^(?:kgs?|gms?|grams?|g|ml|l|ltrs?|litres?|liters?)\b/i;
 const NOT_A_PART = /^(?:ok(?:ay)?|yes|yeah|no|sure|cool|great|nice|done|it|that|this|them|please|also)$/i;
 const STORE_WORD = /\b(?:blinkit|zepto|instamart|swiggy)\b/i;
 
-/** Two to six groceries named in one message, such as "Tata Salt 1 kg, Amul butter 100 g, 2 Maggi, bread". */
+/** Two or more groceries named in one message, such as "Tata Salt 1 kg, Amul butter 100 g, 2 Maggi, bread". */
 export function readBasket(text: string): BasketItem[] | null {
   const body = text.trim().replace(ASKING, "").replace(/[.!]+$/, "").replace(/\s+(?:for (?:me|us)|please|pls|asap)$/i, "");
   if (body.length > 240 || body.includes("?") || STORE_WORD.test(body)) return null;
@@ -92,7 +94,7 @@ export function planBasket(items: readonly BasketItem[], run: BasketRun, bills: 
     const chosen = picks[store];
     if (!chosen || chosen.length === 0) continue;
     carts[store] = {
-      items: chosen.flatMap(({ offer, quantity }) => (offer.ref ? [{ ref: offer.ref, quantity, maxPrice: Math.ceil(offer.rupees * PRICE_ROOM) }] : [])),
+      items: chosen.flatMap(({ offer, quantity }) => (offer.ref ? [{ ref: offer.ref, quantity, maxPrice: Math.ceil(offer.rupees * PRICE_ROOM) }] : [])).slice(0, PHONE_CART_ITEMS),
       allowSimilar: false,
     };
   }

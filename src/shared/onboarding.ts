@@ -82,6 +82,7 @@ export const EVENT_INTERESTS: readonly { id: Exclude<EventKind, "other">; label:
   { id: "movie", label: "Movies" },
   { id: "theatre", label: "Theatre" },
   { id: "workshop", label: "Workshops" },
+  { id: "sports", label: "Sports" },
 ];
 
 export const REPLY_LANGUAGES = ["English", "Hinglish", "Hindi"] as const;

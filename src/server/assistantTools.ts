@@ -24,11 +24,13 @@ import {
 import type { AgentId } from "../shared/hosts.ts";
 import type { EventApp, ShopApp } from "../shared/productRef.ts";
 import { isProfileKey, PROFILE_KEYS, profilePrompt, type ProfileStore } from "./profile/profileStore.ts";
+import { VAULT_TEMPLATE } from "../shared/vault.ts";
+import type { VaultStore } from "./vault/vaultStore.ts";
 import { isEventKind, isWatchWhen, type WatchStore } from "./watch/watchStore.ts";
 import { ASK_PROMPT, ASK_TOOL, askUser } from "./questionBack.ts";
 import { GOOGLE_TOOLS, GOOGLE_TOOL_NAMES, googlePrompt, type GoogleAccounts, type GoogleToolName } from "./googleAccount.ts";
 
-export type AssistantToolName = "ask_user" | "remember_preference" | "forget_preference" | "phone_action" | "watch_events" | AppActionName | GoogleToolName;
+export type AssistantToolName = "ask_user" | "remember_preference" | "forget_preference" | "read_vault" | "phone_action" | "watch_events" | AppActionName | GoogleToolName;
 
 export type AssistantContext = {
   userId: string;
@@ -36,6 +38,8 @@ export type AssistantContext = {
   now: () => number;
   timezone: string;
   profile?: ProfileStore;
+  /** Personal markdown the user edits. Scout can read it and cannot write it. */
+  vault?: VaultStore;
   watches?: WatchStore;
   /** What the Scout Android app reported about its Accessibility service and installed store and event apps. */
   phone?: PhoneAutomation;
@@ -46,19 +50,25 @@ export type AssistantContext = {
 
 export type AssistantToolResult = { ok: boolean; content: string };
 
-const ASSISTANT_NAMES: readonly AssistantToolName[] = ["ask_user", "remember_preference", "forget_preference", "phone_action", "watch_events", "app_cart_add", "app_event_book", ...GOOGLE_TOOL_NAMES];
+const ASSISTANT_NAMES: readonly AssistantToolName[] = ["ask_user", "remember_preference", "forget_preference", "read_vault", "phone_action", "watch_events", "app_cart_add", "app_event_book", ...GOOGLE_TOOL_NAMES];
 const PHONE_ACTION_NAMES = DEVICE_ACTION_NAMES.filter((name) => !isAppActionName(name));
 const APP_AGENT: Readonly<Record<AppActionName, AgentId>> = { app_cart_add: "shop", app_event_book: "event" };
 
 const REMEMBER = {
   name: "remember_preference",
-  description: `Save one lasting preference they stated, shared by every Scout specialist. Keys: ${PROFILE_KEYS.join(", ")}. Only save what they clearly said about themselves. Never save codes, PINs, passwords, or card numbers. event_kinds is a comma list of movie, concert, comedy, theatre, workshop. city is bengaluru, mumbai, delhi, or hyderabad. budget_rupees is a whole number.`,
+  description: `Save one lasting preference they stated, shared by every Scout specialist. Keys: ${PROFILE_KEYS.join(", ")}. Only save what they clearly said about themselves. Never save codes, PINs, passwords, or card numbers. event_kinds is a comma list of movie, concert, comedy, theatre, workshop, sports. city is bengaluru, mumbai, delhi, or hyderabad. budget_rupees is a whole number.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
     properties: { key: { type: "string", enum: [...PROFILE_KEYS] }, value: { type: "string" } },
     required: ["key", "value"],
   },
+} as const;
+
+const READ_VAULT = {
+  name: "read_vault",
+  description: "Read the user's Vault, the markdown page of personal details they edit. You can only read it. Use it before filling a form or using a name, address, school, or other personal fact. Do not invent a field that is blank. Never ask them to put a password, PIN, OTP, CVV, or full card number in it.",
+  input_schema: { type: "object", additionalProperties: false, properties: {} },
 } as const;
 
 const FORGET = {
@@ -74,7 +84,7 @@ const FORGET = {
 
 const PHONE = {
   name: "phone_action",
-  description: `Run one action on their Android phone through the Scout app: ${PHONE_ACTION_NAMES.join(", ")}. The phone confirms the result on screen; tell them it was sent to the phone, not that it is done. set_alarm takes hour (0-23), minute, label. set_timer takes seconds, label. create_reminder takes title and at as an ISO time with offset, for example 2026-11-01T18:00:00+05:30. cancel_reminder takes reminderId. open_app takes app, one of ${DEVICE_APPS.join(", ")}. open_maps takes query. share_text takes text. send_whatsapp takes text plus either phone (country code plus number, digits) or name (the chat's exact name). A number opens that chat directly. A name searches WhatsApp and opens the one matching chat. The phone then taps Send. If accessibility is off, a number still opens with the text filled in and Send left for them. toggle_flashlight takes on (true or false). set_volume takes stream (media, ring, alarm) and percent.`,
+  description: `Run one action on their Android phone through the Scout app: ${PHONE_ACTION_NAMES.join(", ")}. The phone confirms the result on screen; tell them it was sent to the phone, not that it is done. set_alarm takes hour (0-23), minute, label. set_timer takes seconds, label. create_reminder takes title and at as an ISO time with offset, for example 2026-11-01T18:00:00+05:30. cancel_reminder takes reminderId. open_app takes app, one of ${DEVICE_APPS.join(", ")}. open_maps takes query. share_text takes text. send_whatsapp takes text plus either phone (country code plus number, digits) or name (the chat's exact name). A number opens that chat directly. A name searches WhatsApp and opens the first chat with that name when several match. The phone then taps Send. If accessibility is off, a number still opens with the text filled in and Send left for them. toggle_flashlight takes on (true or false). set_volume takes stream (media, ring, alarm) and percent.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -100,14 +110,14 @@ const PHONE = {
 
 const WATCH = {
   name: "watch_events",
-  description: "Save a recurring Scout Watch that checks Luma, District, and BookMyShow in the background and notifies their phone about new matches. Use when they say watch, keep an eye on, alert me, or tell me when. city is bengaluru, mumbai, delhi, or hyderabad. when is today, tomorrow, weekend, or week and stays relative. kind is movie, concert, comedy, theatre, workshop, other, or any. budgetRupees is 0 for no limit.",
+  description: "Save a recurring Scout Watch that checks Luma, District, and BookMyShow in the background and notifies their phone about new matches. Use only when they ask to be told later, to watch, to keep an eye on, or to be alerted. Do not use this when they ask to find, look for, or show something now. city is bengaluru, mumbai, delhi, or hyderabad. when is today, tomorrow, weekend, or week and stays relative. kind is movie, concert, comedy, theatre, workshop, sports, other, or any. budgetRupees is 0 for no limit.",
   input_schema: {
     type: "object",
     additionalProperties: false,
     properties: {
       city: { type: "string", enum: ["bengaluru", "mumbai", "delhi", "hyderabad"] },
       when: { type: "string", enum: ["today", "tomorrow", "weekend", "week"] },
-      kind: { type: "string", enum: ["movie", "concert", "comedy", "theatre", "workshop", "other", "any"] },
+      kind: { type: "string", enum: ["movie", "concert", "comedy", "theatre", "workshop", "sports", "other", "any"] },
       budgetRupees: { type: "integer" },
     },
     required: ["city", "when", "kind", "budgetRupees"],
@@ -120,7 +130,7 @@ const TIME = { type: ["number", "string", "null"], description: "Epoch milliseco
 function cartTool(stores: readonly ShopApp[]) {
   return {
     name: "app_cart_add",
-    description: `Add items to the cart in their own ${stores.map(appName).join(", ")} app on their Android phone. Scout's Accessibility service opens the app, checks the price, size, and stock again, sets the quantity, opens the cart, and stops before payment. They tap Allow on the phone first and pay in the app themselves. Pass each product reference exactly as the comparison returned it, including a null Instamart link. The phone searches Instamart by name and size when the link is missing. All items go to one store. maxPrice is their limit per unit in rupees; if they gave none, use the price Scout saw. allowSimilar is false unless they said a similar item is fine.`,
+    description: `Add items to the cart in their own ${stores.map(appName).join(", ")} app on their Android phone. Scout opens the app, checks the price, size, and stock, sets the quantity, and opens the cart. Set placeOrder true only when they have decided to order from that one store. Then Scout taps Place Order and stops if a UPI PIN appears. Leave placeOrder false when they only want the cart filled. They tap Allow on the phone first. Scout never types a PIN, OTP, or card code. Pass each product reference exactly as the comparison returned it, including a null Instamart link. All items go to one store. maxPrice is their limit per unit in rupees. allowSimilar is false unless they said a similar item is fine.`,
     input_schema: {
       type: "object",
       additionalProperties: false,
@@ -154,6 +164,7 @@ function cartTool(stores: readonly ShopApp[]) {
           },
         },
         allowSimilar: { type: "boolean" },
+        placeOrder: { type: "boolean" },
       },
       required: ["items", "allowSimilar"],
     },
@@ -195,6 +206,7 @@ function bookTool(apps: readonly EventApp[]) {
 export function assistantTools(context: AssistantContext): readonly Record<string, unknown>[] {
   const tools: Record<string, unknown>[] = [ASK_TOOL, PHONE];
   if (context.profile) tools.push(REMEMBER, FORGET);
+  if (context.vault) tools.push(READ_VAULT);
   if (context.watches && (context.agent === "event" || context.agent === "main")) tools.push(WATCH);
   const stores = automatableApps(context.phone, SHOP_APPS);
   if (context.agent === "shop" && stores.length > 0) tools.push(cartTool(stores));
@@ -210,11 +222,25 @@ export function isAssistantTool(value: unknown): value is AssistantToolName {
 
 export function assistantPrompt(context: AssistantContext): string {
   const profile = context.profile ? profilePrompt(context.profile.list(context.userId)) : "";
+  const vault = vaultPrompt(context);
   const phone = "When they ask for something on their phone (alarm, timer, reminder, flashlight, volume, open an app or maps, share), call phone_action. The Scout Android app runs it and shows the verified result.";
   const watch = context.watches && (context.agent === "event" || context.agent === "main")
-    ? "When they want to be told later about new events, call watch_events. It keeps running after this chat."
+    ? "Call watch_events only when they ask to be told later. A request to find or look for something is searched in this chat, not saved as a watch."
     : "";
-  return [profile, ASK_PROMPT, phone, watch, googlePrompt(context.google != null), appPrompt(context)].filter((line) => line.length > 0).join(" ");
+  return [profile, vault, ASK_PROMPT, phone, watch, googlePrompt(context.google != null), appPrompt(context)].filter((line) => line.length > 0).join(" ");
+}
+
+/** The Vault text in the system prompt. A saved page wins. Otherwise Scout gets the default page. */
+function vaultPrompt(context: AssistantContext): string {
+  if (!context.vault) return "";
+  return [
+    "The Vault is below, in this system prompt. Use it for their name, phone, email, address, school, groceries, and other personal facts. You cannot change the Vault.",
+    vaultPage(context),
+  ].join("\n");
+}
+
+function vaultPage(context: AssistantContext): string {
+  return context.vault?.read(context.userId)?.markdown ?? VAULT_TEMPLATE;
 }
 
 function appPrompt(context: AssistantContext): string {
@@ -222,7 +248,7 @@ function appPrompt(context: AssistantContext): string {
     const stores = automatableApps(context.phone, SHOP_APPS);
     const missing = SHOP_APPS.filter((store) => !stores.includes(store)).map(appName);
     const ready = stores.length > 0
-      ? `For ${stores.map(appName).join(", ")}, when they ask to add or buy compared items, call app_cart_add instead of buy_from_shop. Their phone fills the cart in the real app and stops before payment; tell them to tap Allow on the phone, not that it is added.`
+      ? `For ${stores.map(appName).join(", ")}, when they ask to add or buy compared items, call app_cart_add instead of buy_from_shop. placeOrder is false when they only want the cart. placeOrder is true when they have decided to order from that store: the phone then taps Place Order and stops if a UPI PIN appears. Tell them to tap Allow on the phone, not that it is added or paid.`
       : "";
     const handoff = missing.length > 0
       ? `Scout cannot drive the ${missing.join(", ")} app on this phone (the Scout app's Accessibility service is off or the store app is missing). For those, offer the product link so they open it in the app themselves, or buy_from_shop if they want Scout's browser to build the cart.`
@@ -255,6 +281,10 @@ export async function runAssistantTool(
       if (!saved.ok) return { ok: false, content: saved.error };
       emit({ type: "note", message: `Remembered ${args.key.replace(/_/g, " ")}: ${saved.entry.value}` });
       return { ok: true, content: `Saved ${args.key}=${saved.entry.value} for every Scout specialist.` };
+    }
+    case "read_vault": {
+      if (!context.vault) return { ok: false, content: "The Vault is not available." };
+      return { ok: true, content: vaultPage(context) };
     }
     case "forget_preference": {
       if (!context.profile) return { ok: false, content: "Memory is not available." };
@@ -293,7 +323,7 @@ export async function runAssistantTool(
       emit({ type: "device", action: device });
       return {
         ok: true,
-        content: `Sent to the phone for approval: ${device.summary}. They tap Allow, then Scout works in ${appName(app)} and stops before payment. The phone reports what it added or where it stopped on a card. Do not say it is done.`,
+        content: `Sent to the phone for approval: ${device.summary}. They tap Allow, then Scout works in ${appName(app)}. A confirmed order taps Place Order and stops if a UPI PIN appears. Scout does not type that PIN. The phone reports the result on a card. Do not say it is done.`,
       };
     }
     case "connect_google":

@@ -15,7 +15,7 @@ data class CartItemRequest(
     val maxPrice: Double,
 )
 
-data class CartRequest(val items: List<CartItemRequest>, val allowSimilar: Boolean)
+data class CartRequest(val items: List<CartItemRequest>, val allowSimilar: Boolean, val placeOrder: Boolean = false)
 
 data class Draft(val name: String, val size: String?, val quantity: Int, val unitPrice: Double?)
 
@@ -70,6 +70,7 @@ val CART_REASONS = setOf(
     "captcha",
     "location_off",
     "user_stopped",
+    "payment_pin",
 )
 
 fun publicReason(reason: String?): String? = reason?.takeIf { it in CART_REASONS }
@@ -97,7 +98,28 @@ fun readCartRequest(args: JSONObject): CartRequest? {
         items += CartItemRequest(store, productId, link, name, size, price, quantity, maxPrice)
     }
     if (items.map { it.store }.distinct().size != 1) return null
-    return CartRequest(items, args.optBoolean("allowSimilar"))
+    return CartRequest(items, args.optBoolean("allowSimilar"), args.optBoolean("placeOrder", false))
+}
+
+/** Places the order only when this run was a confirmed order. Otherwise the cart is the stop. */
+fun finishOrder(
+    store: String,
+    drafts: List<Draft>,
+    lines: List<ReadLine>,
+    bill: CartBillResult?,
+    request: CartRequest,
+    runner: StepRunner,
+): AppCartResult {
+    if (!request.placeOrder) return finish(store, drafts, lines, bill, null, null, null, null)
+    return try {
+        when (val outcome = submitOrder(runner)) {
+            null -> finish(store, drafts, lines, bill, "ordered", null, null, null)
+            "payment_pin" -> finish(store, drafts, lines, bill, "place_order", "payment_pin", null, null)
+            else -> finish(store, drafts, lines, bill, "place_order", outcome, null, "The items are in the cart. The order button was not on screen.")
+        }
+    } catch (failed: StepFailed) {
+        finish(store, drafts, lines, bill, failed.step, failed.reason, null, failed.message)
+    }
 }
 
 fun finish(
@@ -127,7 +149,7 @@ fun cartStatus(result: AppCartResult): String = when (result.reason) {
     null -> if (result.added.isNotEmpty()) "completed" else "failed"
     "price_above_limit", "out_of_stock", "size_mismatch", "not_signed_in", "no_address" -> "needs_approval"
     "service_off", "location_off" -> "needs_permission"
-    "user_stopped" -> "handoff_started"
+    "user_stopped", "payment_pin" -> "handoff_started"
     else -> "failed"
 }
 
@@ -140,7 +162,11 @@ private fun addedMessage(store: String, result: AppCartResult): String {
 fun cartMessage(result: AppCartResult): String {
     val store = storeLabel(result.store)
     return when (result.reason) {
-        null -> if (result.added.isNotEmpty()) addedMessage(store, result) else result.detail ?: "Scout stopped at ${result.stoppedAt ?: "the cart"}."
+        null -> when {
+            result.stoppedAt == "ordered" && result.added.isNotEmpty() -> "Placed the order on $store.${result.cart?.grandTotal?.let { " Cart total ${money(it)}." } ?: ""} Scout does not enter a UPI PIN."
+            result.added.isNotEmpty() -> addedMessage(store, result)
+            else -> result.detail ?: "Scout stopped at ${result.stoppedAt ?: "the cart"}."
+        }
         "price_above_limit" -> {
             val name = result.seen?.name ?: "That item"
             val price = result.seen?.price?.let { money(it) }
@@ -157,6 +183,7 @@ fun cartMessage(result: AppCartResult): String {
         "captcha" -> "$store is showing a captcha."
         "location_off" -> "Turn on Location on your phone. $store will not continue without it."
         "user_stopped" -> "You stopped Scout on $store."
+        "payment_pin" -> "The order is waiting on a UPI PIN or code on $store. Enter that yourself. Scout does not type it."
         "no_match" -> if (result.seen != null) "No match on $store. Saw ${result.seen.name}." else "No match on $store."
         else -> result.detail ?: "Scout could not finish the $store cart."
     }

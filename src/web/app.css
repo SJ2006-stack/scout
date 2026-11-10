@@ -175,6 +175,12 @@ h1, h2, h3, p, dl, dd { margin: 0; }
   background: var(--chrome);
   min-height: 0;
   height: 100%;
+  overflow: hidden;
+}
+
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -307,8 +313,39 @@ h1, h2, h3, p, dl, dd { margin: 0; }
 .recent-row:hover .recent-delete,
 .recent-delete:focus-visible { opacity: 1; }
 
+.vault {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+  padding: 4px 2px 12px;
+}
+
+.vault-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.vault-editor {
+  flex: 1;
+  min-height: 280px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--fill);
+  color: var(--ink);
+  font: 0.88rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  resize: none;
+}
+
+.vault-save { align-self: flex-start; min-width: 120px; }
+
 .sidebar-foot {
-  margin-top: auto;
+  margin-top: 0;
   padding-top: 10px;
   border-top: 1px solid var(--line);
   display: grid;
@@ -913,6 +950,61 @@ textarea:focus { outline: none; }
 }
 
 /* ───────── Thinking trace ───────── */
+
+.queue {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 12px;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.queue h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.queue ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.queue-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+
+.queue-label {
+  min-width: 0;
+  color: var(--ink);
+  line-height: 1.35;
+}
+
+.queue-row.waiting .queue-label,
+.queue-row.done .queue-label,
+.queue-row.failed .queue-label { color: var(--muted); }
+
+.queue-row.running .queue-label { font-weight: 600; }
+
+.queue-state {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.queue-row.running .queue-state { color: var(--accent-strong, var(--ink)); }
 
 .thinking { margin: 2px 0 10px; }
 

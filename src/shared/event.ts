@@ -2,7 +2,7 @@ import { isSingleDay, type DateRange } from "./when.ts";
 
 export type Platform = "Luma" | "District" | "BookMyShow";
 
-export type EventKind = "movie" | "concert" | "comedy" | "theatre" | "workshop" | "other";
+export type EventKind = "movie" | "concert" | "comedy" | "theatre" | "workshop" | "sports" | "other";
 
 export type PriceProvenance = "free" | "advertised" | "unknown";
 
@@ -100,7 +100,7 @@ export function matchesCardFilter(kind: EventKind, filter: CardFilter): boolean 
     case "movie":
       return kind === "movie";
     case "other":
-      return kind === "theatre" || kind === "other";
+      return kind === "theatre" || kind === "sports" || kind === "other";
     default: {
       const neverFilter: never = filter;
       return neverFilter;
@@ -121,12 +121,43 @@ export function httpsUrl(value: unknown): string | null {
 
 export function kindFromText(text: string): EventKind {
   const value = text.toLowerCase();
-  if (value.includes("comedy")) return "comedy";
+  if (value.includes("comedy") || value.includes("stand-up") || value.includes("standup") || value.includes("open mic")) return "comedy";
+  if (/\b(sports?|cricket|football|soccer|kabaddi|badminton|tennis|hockey|marathon|tournament|ipl)\b/.test(value)) return "sports";
   if (value.includes("concert") || value.includes("music")) return "concert";
   if (value.includes("theatre") || value.includes("theater") || value.includes("play")) return "theatre";
   if (value.includes("workshop")) return "workshop";
   if (value.includes("movie") || value.includes("film")) return "movie";
   return "other";
+}
+
+const MIX_ORDER: readonly EventKind[] = ["comedy", "sports", "concert", "theatre", "workshop", "other", "movie"];
+const MIX_PER_KIND = 2;
+const MIX_LIMIT = 8;
+
+/**
+ * A general "something to do" list. Two of each kind, in-window first.
+ * A kind with nothing in the window still contributes its next listings,
+ * so a weekend of undated movies does not hide comedy, sports, and shows.
+ */
+export function balanceListings(inWindow: readonly Listing[], later: readonly Listing[]): Listing[] {
+  const seen = new Set<string>();
+  const buckets = MIX_ORDER.map((kind) => {
+    const inside = inWindow.filter((listing) => listing.kind === kind && !seen.has(listing.url));
+    const source = inside.length > 0 ? inside : later.filter((listing) => listing.kind === kind && !seen.has(listing.url));
+    const picked = source.slice(0, MIX_PER_KIND);
+    for (const listing of picked) seen.add(listing.url);
+    return picked;
+  }).filter((bucket) => bucket.length > 0);
+  if (buckets.length === 1) return buckets[0]?.slice(0, 4) ?? [];
+  const mixed: Listing[] = [];
+  const depth = Math.max(0, ...buckets.map((bucket) => bucket.length));
+  for (let index = 0; index < depth && mixed.length < MIX_LIMIT; index += 1) {
+    for (const bucket of buckets) {
+      const listing = bucket[index];
+      if (listing && mixed.length < MIX_LIMIT) mixed.push(listing);
+    }
+  }
+  return mixed;
 }
 
 export function withinBudget(listing: Listing, budget: number | null): boolean {

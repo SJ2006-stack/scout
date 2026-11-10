@@ -144,7 +144,7 @@ object InstamartCart {
             if (needsAddress(cart)) {
                 return finish(store, drafts, lines, bill, "cart", "no_address", null, null)
             }
-            return finish(store, drafts, lines, bill, null, null, null, null)
+            return finishOrder(store, drafts, lines, bill, request, runner)
         } catch (failed: StepFailed) {
             if (failed.step == "results") {
                 val seen = screen.root()

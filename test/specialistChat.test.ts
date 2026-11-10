@@ -156,7 +156,9 @@ describe("specialist chat", () => {
     assert.equal(device?.type, "device");
     if (device?.type !== "device") return;
     assert.equal(device.action.name, "app_cart_add");
-    const items = (device.action.args as { items: { ref: { store: string; name: string }; quantity: number }[] }).items;
+    const args = device.action.args as { placeOrder?: boolean; items: { ref: { store: string; name: string }; quantity: number }[] };
+    assert.equal(args.placeOrder, true);
+    const items = args.items;
     assert.deepEqual(items.map((item) => [item.ref.store, item.ref.name, item.quantity]), [["zepto", "Tata Salt", 2], ["zepto", "Amul Butter", 1]]);
   });
 

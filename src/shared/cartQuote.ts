@@ -100,7 +100,7 @@ export function phoneMs(store: ShopApp, bills: readonly StoreBill[]): number {
 /** Each extra basket item is one more search and add on the phone. Not yet measured; a guess from single runs. */
 export const EXTRA_ITEM_MS = 6_000;
 
-export const BASKET_LIMIT = 6;
+export const BASKET_LIMIT = 12;
 
 /** Ranks the stores by estimated total for one unit of the items each one would sell, cheapest first. */
 export function quoteCarts(itemsByStore: Partial<Record<ShopApp, number>>, bills: readonly StoreBill[]): CartQuote {

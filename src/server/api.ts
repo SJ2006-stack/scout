@@ -50,6 +50,8 @@ import { isAssistantRoute, routeAssistant } from "./assistantRoutes.ts";
 import type { InboxStore } from "./notify/inbox.ts";
 import type { CartBillStore } from "./cartBills.ts";
 import { isProfileKey, type ProfileStore } from "./profile/profileStore.ts";
+import { VaultStore } from "./vault/vaultStore.ts";
+import { VAULT_LIMIT, VAULT_TEMPLATE } from "../shared/vault.ts";
 import type { WatchRunner } from "./watch/watchRunner.ts";
 import type { WatchStore } from "./watch/watchStore.ts";
 import type { ChatTurn } from "./chatRun.ts";
@@ -85,6 +87,7 @@ export type ApiDeps = {
   sarvamApiKey?: string;
   gnaniApiKey?: string;
   profile?: ProfileStore;
+  vault?: VaultStore;
   watches?: WatchStore;
   watchRunner?: WatchRunner;
   inbox?: InboxStore;
@@ -164,6 +167,10 @@ async function routeApi(request: IncomingMessage, response: ServerResponse, deps
       return;
     }
     sendJson(response, 200, deps.relay ? deps.relay.status(account.id) : { connected: false, since: null, bytes: 0, streams: 0 });
+    return;
+  }
+  if (url.pathname === "/api/vault") {
+    await routeVault(request, response, deps);
     return;
   }
   if (url.pathname === "/api/account/phone") {
@@ -326,6 +333,7 @@ function chatTurn(deps: ApiDeps, owner: string, given: TurnInput, signal: AbortS
     agent: input.agent,
     commerce: deps.commerce,
     ...(deps.profile ? { profile: deps.profile } : {}),
+    ...(deps.vault ? { vault: deps.vault } : {}),
     ...(deps.watches ? { watches: deps.watches } : {}),
     ...(input.phone ? { phone: input.phone } : {}),
     ...(input.answers ? { answers: input.answers } : {}),
@@ -449,6 +457,40 @@ function cartPreparer(
     const view = runner.view(owner, started.task.id);
     return view ? { ok: true, task: view } : { ok: false, error: "Scout lost track of the cart." };
   };
+}
+
+async function routeVault(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
+  const account = deps.auth?.account(currentSessionId(request));
+  if (!account || !deps.vault) {
+    sendJson(response, account ? 404 : 401, { error: account ? "The Vault is not available." : SIGN_IN_FIRST });
+    return;
+  }
+  if (request.method === "GET") {
+    const page = deps.vault.read(account.id);
+    sendJson(response, 200, { markdown: page?.markdown ?? VAULT_TEMPLATE, updatedAt: page?.updatedAt ?? null });
+    return;
+  }
+  if (request.method !== "PUT") {
+    sendJson(response, 405, { error: "Use GET or PUT." });
+    return;
+  }
+  const body = await readJson(request, "Send the Vault as markdown.", VAULT_LIMIT + 2_000);
+  if (!body.ok) {
+    sendJson(response, 400, { error: body.error });
+    return;
+  }
+  const record = body.value && typeof body.value === "object" ? body.value as { markdown?: unknown } : null;
+  const markdown = typeof record?.markdown === "string" ? record.markdown : null;
+  if (markdown == null) {
+    sendJson(response, 400, { error: "Send the Vault as markdown." });
+    return;
+  }
+  const saved = deps.vault.write(account.id, markdown, deps.now());
+  if (!saved.ok) {
+    sendJson(response, 400, { error: saved.error });
+    return;
+  }
+  sendJson(response, 200, { markdown: saved.page.markdown.length > 0 ? saved.page.markdown : VAULT_TEMPLATE, updatedAt: saved.page.markdown.length > 0 ? saved.page.updatedAt : null });
 }
 
 async function routePhone(request: IncomingMessage, response: ServerResponse, deps: ApiDeps): Promise<void> {
@@ -823,13 +865,14 @@ async function readBytes(
 async function readJson(
   request: IncomingMessage,
   emptyError = "Send a grocery request and a confirmed area.",
+  maxBytes = 20_000,
 ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > 20_000) return { ok: false, error: "Request is too large." };
+    if (size > maxBytes) return { ok: false, error: "Request is too large." };
     chunks.push(buffer);
   }
   const text = Buffer.concat(chunks).toString("utf8");

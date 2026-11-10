@@ -1,7 +1,7 @@
 import { cityById, cityFromPincode } from "../shared/cities.ts";
 import type { ChatEvent } from "../shared/chatEvents.ts";
 import { excludedKinds, parseChatIntent } from "../shared/chatIntent.ts";
-import { dedupeListings, listingInWindow, sortListings, upcomingListings, withinBudget, type Listing } from "../shared/event.ts";
+import { balanceListings, dedupeListings, listingInWindow, sortListings, upcomingListings, withinBudget, type EventKind, type Listing } from "../shared/event.ts";
 import { dateRange, isTimeZone, windowLabel, type WhenWindow } from "../shared/when.ts";
 import type { AgentId } from "../shared/hosts.ts";
 import type { PhoneAutomation } from "../shared/deviceActions.ts";
@@ -20,6 +20,7 @@ import { confirmShelfGuess, converseSpecialist, fallbackSpecialist, type Special
 import { eventTools } from "./tools/index.ts";
 import { driveMinutes } from "./travel.ts";
 import type { ProfileStore } from "./profile/profileStore.ts";
+import type { VaultStore } from "./vault/vaultStore.ts";
 import type { WatchStore } from "./watch/watchStore.ts";
 import { withEmoji } from "../shared/emoji.ts";
 import type { BusResult, ErrandAnswers, FlightResult } from "../shared/errands.ts";
@@ -67,6 +68,7 @@ export type ChatTurn = {
     onStatus: (message: string) => void,
   ) => Promise<{ ok: true; task: ScoutTaskView } | { ok: false; error: string }>;
   profile?: ProfileStore;
+  vault?: VaultStore;
   watches?: WatchStore;
   /** What the Scout Android app reports it can automate; absent outside the app. */
   phone?: PhoneAutomation;
@@ -208,8 +210,10 @@ export async function listEvents(turn: ChatTurn, emit: (event: ChatEvent) => voi
     }
   }
   const ranked = dedupeListings(sortListings(collected));
+  const later = dedupeListings(sortListings(outside));
   const askAgain = asksForOtherResults(turn.text);
-  const picked = listingsToShow(ranked, previous.found, askAgain);
+  const focused = next.kind == null ? (ranked.length > 0 ? balanceListings(ranked, later) : []) : kindListings(ranked, later, next.kind);
+  const picked = listingsToShow(focused, previous.found, askAgain);
   const shown = picked.shown.slice(0, CARD_LIMIT);
   const when = windowLabel(next.date);
   if (picked.repeated) {
@@ -239,7 +243,16 @@ export async function listEvents(turn: ChatTurn, emit: (event: ChatEvent) => voi
   }
   emit({ type: "status", message: `${shown.length} listing${shown.length === 1 ? "" : "s"} in ${city.name}.` });
   const names = shown.slice(0, 3).map((listing) => listing.title).join(", ");
-  return { message: `${shown.length} in ${city.name} for ${when}: ${names}.`, count: shown.length, drives };
+  if (next.kind == null) {
+    return { message: `A mix in ${city.name}: ${names}. Ask for comedy, movies, sports, or another kind to see all of those.`, count: shown.length, drives };
+  }
+  return { message: `${shown.length} ${next.kind} in ${city.name} for ${when}: ${names}.`, count: shown.length, drives };
+}
+
+/** A named kind lists every match of that kind, in the window first and then the rest that were found. */
+function kindListings(inWindow: readonly Listing[], later: readonly Listing[], kind: EventKind): Listing[] {
+  const seen = new Set(inWindow.map((listing) => listing.url));
+  return [...inWindow, ...later.filter((listing) => listing.kind === kind && !seen.has(listing.url))];
 }
 
 function statusLine(city: string, date: WhenWindow, budget: number | null): string {

@@ -29,7 +29,7 @@
     <string name="automation_whatsapp">Sending on WhatsApp. Scout comes back when it is sent. Tap to stop.</string>
     <string name="automation_form">Filling this screen. Take control to type yourself, or Stop to end it.</string>
     <string name="automation_event">Working in the event app. Scout comes back before payment. Tap to stop.</string>
-    <string name="automation_service_description">Scout works in an app you approved. Take control sits on top of that app. Scout does not place orders or pay.</string>
+    <string name="automation_service_description">Scout works in an app you approved. Take control sits on top of that app. Scout places a grocery order only after you confirm it, and it never types a UPI PIN or card code.</string>
     <string name="perm_enable">Enable</string>
     <string name="perm_change">Change</string>
     <string name="perm_allowed">Allowed</string>

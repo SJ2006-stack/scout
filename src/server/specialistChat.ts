@@ -71,7 +71,7 @@ const SHOP_TOOLS: readonly ToolSpec[] = [
   },
   {
     name: "order_basket",
-    description: "Fill the basket from the last compare_basket in one store's app on their phone, all items in one run. store is best unless they named a store. They tap Allow on the phone; Scout stops before payment.",
+    description: "Fill the basket from the last compare_basket in one store's app on their phone, all items in one run. store is best unless they named a store. When they said buy, order, place, or get it, the phone also taps Place Order and stops if a UPI PIN appears. When they only said add, it stops on the cart. They tap Allow on the phone. Scout does not type a PIN.",
     input_schema: {
       type: "object",
       additionalProperties: false,
@@ -422,7 +422,8 @@ async function orderBasket(turn: ChatTurn, input: unknown, emit: (event: ChatEve
   const cart = store ? plan.carts[store] : undefined;
   if (!store || !cart || cart.items.length === 0) return { ok: false, content: `${store ? storeName(store) : "No store"} had none of these items. Offer another store.` };
   const estimate = plan.quote.estimates.find((row) => row.store === store);
-  const sent = await runAssistantTool(assistantContext(turn), "app_cart_add", cart, emit);
+  const placeOrder = /\b(?:buy|order|place|checkout|get)\b/i.test(turn.text);
+  const sent = await runAssistantTool(assistantContext(turn), "app_cart_add", { ...cart, placeOrder }, emit);
   if (!sent.ok) return sent;
   baskets.forget(turn.sessionId);
   const missing = estimate && estimate.missing.length > 0 ? ` ${storeName(store)} does not have ${estimate.missing.join(", ")}, so those are left out.` : "";
@@ -543,9 +544,9 @@ function instructions(agent: SpecialistAgent): string {
         "If they have not named an item, answer them and wait. A greeting, who you are, or what you can do is not an item. Do not call a tool for it. Use the earlier messages in this chat.",
         "When they name two or more items in one message, call compare_basket once with all of them and their quantities, then tell them the best store, its estimated total, any missing item, and the phone time. When they then ask to order or buy the basket, call order_basket with store best, or the store they name; it fills every item in one phone run.",
         "When they name one item to find or compare, call compare_shops with the item words only. Tell them the summary the tool returns. Do not invent a price. Blinkit, Zepto, and Instamart are the shops compared.",
-        "When they only say to order, buy, or get it from Blinkit, Zepto, or Instamart, call order_basket for that store. Do not search the words of that sentence. The phone opens the store and fills the cart, then stops before payment.",
+        "When they only say to order, buy, or get it from Blinkit, Zepto, or Instamart, call order_basket for that store. Do not search the words of that sentence. The phone opens the store and fills the cart. Buy, order, place, or get taps Place Order and stops if a UPI PIN appears. Add only fills the cart. Scout does not type that PIN.",
         "compare_shops also returns estimates: each store's total with its delivery and handling fees, for one unit, and phoneSeconds, how long the phone takes to fill that cart. best is the store with the lowest estimated total. A rough basis means the fees are Scout's starting guess, not yet learned from their own bills; say about.",
-        "When they ask to buy or order, and app_cart_add is available, call app_cart_add once, for the best store's cheapest offer unless they name a store: its ref, the quantity, and a maxPrice at or above the price Scout saw. Only that one cart is filled. Tell them the estimated total and that the phone takes about phoneSeconds after they tap Allow. A null Instamart link is still that offer. Call buy_from_shop only when app_cart_add is not available, once, for the best store or the store they name.",
+        "When they ask to buy or order, and app_cart_add is available, call app_cart_add once with placeOrder true, for the best store's cheapest offer unless they name a store: its ref, the quantity, and a maxPrice at or above the price Scout saw. The phone fills that cart and taps Place Order, then stops if a UPI PIN appears. Tell them the estimated total and that the phone takes about phoneSeconds after they tap Allow. A null Instamart link is still that offer. Call buy_from_shop only when app_cart_add is not available, once, for the best store or the store they name.",
         "Never claim an order is placed. Scout stops at the cart for their approval, then hands payment to their UPI app.",
         "Use shop_catalog only when they ask for the simulated practice cart.",
         "A pay link from compare_shops is already on the screen. Tell them they can open it in their UPI app. Never ask for a UPI PIN.",

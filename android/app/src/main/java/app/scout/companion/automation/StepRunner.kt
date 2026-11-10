@@ -79,6 +79,19 @@ class StepRunner(
         }
     }
 
+    /** Taps a confirmed order button. A normal click still refuses Place Order and Pay. */
+    fun confirmOrder(step: String, node: NodeSnapshot) {
+        yield(step)
+        val label = "${node.text} ${node.desc}"
+        if (Regex("(?i)(upi\\s*pin|\\bcvv\\b|\\botp\\b|passcode|password)").containsMatchIn(label)) {
+            throw StepFailed(step, "payment_pin", "Scout will not type a payment code")
+        }
+        screen.abortedReason()?.let { throw StepFailed(step, it, "Stopped during $step") }
+        if (screen.click(node)) return
+        if (screen.gestureClick(node)) return
+        throw StepFailed(step, "screen_changed", "Could not tap $step")
+    }
+
     fun click(step: String, node: NodeSnapshot) {
         yield(step)
         val blocked = SafetyGuard.refusal(node)

@@ -1,7 +1,7 @@
 const STT_URL = "https://api.vachana.ai/stt/v3";
 const STT_MODEL = "prisma-v3.0";
-// codemix keeps English words in Latin letters inside a Hindi sentence.
-const STT_FORMAT = "codemix";
+// transliterate writes the whole clip in Latin letters, including Hindi words.
+const STT_FORMAT = "transliterate";
 const STT_LANGUAGE = "indic-auto";
 
 export type VoiceDeps = {

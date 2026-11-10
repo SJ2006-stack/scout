@@ -13,7 +13,7 @@ import type { HistoryLine } from "../shared/chatHistory.ts";
 const PLANNER_TIMEOUT_MS = 25_000;
 const ERRAND_LIMIT = 6;
 const QUESTION_LIMIT = 8;
-const EVENT_KINDS = ["movie", "concert", "comedy", "theatre", "workshop"] as const;
+const EVENT_KINDS = ["movie", "concert", "comedy", "theatre", "workshop", "sports"] as const;
 const TIMES: readonly TimeOfDay[] = ["any", "morning", "afternoon", "evening", "night"];
 const WHENS: readonly WatchWhen[] = ["today", "tomorrow", "weekend", "week"];
 

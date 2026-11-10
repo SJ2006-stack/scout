@@ -71,6 +71,7 @@ function lineFrom(turn: DeskTurn): HistoryLine | null {
     case "receipt":
     case "pay":
     case "task":
+    case "queue":
     case "more":
       return null;
     default: {

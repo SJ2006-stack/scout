@@ -24,7 +24,7 @@ describe("sarvam voice", () => {
       const headers = new Headers(init?.headers);
       assert.equal(headers.get("X-API-Key-ID"), "gnani-key");
       const form = init?.body as FormData;
-      assert.equal(form.get("format"), "codemix");
+      assert.equal(form.get("format"), "transliterate");
       assert.equal(form.get("model"), "prisma-v3.0");
       assert.equal(form.get("language_code"), "indic-auto");
       const file = form.get("audio_file");

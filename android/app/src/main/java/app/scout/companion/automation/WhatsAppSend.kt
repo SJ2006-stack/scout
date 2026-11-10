@@ -5,7 +5,7 @@ import java.net.URLEncoder
 /**
  * Sends one WhatsApp message on the phone. A number uses the wa.me link, which opens
  * that chat with the text already filled in. A name uses WhatsApp's own search and
- * only continues when exactly one chat has that name. Either way the last step is the
+ * opens the first chat with that name when several match. Either way the last step is the
  * Send button (id send). The microphone that sits in the same spot when the box is
  * empty is never tapped.
  *
@@ -24,9 +24,9 @@ internal object WhatsAppSend {
     }
 
     fun namedRow(root: NodeSnapshot, name: String): NodeSnapshot? {
-        val hits = root.walk().filter { it.id == "conversations_row_contact_name" && it.text.equals(name, ignoreCase = true) }.toList()
-        if (hits.size != 1) return null
-        return hits[0].clickableAncestor()
+        return root.walk()
+            .firstOrNull { it.id == "conversations_row_contact_name" && it.text.equals(name, ignoreCase = true) }
+            ?.clickableAncestor()
     }
 
     /** The chat-list search, including the hint this WhatsApp build puts in the field's text. */
@@ -63,9 +63,7 @@ internal object WhatsAppSend {
         runner.click("search", opener)
         typeQuery(screen, runner, name)
         val results = runner.waitUntil("results", "no_match", 6_000) { root ->
-            val count = root.walk().count { it.id == "conversations_row_contact_name" && it.text.equals(name, ignoreCase = true) }
-            if (count > 1) throw StepFailed("results", "ambiguous", "More than one chat is named $name.")
-            count == 1
+            root.walk().any { it.id == "conversations_row_contact_name" && it.text.equals(name, ignoreCase = true) }
         }
         val row = namedRow(results, name) ?: throw StepFailed("results", "no_match", "No chat is named $name.")
         runner.click("chat", row)

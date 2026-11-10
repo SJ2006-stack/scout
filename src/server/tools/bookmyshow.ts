@@ -61,6 +61,7 @@ function wantsEvents(kind: EventKind | null): boolean {
     case "concert":
     case "theatre":
     case "workshop":
+    case "sports":
     case "other":
       return true;
     default: {

@@ -54,6 +54,10 @@ describe("app action validation", () => {
     }, NOW);
     if (!cart.ok) throw new Error(cart.error);
     if (cart.command.name !== "app_cart_add") throw new Error(cart.command.name);
+    assert.equal(cart.command.args.placeOrder, false);
+    const ordering = readDeviceCommand("app_cart_add", { items: [item("blinkit", "https://blinkit.com/prn/amul-butter/prid/1")], allowSimilar: false, placeOrder: true }, NOW);
+    if (!ordering.ok || ordering.command.name !== "app_cart_add") throw new Error("order");
+    assert.equal(ordering.command.args.placeOrder, true);
     assert.equal(cart.command.args.items[0]?.ref.link, "https://blinkit.com/prn/amul-butter/prid/1");
     assert.equal(cart.command.args.items[1]?.ref.link, null);
     assert.equal(cart.command.args.items[0]?.ref.price, 285);

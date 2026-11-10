@@ -29,7 +29,7 @@ const INPUT_SCHEMA = {
   properties: {
     city: { type: "string", enum: ["bengaluru", "mumbai", "delhi", "hyderabad"] },
     when: { type: "string", description: "today, tomorrow, weekend, week, or a calendar day YYYY-MM-DD" },
-    kind: { type: "string", enum: ["movie", "concert", "comedy", "theatre", "workshop", "other", "any"] },
+    kind: { type: "string", enum: ["movie", "concert", "comedy", "theatre", "workshop", "sports", "other", "any"] },
     budgetRupees: { type: "integer" },
   },
   required: ["city", "when", "kind", "budgetRupees"],
@@ -230,6 +230,7 @@ export function assistantContext(turn: ChatTurn): AssistantContext {
     now: turn.now,
     timezone: timeZone(turn),
     ...(turn.profile ? { profile: turn.profile } : {}),
+    ...(turn.vault ? { vault: turn.vault } : {}),
     ...(turn.watches ? { watches: turn.watches } : {}),
     ...(turn.phone ? { phone: turn.phone } : {}),
     ...(turn.google ? { google: turn.google, fetchImpl: turn.fetchImpl, googleRedirect: turn.googleRedirect } : {}),
@@ -533,5 +534,5 @@ function isWhen(value: unknown): value is WhenWord {
 }
 
 function isKind(value: unknown): value is KindWord {
-  return value === "movie" || value === "concert" || value === "comedy" || value === "theatre" || value === "workshop" || value === "other" || value === "any";
+  return value === "movie" || value === "concert" || value === "comedy" || value === "theatre" || value === "workshop" || value === "sports" || value === "other" || value === "any";
 }

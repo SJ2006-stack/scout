@@ -21,17 +21,17 @@ class WhatsAppSendTest {
     }
 
     @Test
-    fun oneExactNameIsTappableAndTwoAreNot() {
+    fun theFirstChatWithThatNameIsTapped() {
         val only = chatList("Soham Bhanja")
         assertEquals("row", WhatsAppSend.namedRow(only, "soham bhanja")?.id)
         val two = NodeSnapshot(
             packageName = "com.whatsapp",
             children = listOf(
-                NodeSnapshot(id = "row", clickable = true, children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja"))),
-                NodeSnapshot(id = "row", clickable = true, children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja"))),
+                NodeSnapshot(id = "first", clickable = true, children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja"))),
+                NodeSnapshot(id = "second", clickable = true, children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja"))),
             ),
         )
-        assertNull(WhatsAppSend.namedRow(two, "Soham Bhanja"))
+        assertEquals("first", WhatsAppSend.namedRow(two, "Soham Bhanja")?.id)
     }
 
     @Test
@@ -104,7 +104,11 @@ private class NameScreen : Screen {
             "search" -> {
                 val field = NodeSnapshot(id = "search_input", text = query.ifBlank { "Ask Meta AI or Search" }, clickable = true, packageName = "com.whatsapp")
                 if (query.equals("Soham Bhanja", ignoreCase = true)) {
-                    listOf(field, NodeSnapshot(id = "contact_row_container", clickable = true, packageName = "com.whatsapp", children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja", packageName = "com.whatsapp"))))
+                    listOf(
+                        field,
+                        NodeSnapshot(id = "contact_row_container", clickable = true, packageName = "com.whatsapp", children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja", packageName = "com.whatsapp"))),
+                        NodeSnapshot(id = "second_row", clickable = true, packageName = "com.whatsapp", children = listOf(NodeSnapshot(id = "conversations_row_contact_name", text = "Soham Bhanja", packageName = "com.whatsapp"))),
+                    )
                 } else {
                     listOf(field)
                 }

@@ -140,7 +140,7 @@ describe("Main Scout errands", () => {
     assert.equal(answered.some((event) => event.type === "places"), false);
   });
 
-  it("starts the shop lookup and the event search before either one finishes", async () => {
+  it("finishes the event search before the shop lookup starts", async () => {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -169,9 +169,11 @@ describe("Main Scout errands", () => {
       return { message: "15 in Delhi for today.", count: 15, drives: async () => undefined };
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(shopWaiting && eventsWaiting, true);
+    assert.equal(eventsWaiting, true);
+    assert.equal(shopWaiting, false);
     release();
     await running;
+    assert.equal(shopWaiting, true);
   });
 
   it("saves the WhatsApp chat and does not replace a shop compare with search links", async () => {
@@ -261,7 +263,7 @@ describe("Main Scout errands", () => {
     assert.deepEqual(plan?.errands.map((errand) => errand.kind === "events" && errand.city), [null]);
   });
 
-  it("asks first, then runs groceries, events, WhatsApp, and the bus together", async () => {
+  it("asks first, then runs groceries, events, WhatsApp, and the bus one at a time", async () => {
     const planner = planFetch(ERRANDS);
     const shopped: string[][] = [];
     const busTrips: unknown[] = [];
@@ -317,6 +319,77 @@ describe("Main Scout errands", () => {
     const stale: ChatEvent[] = [];
     await runChat({ ...base, text: "answers", answers }, (event) => stale.push(event));
     assert.match(stale.find((event) => event.type === "question")?.type === "question" ? String((stale.find((event) => event.type === "question") as { message: string }).message) : "", /expired/);
+  });
+
+  it("runs several errands one at a time and updates the queue", async () => {
+    let running = 0;
+    let maxRunning = 0;
+    const events: ChatEvent[] = [];
+    const plan = readPlan({
+      errands: [
+        { ...blank, kind: "events", summary: "Comedy in Delhi", city: "delhi", when: "weekend" },
+        { ...blank, kind: "events", summary: "Movies in Mumbai", city: "mumbai", when: "week" },
+      ],
+    });
+    assert.ok(plan);
+    const listEvents = async () => {
+      running += 1;
+      maxRunning = Math.max(maxRunning, running);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      running -= 1;
+      return { message: "A few listings.", count: 2, drives: async () => undefined };
+    };
+    await runAnsweredErrands(plan, {}, turn({ text: "comedy in delhi and movies in mumbai" }), (event) => events.push(event), listEvents);
+    assert.equal(maxRunning, 1);
+    const queues = events.filter((event) => event.type === "queue").map((event) => event.type === "queue" ? event.queue.items.map((item) => item.state) : []);
+    assert.deepEqual(queues, [
+      ["waiting", "waiting"],
+      ["running", "waiting"],
+      ["done", "waiting"],
+      ["done", "running"],
+      ["done", "done"],
+    ]);
+    const statuses = events.filter((event) => event.type === "status").map((event) => event.type === "status" ? event.message : "");
+    assert.deepEqual(statuses, ["Now 1 of 2: Comedy in Delhi.", "Now 2 of 2: Movies in Mumbai."]);
+  });
+
+  it("looks up something to do now instead of saving a reminder", async () => {
+    const texts: string[] = [];
+    const events: ChatEvent[] = [];
+    const ran = await runMainScout(turn({
+      text: "Look for something to do around this weekend in Delhi",
+      fetchImpl: (async () => { throw new Error("planner"); }) as unknown as typeof fetch,
+    }), (event) => events.push(event), async (eventTurn) => {
+      texts.push(eventTurn.text);
+      return { message: "12 in Delhi for this weekend.", count: 12, drives: async () => undefined };
+    });
+    assert.equal(ran, true);
+    assert.deepEqual(texts, ["Look for something to do around this weekend in Delhi"]);
+    assert.equal(events.some((event) => event.type === "watch"), false);
+    const reply = events.find((event) => event.type === "question");
+    assert.match(reply?.type === "question" ? reply.message : "", /12 in Delhi for this weekend/);
+  });
+
+  it("reads the usual grocery basket from the Vault before searching", async () => {
+    const queries: string[][] = [];
+    const events: ChatEvent[] = [];
+    const ran = await runMainScout(turn({
+      text: "Scout, find me my usual groceries",
+      fetchImpl: (async () => { throw new Error("planner"); }) as unknown as typeof fetch,
+      compareBasket: async (asked) => {
+        queries.push([...asked]);
+        return { opened: 3, signIn: null, lines: asked.map((query) => ({ query, offers: [] })) };
+      },
+    }), (event) => events.push(event), async () => ({ message: "", count: 0, drives: async () => undefined }));
+    assert.equal(ran, true);
+    assert.equal(queries.length, 1);
+    assert.match(queries[0]?.join(" ") ?? "", /Amul Taaza Toned Milk/);
+    assert.match(queries[0]?.join(" ") ?? "", /Britannia Whole Wheat Bread/);
+    assert.equal(queries[0]?.some((query) => /usual/i.test(query)), false);
+    assert.equal(events.some((event) => event.type === "form"), false);
+    const reply = events.find((event) => event.type === "question");
+    assert.match(reply?.type === "question" ? reply.message : "", /From your Vault/);
+    assert.equal(events.some((event) => event.type === "status" && event.message.includes("Vault")), true);
   });
 
   it("does not search an order sentence as a product", async () => {

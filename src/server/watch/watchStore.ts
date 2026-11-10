@@ -34,7 +34,7 @@ export const WATCH_DEFAULT_INTERVAL = 120;
 const WATCH_MAX_INTERVAL = 24 * 60;
 const WATCH_PER_USER = 10;
 const LEASE_MS = 10 * 60_000;
-const KINDS: readonly EventKind[] = ["movie", "concert", "comedy", "theatre", "workshop", "other"];
+const KINDS: readonly EventKind[] = ["movie", "concert", "comedy", "theatre", "workshop", "sports", "other"];
 
 type Row = {
   id: string;

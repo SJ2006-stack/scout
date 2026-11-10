@@ -2,6 +2,7 @@ export type Screen =
   | { kind: "home" }
   | { kind: "tasks" }
   | { kind: "settings" }
+  | { kind: "vault" }
   | { kind: "chat"; conversationId: string };
 
 export type Account = {

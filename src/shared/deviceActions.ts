@@ -45,7 +45,8 @@ export type CartStopReason =
   | "timeout"
   | "captcha"
   | "location_off"
-  | "user_stopped";
+  | "user_stopped"
+  | "payment_pin";
 export type AppCartResult = {
   store: ShopApp;
   added: CartLine[];
@@ -73,7 +74,7 @@ export type DeviceCommand =
   | { name: "toggle_flashlight"; args: { on: boolean } }
   | { name: "set_volume"; args: { stream: VolumeStream; percent: number } }
   | { name: "get_capabilities"; args: Record<string, never> }
-  | { name: "app_cart_add"; args: { items: CartItem[]; allowSimilar: boolean } }
+  | { name: "app_cart_add"; args: { items: CartItem[]; allowSimilar: boolean; placeOrder: boolean } }
   | {
       name: "app_event_book";
       args: { ref: EventRef; tickets: number; maxPricePerTicket: number | null; seat: SeatChoice; showtime: number | null };
@@ -173,6 +174,7 @@ const CART_REASONS: readonly CartStopReason[] = [
   "captcha",
   "location_off",
   "user_stopped",
+  "payment_pin",
 ];
 
 export function isDeviceActionName(value: unknown): value is DeviceActionName {
@@ -269,7 +271,7 @@ export function readDeviceCommand(name: unknown, raw: unknown, now: number): { o
       }
       const store = items[0]?.ref.store;
       if (!items.every((item) => item.ref.store === store)) return { ok: false, error: "One cart add covers one store. Send a separate one per store." };
-      return { ok: true, command: { name, args: { items, allowSimilar: args.allowSimilar } } };
+      return { ok: true, command: { name, args: { items, allowSimilar: args.allowSimilar, placeOrder: args.placeOrder === true } } };
     }
     case "app_event_book": {
       const ref = eventRef(args.ref);
@@ -396,7 +398,7 @@ export function deviceSummary(command: DeviceCommand, timeZone = "Asia/Kolkata")
     case "get_capabilities":
       return "Check what this phone allows";
     case "app_cart_add":
-      return clip(cartSummary(command.args.items));
+      return clip(`${cartSummary(command.args.items)}${command.args.placeOrder ? ". Then place the order" : ""}`);
     case "app_event_book":
       return clip(bookSummary(command.args, timeZone));
     default: {

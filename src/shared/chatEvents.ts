@@ -1,6 +1,7 @@
 import type { CartEstimate } from "./cartQuote.ts";
 import type { CartSnapshot, QuoteSnapshot, ReceiptSnapshot } from "./commerce.ts";
 import type { DeviceAction } from "./deviceActions.ts";
+import type { ErrandQueue } from "./errandQueue.ts";
 import type { BusResult, ErrandForm, FlightResult } from "./errands.ts";
 import type { EventKind, Listing } from "./event.ts";
 import type { PayLink } from "./payLink.ts";
@@ -134,12 +135,19 @@ export type ChatPlacesEvent = {
   places: SavedPlace[];
 };
 
+/** The task list for one message. Later events replace the same card as each task starts and finishes. */
+export type ChatQueueEvent = {
+  type: "queue";
+  queue: ErrandQueue;
+};
+
 export type ChatEvent =
   | ChatBriefEvent
   | ChatFormEvent
   | ChatBusesEvent
   | ChatFlightsEvent
   | ChatPlacesEvent
+  | ChatQueueEvent
   | ChatDeviceEvent
   | ChatWatchEvent
   | ChatStatusEvent

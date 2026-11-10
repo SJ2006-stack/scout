@@ -95,6 +95,20 @@ class BlinkitCartTest {
     }
 
     @Test
+    fun placesTheOrderWhenTheUserConfirmedIt() {
+        val button = orderButton(UiDump.resource("blinkit/06-bill.xml"))
+        assertTrue(button!!.walk().any { it.id == "cv_checkout_container" })
+        assertTrue(orderButton(UiDump.resource("zepto/08-bill.xml"))!!.walk().any { it.id == "cart-pay-button" })
+        assertNull(orderButton(NodeSnapshot(text = "Enter UPI PIN", clickable = true)))
+        val screen = BlinkitFixture()
+        val result = BlinkitCart.run(screen, CartRequest(listOf(butterItem()), allowSimilar = false, placeOrder = true), fastRunner(screen, BlinkitCart.PACKAGE))
+        assertEquals("ordered", result.stoppedAt)
+        assertNull(result.reason)
+        assertTrue(cartMessage(result).contains("Placed the order"))
+        assertTrue(screen.events.contains("order"))
+    }
+
+    @Test
     fun usesSearchWhenTheSlugIsAPlaceholder() {
         val link = BlinkitCart.destination(butterItem().copy(link = "https://blinkit.com/prn/x/prid/1391202"))
         assertTrue(link.startsWith("https://blinkit.com/s/?q="))
@@ -220,6 +234,8 @@ class CartWireTest {
         assertEquals("blinkit", request!!.items.single().store)
         assertEquals(2, request.items.single().quantity)
         assertFalse(request.allowSimilar)
+        assertFalse(request.placeOrder)
+        assertTrue(readCartRequest(sample().put("placeOrder", true))!!.placeOrder)
         val missing = JSONObject(sample().toString())
         missing.remove("allowSimilar")
         assertNull(readCartRequest(missing))
@@ -437,6 +453,7 @@ private class BlinkitFixture : Screen {
     override fun click(node: NodeSnapshot): Boolean {
         clicked += "${node.id} ${node.desc} ${node.text}"
         val card = shelfLabel(node)
+        if (node.walk().any { it.id == "cv_checkout_container" || it.text.equals("Place Order", true) }) events += "order"
         when {
             node.walk().any { it.id == "view_cart" } -> tree = UiDump.resource("blinkit/05-cart.xml")
             card.contains("Nutralite DoodhShakti Probiotic Salted Butter") && !card.contains("(Tub)") && node.desc.equals("ADD", true) ->

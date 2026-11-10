@@ -34,6 +34,7 @@ import { CartBillStore } from "./cartBills.ts";
 import { InboxStore } from "./notify/inbox.ts";
 import { Notifier } from "./notify/notifier.ts";
 import { ProfileStore } from "./profile/profileStore.ts";
+import { VaultStore } from "./vault/vaultStore.ts";
 import { eventTools } from "./tools/index.ts";
 import { WatchRunner } from "./watch/watchRunner.ts";
 import { WatchStore } from "./watch/watchStore.ts";
@@ -72,6 +73,7 @@ export function createDeps(): ApiDeps {
   });
   return {
     profile: new ProfileStore(dbPath),
+    vault: new VaultStore(dbPath),
     watches,
     watchRunner,
     inbox,
