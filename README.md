@@ -6,6 +6,10 @@ Ask in English, Hindi, or Hinglish. Scout finds the show, prices the groceries, 
 
 **[scout.shrianshjaiswal.me](https://scout.shrianshjaiswal.me)**
 
+**Built for Gnani AI's Great Indian AI Internship Challenge.** Speech-to-text runs on Gnani Prisma v3.0.
+
+**[1-page solution-pitch-doc](https://docs.google.com/document/d/16pq94mRNMNF885djGUk5ttZKLGLvspw_Up5FhOVPAzw/edit?usp=drivesdk)** · **[Demo on LinkedIn](https://www.linkedin.com/posts/shriansh-jaiswal_greatindianaiinternshipchallenge-gnaniai-ugcPost-7525828510314192896-3v_O/)**
+
 ```
 you     usual groceries, and something to do in delhi this weekend
 scout   reads the Vault basket, then Blinkit, Zepto, and Instamart
