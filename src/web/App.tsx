@@ -785,7 +785,10 @@ export function App() {
         <section
           className="transcript"
           ref={transcriptRef}
+          role="log"
+          aria-label="Conversation"
           aria-live="polite"
+          aria-relevant="additions text"
           onScroll={(event) => {
             const element = event.currentTarget;
             stickToEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140;

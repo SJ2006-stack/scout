@@ -5,7 +5,7 @@
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: #ffffff;
+  background: var(--card);
   display: grid;
   gap: 10px;
   max-height: 55vh;
