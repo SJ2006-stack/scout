@@ -62,5 +62,5 @@ dependencies {
     implementation(libs.firebase.messaging)
     implementation(libs.okhttp)
     testImplementation(libs.junit)
-    testImplementation("org.json:json:20230227")
+    testImplementation("org.json:json:20260814")
 }
