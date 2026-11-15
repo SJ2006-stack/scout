@@ -50,19 +50,25 @@ function signatureMatches(parts: string[], pem: string): boolean {
   }
 }
 
+let certCache: { certs: Record<string, string>; expires: number; source: typeof fetch } | null = null;
+
+/** Google rotates these about daily. Honour max-age so a login is not an HTTP call. */
 async function loadCerts(fetchImpl: typeof fetch): Promise<Record<string, string> | null> {
+  if (certCache && certCache.source === fetchImpl && certCache.expires > Date.now()) return certCache.certs;
   try {
     const response = await fetchImpl(CERTS_URL);
-    if (!response.ok) return null;
+    if (!response.ok) return certCache && certCache.source === fetchImpl ? certCache.certs : null;
     const body = (await response.json()) as unknown;
     if (!body || typeof body !== "object") return null;
     const certs: Record<string, string> = {};
     for (const [kid, pem] of Object.entries(body)) {
       if (typeof pem === "string" && pem.includes("BEGIN CERTIFICATE")) certs[kid] = pem;
     }
+    const maxAge = Number(/max-age=(\d+)/.exec(response.headers.get("cache-control") ?? "")?.[1] ?? 0);
+    if (Object.keys(certs).length > 0 && maxAge > 0) certCache = { certs, expires: Date.now() + Math.min(maxAge, 86_400) * 1000, source: fetchImpl };
     return certs;
   } catch {
-    return null;
+    return certCache && certCache.source === fetchImpl ? certCache.certs : null;
   }
 }
 

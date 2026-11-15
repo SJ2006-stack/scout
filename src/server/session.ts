@@ -5,6 +5,11 @@ const COOKIE = "scout_session";
 /** Browsers cap a cookie near 400 days. Each signed-in visit refreshes it. */
 const SESSION_MAX_AGE = 60 * 60 * 24 * 400;
 
+/** Secure outside local dev so the cookie never travels over plain HTTP. */
+function secureFlag(): string {
+  return process.env.NODE_ENV === "production" ? "; Secure" : "";
+}
+
 export function sessionId(request: IncomingMessage, response: ServerResponse): string {
   const existing = currentSessionId(request);
   if (existing) return existing;
@@ -23,11 +28,11 @@ export function currentSessionId(request: IncomingMessage): string | null {
 }
 
 export function setSessionCookie(response: ServerResponse, id: string): void {
-  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`);
+  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}${secureFlag()}`);
 }
 
 export function clearSessionCookie(response: ServerResponse): void {
-  response.setHeader("set-cookie", `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+  response.setHeader("set-cookie", `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureFlag()}`);
 }
 
 /** Browser-worker owner. Only the HttpOnly cookie counts. A client-supplied session id does not. */
@@ -35,7 +40,7 @@ export function browserOwner(request: IncomingMessage, response: ServerResponse)
   const existing = readCookie(request.headers.cookie, COOKIE);
   if (existing && /^[a-f0-9]{32}$/.test(existing)) return existing;
   const id = randomBytes(16).toString("hex");
-  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}`);
+  response.setHeader("set-cookie", `${COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE}${secureFlag()}`);
   return id;
 }
 

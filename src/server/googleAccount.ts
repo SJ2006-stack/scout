@@ -191,7 +191,7 @@ export class GoogleAccounts {
     };
   }
 
-  private async access(userId: string, service: GoogleService, fetchImpl: typeof fetch): Promise<{ ok: true; token: string } | GoogleOutcome> {
+  private async access(userId: string, service: GoogleService, fetchImpl: typeof fetch): Promise<{ ok: true; token: string } | (GoogleOutcome & { ok: false })> {
     const blocked = this.blockReason();
     if (blocked) return { ok: false, content: blocked };
     const row = this.row(userId, service);

@@ -46,7 +46,7 @@ describe("screen understanding", () => {
   it("refuses a missing key, the wrong type, an empty file, and a reply that is not the tool", async () => {
     assert.equal((await screenResponse("GET", JPEG, "image/jpeg", { sarvamApiKey: "k" })).status, 405);
     assert.equal((await screenResponse("POST", JPEG, "image/png", { sarvamApiKey: "" })).status, 503);
-    assert.match((await screenResponse("POST", JPEG, "image/png", { sarvamApiKey: "" })).body.error, /SARVAM_API_KEY/);
+    assert.match(((await screenResponse("POST", JPEG, "image/png", { sarvamApiKey: "" })).body as { error: string }).error, /SARVAM_API_KEY/);
     assert.equal((await screenResponse("POST", JPEG, "application/pdf", { sarvamApiKey: "k" })).status, 415);
     assert.equal((await screenResponse("POST", new Uint8Array(), "image/jpeg", { sarvamApiKey: "k" })).status, 400);
     const failed = await screenResponse("POST", JPEG, "image/webp", {
