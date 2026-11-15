@@ -18,6 +18,8 @@
   --radius: 16px;
   --tap: 44px;
   --toast-link: #ff6961;
+  --glass-88: rgba(255, 255, 255, 0.88);
+  --glass-92: rgba(255, 255, 255, 0.92);
   --open-ink: #1d7a37;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   background: var(--bg);
@@ -43,6 +45,8 @@
     --hover: #26262a;
     --selected: #323237;
     --toast-link: #d70015;
+    --glass-88: rgba(17, 17, 19, 0.88);
+    --glass-92: rgba(17, 17, 19, 0.92);
     --open-ink: #5fd479;
   }
 }
@@ -1538,7 +1542,7 @@ select:focus-visible {
     padding-left: max(12px, env(safe-area-inset-left));
     padding-right: max(12px, env(safe-area-inset-right));
     border-bottom: 0;
-    background: rgba(255, 255, 255, 0.88);
+    background: var(--glass-88);
     box-shadow: 0 1px 0 var(--line);
     backdrop-filter: saturate(180%) blur(16px);
   }
@@ -1708,7 +1712,7 @@ select:focus-visible {
     width: auto;
     margin: 0;
     padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
-    background: rgba(255, 255, 255, 0.92);
+    background: var(--glass-92);
     box-shadow: 0 -1px 0 var(--line);
     backdrop-filter: saturate(180%) blur(16px);
   }

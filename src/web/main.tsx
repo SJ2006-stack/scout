@@ -5,15 +5,15 @@ import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import "./app.css";
 
 // The iMessage mock-up ships generic class names (.nav, .thread, .composer). Loading it lazily keeps its CSS out of the real app.
-const IMessagePreview = lazy(() => import("./imessage/IMessagePreview.tsx").then((module) => ({ default: module.IMessagePreview })));
+// The lookbook is a design reference. It is only defined in dev, so the production build drops the chunk.
+const IMessagePreview = import.meta.env.DEV ? lazy(() => import("./imessage/IMessagePreview.tsx").then((module) => ({ default: module.IMessagePreview }))) : null;
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing root");
-// The lookbook is a design reference, so it is not part of the production build.
-const imessageLook = import.meta.env.DEV && window.location.pathname === "/imessage";
+const imessageLook = IMessagePreview !== null && window.location.pathname === "/imessage";
 createRoot(root).render(
   <StrictMode>
-    {imessageLook ? (
+    {IMessagePreview && imessageLook ? (
       <Suspense fallback={null}>
         <IMessagePreview />
       </Suspense>
