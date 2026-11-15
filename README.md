@@ -18,6 +18,45 @@ One message can hold several errands. They run one at a time, and the phone show
 
 This repo is the server, the web app, and the Android companion in `android/`. The phone app is not inside the Docker image. It loads the live site and does the things a browser cannot: the mic, the share sheet, the accessibility service, and the handoff into UPI.
 
+## See it work
+
+Screen recordings from the Android app. The previews below loop on their own. Click one to watch the full clip, and turn the sound on for the voice commands. They are also on the [website](https://scout.shrianshjaiswal.me/#demo), where you can pick a clip and pause it.
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="public/demo/vault.mp4"><img src="public/demo/vault.gif" width="200" alt="Opening the menu: six specialists, recent chats, the Vault and Tasks"></a><br>
+      <b>1. Your home base</b><br>
+      <sub>Specialists, chats, the Vault and Tasks · 0:03</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="public/demo/voice.mp4"><img src="public/demo/voice.gif" width="200" alt="Tapping the mic and speaking; Scout turns the voice into text"></a><br>
+      <b>2. Just say it</b><br>
+      <sub>Tap the mic, talk, tap again · 0:11 · voice</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="public/demo/events.mp4"><img src="public/demo/events.gif" width="200" alt="Event listings from District, BookMyShow and Luma, then an Allow prompt before opening an app"></a><br>
+      <b>3. Events, mixed</b><br>
+      <sub>Three sources in one list, Scout asks first · 0:08</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="public/demo/grocery.mp4"><img src="public/demo/grocery.gif" width="200" alt="Comparing a usual grocery basket across Blinkit, Zepto and Instamart, then filling the Instamart cart"></a><br>
+      <b>4. Groceries, compared</b><br>
+      <sub>Vault basket across three stores, cart filled on the phone · 0:32 · voice</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="public/demo/whatsapp.mp4"><img src="public/demo/whatsapp.gif" width="200" alt="Asking Scout to send a WhatsApp message; the user taps Allow and it types and sends"></a><br>
+      <b>5. Message on WhatsApp</b><br>
+      <sub>You tap Allow, Scout types and sends · 0:16 · voice</sub>
+    </td>
+    <td></td>
+  </tr>
+</table>
+
+Contacts, chats and documents in clip 5 are blurred.
+
 ## What you can throw at it
 
 | You say | Scout does |

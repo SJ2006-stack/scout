@@ -1,23 +1,12 @@
-import { createServer, type ServerResponse } from "node:http";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { extname, join, normalize, sep } from "node:path";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, statSync } from "node:fs";
+import { join, normalize, sep } from "node:path";
 import { handleApi, handleUpgrade } from "./api.ts";
 import { startBrowserWarm } from "./browser/worker.ts";
 import { appRoot, createDeps, loadLocalEnv } from "./deps.ts";
 import { healthPayload } from "./health.ts";
 import { mainLandingFile } from "./landingPage.ts";
-
-const TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".webp": "image/webp",
-  ".json": "application/json; charset=utf-8",
-  ".ico": "image/x-icon",
-  ".txt": "text/plain; charset=utf-8",
-};
+import { sendFile } from "./staticFile.ts";
 
 loadLocalEnv();
 const root = appRoot();
@@ -43,7 +32,7 @@ const server = createServer((request, response) => {
     void handleApi(request, response, deps);
     return;
   }
-  serveFile(url.pathname, request.headers.host, response);
+  serveFile(request, url.pathname, request.headers.host, response);
 });
 
 server.on("upgrade", (request, socket, head) => {
@@ -79,21 +68,21 @@ function browserSurface(pathname: string): boolean {
   return pathname === "/api/health" || pathname === "/api/browser" || pathname.startsWith("/api/browser/");
 }
 
-function serveFile(pathname: string, hostHeader: string | undefined, response: ServerResponse): void {
+function serveFile(request: IncomingMessage, pathname: string, hostHeader: string | undefined, response: ServerResponse): void {
   const landing = mainLandingFile(root, hostHeader, pathname);
   if (landing && existsSync(landing)) {
-    send(response, landing);
+    sendFile(request, response, landing);
     return;
   }
   const requested = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const file = safeFile(requested);
   if (file && existsSync(file) && statSync(file).isFile()) {
-    send(response, file);
+    sendFile(request, response, file);
     return;
   }
   const home = join(dist, "index.html");
   if (existsSync(home)) {
-    send(response, home);
+    sendFile(request, response, home);
     return;
   }
   response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
@@ -106,9 +95,3 @@ function safeFile(relative: string): string | null {
   return file;
 }
 
-function send(response: ServerResponse, file: string): void {
-  const body = readFileSync(file);
-  const type = TYPES[extname(file)] ?? "application/octet-stream";
-  response.writeHead(200, { "content-type": type, "cache-control": extname(file) === ".html" ? "no-cache" : "public, max-age=3600" });
-  response.end(body);
-}
